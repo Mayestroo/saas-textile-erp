@@ -40,10 +40,20 @@ dependency order. It intentionally leaves `citext` installed: extensions may
 be shared or may have existed before this migration, so rollback must not
 remove a database-wide extension.
 
-`companies.db_connection_ciphertext` is nullable until a future provisioning
-flow supplies encrypted data. `TenantConnectionSecretCipher` defines the
-encrypt/decrypt boundary; this stage deliberately provides no plaintext
-storage path and no placeholder encryption implementation.
+`companies.db_connection_ciphertext` stores per-tenant runtime credentials only
+through the AES-256-GCM `TenantConnectionSecretCipher` implementation. The
+versioned envelope contains a random IV and authentication tag; its 32-byte key
+comes from `TENANT_CONNECTION_ENCRYPTION_KEY`, never source code. Provisioning
+state and failure details are added by additive Master migrations for
+`failure_step`, `failure_reason`, and the non-secret `default_admin_required`
+retry marker.
+
+Tenant databases have a separate DataSource factory and migration table in
+`apps/api/src/database/tenant/` and `database/tenant-migrations/`. The elevated
+`TENANT_PROVISIONER_DB_*` settings are separate from Master runtime credentials.
+Provisioned runtime logins are company-specific and do not own the database or
+have role/database creation privileges. See `docs/tenant-provisioning.md` for
+the lifecycle, ACL policy, encryption-key operations, and retry behavior.
 
 ## Configuration and commands
 

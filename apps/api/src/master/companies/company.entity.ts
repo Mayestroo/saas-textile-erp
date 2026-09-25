@@ -37,6 +37,15 @@ export class CompanyEntity {
   @Column({ name: 'provisioning_status', type: 'varchar', nullable: true })
   provisioningStatus!: string | null;
 
+  @Column({ name: 'failure_step', type: 'varchar', nullable: true })
+  failureStep!: string | null;
+
+  @Column({ name: 'failure_reason', type: 'text', nullable: true })
+  failureReason!: string | null;
+
+  @Column({ name: 'default_admin_required', type: 'boolean', default: false })
+  defaultAdminRequired!: boolean;
+
   @Column({ name: 'last_migration_at', type: 'timestamptz', nullable: true })
   lastMigrationAt!: Date | null;
 
