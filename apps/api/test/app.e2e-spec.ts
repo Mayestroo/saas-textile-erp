@@ -1,8 +1,12 @@
+import { INestApplication, Module } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from './../src/app.module.js';
+import { MasterDatabaseModule } from './../src/database/master/master-database.module.js';
+
+@Module({})
+class TestMasterDatabaseModule {}
 
 describe('AppController (e2e)', () => {
   let app: INestApplication<App>;
@@ -10,7 +14,10 @@ describe('AppController (e2e)', () => {
   beforeEach(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
-    }).compile();
+    })
+      .overrideModule(MasterDatabaseModule)
+      .useModule(TestMasterDatabaseModule)
+      .compile();
 
     app = moduleFixture.createNestApplication();
     await app.init();

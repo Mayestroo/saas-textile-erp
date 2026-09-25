@@ -20,6 +20,11 @@
     "test:cov": "vitest run --coverage",
     "test:debug": "vitest --inspect-brk --no-file-parallelism",
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts",
+    "db:master:migrate": "npm run build && node dist/database/master/master-database.cli.js migrate",
+    "db:master:revert": "npm run build && node dist/database/master/master-database.cli.js revert",
+    "db:master:show": "npm run build && node dist/database/master/master-database.cli.js show",
+    "db:master:seed": "npm run build && node dist/database/master/master-database.cli.js seed",
+    "test:master-db": "vitest run src/database/master/master-database.integration.spec.ts",
     "watch:compile": "swc src --out-dir dist --config-file .swcrc --ignore \"**/*.spec.ts\" --strip-leading-paths --watch",
     "typecheck": "tsc --noEmit -p tsconfig.build.json"
   },
