@@ -6,6 +6,7 @@ dist/
 out/
 release/
 coverage/
+*.tsbuildinfo
 
 # Environment
 .env
@@ -28,6 +29,7 @@ apps/desktop/.data/
 
 # Electron
 apps/desktop/dist/
+apps/desktop/dist-electron/
 apps/desktop/out/
 
 # IDE

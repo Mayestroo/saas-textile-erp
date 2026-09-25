@@ -1,4 +1,5 @@
 import { defineConfig } from 'eslint/config'
+import { fixupConfigRules } from '@eslint/compat'
 import tseslint from '@electron-toolkit/eslint-config-ts'
 import eslintConfigPrettier from '@electron-toolkit/eslint-config-prettier'
 import eslintPluginReact from 'eslint-plugin-react'
@@ -6,10 +7,12 @@ import eslintPluginReactHooks from 'eslint-plugin-react-hooks'
 import eslintPluginReactRefresh from 'eslint-plugin-react-refresh'
 
 export default defineConfig(
-  { ignores: ['**/node_modules', '**/dist', '**/out'] },
+  { ignores: ['**/node_modules', '**/dist', '**/dist-electron', '**/out'] },
   tseslint.configs.recommended,
-  eslintPluginReact.configs.flat.recommended,
-  eslintPluginReact.configs.flat['jsx-runtime'],
+  ...fixupConfigRules([
+    eslintPluginReact.configs.flat.recommended,
+    eslintPluginReact.configs.flat['jsx-runtime']
+  ]),
   {
     settings: {
       react: {
