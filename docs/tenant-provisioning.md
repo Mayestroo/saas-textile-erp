@@ -11,7 +11,7 @@ Names are checked against strict production/test patterns before they are used a
 
 ## Provisioning lifecycle
 
-`CompaniesService.createAndProvision()` creates the Master company row in `PROVISIONING` / `REQUESTED` state, then synchronously calls `ProvisioningService`. No public company-create route is registered while Platform Auth/RBAC is not implemented.
+`CompaniesService.createAndProvision()` creates the Master company row in `PROVISIONING` / `REQUESTED` state, then synchronously calls `ProvisioningService`. Company creation is exposed only through `POST /api/v1/platform/companies`, which requires a valid platform session and `companies.create` permission; anonymous creation is not registered.
 
 The service pins a single Master `QueryRunner` for a company-specific PostgreSQL advisory lock and releases the lock in `finally`:
 
@@ -50,7 +50,7 @@ Tenant runtime credentials are generated independently for each company. Provisi
 NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS
 ```
 
-The provisioner owns tenant databases; the runtime role does not. The runtime role receives DML privileges on the foundation tables and future provisioner-created tables/sequences, but no schema ownership, migration-table access, or migration DDL privileges. The Master database's PUBLIC CONNECT is revoked while its current Master role keeps explicit CONNECT.
+The provisioner owns tenant databases; the runtime role does not. The runtime role receives DML privileges on the foundation tables, the additive `auth_sessions` and `login_rate_limits` tables, and future provisioner-created tables/sequences, but no schema ownership, migration-table access, or migration DDL privileges. The Master database's PUBLIC CONNECT is revoked while its current Master role keeps explicit CONNECT.
 
 Use a PostgreSQL cluster dedicated to the application and create tenant databases through this manager so new databases receive the same ACL policy. Other databases created outside this provisioning path need their own explicit connection ACL.
 
@@ -72,7 +72,7 @@ node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('b
 
 Store the value in the deployment secret store and keep it stable while ciphertext encrypted with it exists. Key rotation requires retaining the old decrypt key until all stored tenant credentials have been re-encrypted; a rotation workflow is not part of this stage.
 
-Default administrator passwords are supplied only to the synchronous application-service call, hashed with Argon2id in the tenant database, and never returned or logged. Replaying administrator seeding does not duplicate a user or reset an existing password.
+Default administrator passwords are supplied only to the synchronous application-service call, hashed with Argon2id in the tenant database, and never returned or logged. Replaying administrator seeding does not duplicate a user or reset an existing password. After provisioning, the default administrator can sign in through `POST /api/v1/auth/login` using the company's hostname and those credentials.
 
 ## Tenant schema and permissions
 
@@ -86,13 +86,13 @@ The initial tenant foundation contains only:
 - `role_permissions`
 - TypeORM's tenant migration metadata table
 
-The current foundation stores one `role_id` per user; a later Auth/RBAC migration can normalize that link if multi-role assignment is introduced. No worker, badge, model, Patta, sync, or payroll tables are present.
+The current foundation stores one `role_id` per user; a later Auth/RBAC migration can normalize that link if multi-role assignment is introduced. The additive Auth/RBAC migration adds only tenant `auth_sessions` and `login_rate_limits`; no worker, badge, model, Patta, sync, or payroll tables are present.
 
-The idempotent tenant catalog includes the requested models, workers/badge, Patta, users, roles, report, payroll, license, and audit permission codes. It contains no platform permission codes. `Korxona administratori` is system-protected and receives only this tenant permission catalog.
+The idempotent tenant catalog includes the requested models, workers/badge, Patta, users, roles, report, payroll, license, and audit permission codes. It contains no platform permission codes. `TenantRbacService` additionally enforces the canonical seed allowlist when granting role permissions, so a manually inserted platform-code row cannot be assigned. `Korxona administratori` is system-protected and receives only this tenant permission catalog.
 
 ## Tenant resolution boundary
 
-`TenantResolverService.resolve({ hostname, authenticatedCompanyId })` requires a valid authenticated company ID, a hostname subdomain matching the Master company slug, and an `ACTIVE` Master company with encrypted connection metadata. It does not accept a body/query `tenant_id`. The future HTTP adapter must pass company identity from verified authentication and the hostname established by a trusted proxy; this stage does not add an authentication bypass or public endpoint.
+`TenantResolverService.resolveForLogin({ hostname })` resolves a hostname slug to an `ACTIVE` Master company with encrypted connection metadata before tenant credentials are checked. For protected requests, `TenantResolverService.resolve({ hostname, authenticatedCompanyId })` additionally requires the hostname slug to match the verified JWT company ID. Neither path accepts a body/query `tenant_id`.
 
 ## Commands
 

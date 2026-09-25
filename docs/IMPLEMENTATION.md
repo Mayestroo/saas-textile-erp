@@ -673,33 +673,54 @@ Backend bu qoidani UI'dan mustaqil tekshirishi shart.
 
 ## Online authentication
 
-Server:
+Platform va tenant login security domainlari alohida:
 
 ```text
-Access JWT
-Refresh token
+POST /api/v1/platform/auth/login → Master platform_users
+POST /api/v1/auth/login          → hostname → Master company → tenant users
 ```
 
-ishlatadi.
+Har domain alohida access/refresh secret, issuer, audience, scope va session
+storage ishlatadi. Access JWT qisqa muddatli; refresh rotation qilinadi. Eski,
+imzosi yaroqli refresh token qayta ishlatilsa tegishli session revoke qilinadi.
+Database’da faqat refresh tokenning SHA-256 hashi saqlanadi.
 
-Access token qisqa muddatli.
-
-Refresh token rotation qilinsin.
-
-Refresh token reuse aniqlansa session revoke qilinsin.
-
-JWT ichida kamida:
+Platform JWT claims:
 
 ```text
-sub = user_id
-company_id
-device_id
+sub = platform_user_id
+scope = platform
 session_id
+jti
+iss, aud, iat, exp
 ```
 
-bo‘lsin.
+Platform JWT ichida `company_id` bo‘lmaydi.
 
-Permissionlar serverda har requestda tekshiriladi.
+Tenant JWT claims:
+
+```text
+sub = tenant_user_id
+scope = tenant
+company_id = verified Master company UUID
+session_id
+jti
+iss, aud, iat, exp
+```
+
+Tenant kompaniya hostname’dan resolve qilinadi; JWT company ID va hostname
+slugi har protected requestda mos bo‘lishi shart. Request body/query tenant
+tanlamaydi. Platform va tenant permissionlari o‘z database’idan har requestda
+tekshiriladi.
+
+Platform company creation faqat `POST /api/v1/platform/companies` orqali va
+`companies.create` platform permission bilan bajariladi.
+
+Login brute-force counterlari PostgreSQL’da atomik upsert bilan yangilanadi.
+Platform va tenant counterlari o‘z database’ida saqlanadi, account/IP
+identifikatorlari HMAC bilan hash qilinadi, muddati o‘tgan satrlar indekslangan
+expiry bo‘yicha kichik batchlarda tozalanadi. Redis login decision path’da
+qatnashmaydi; PostgreSQL unavailable bo‘lsa login fail-closed HTTP 503 qaytaradi.
 
 ---
 
@@ -707,7 +728,7 @@ Permissionlar serverda har requestda tekshiriladi.
 
 Oddiy access JWT muddati tugagani sabab internet yo‘q paytda desktop ishlamay qolmasligi kerak.
 
-Online login vaqtida server qurilmaga:
+Keyingi offline-auth bosqichida online login vaqtida server qurilmaga:
 
 ```text
 offline capability token
@@ -715,7 +736,9 @@ offline capability token
 
 beradi.
 
-Token server tomonidan imzolangan bo‘ladi.
+Token server tomonidan imzolangan bo‘ladi. Hozirgi Auth + RBAC bosqichida
+faqat future offline-capability claims contract mavjud; token berish va
+Electron offline authentication implement qilinmagan.
 
 Ichida:
 

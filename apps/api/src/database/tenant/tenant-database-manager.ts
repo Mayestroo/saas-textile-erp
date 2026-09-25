@@ -143,7 +143,9 @@ export class TenantDatabaseManager implements OnModuleDestroy {
       const role = quoteIdentifier(secret.username);
       await dataSource.query(`GRANT USAGE ON SCHEMA public TO ${role}`);
       await dataSource.query(
-        `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "users", "roles", "permissions", "role_permissions" TO ${role}`,
+        `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
+          "users", "roles", "permissions", "role_permissions", "auth_sessions", "login_rate_limits"
+         TO ${role}`,
       );
       await dataSource.query(`GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ${role}`);
       await dataSource.query(

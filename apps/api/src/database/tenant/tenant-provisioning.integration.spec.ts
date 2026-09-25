@@ -1,9 +1,34 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
+import {
+  ForbiddenException,
+  HttpException,
+  type INestApplication,
+  type ExecutionContext,
+  ValidationPipe,
+} from '@nestjs/common';
+import { getDataSourceToken } from '@nestjs/typeorm';
+import { Reflector } from '@nestjs/core';
+import { Test } from '@nestjs/testing';
 import { verify } from 'argon2';
+import request from 'supertest';
 import { DataSource } from 'typeorm';
-import { createTestMasterDataSourceOptions } from '../master/master-database.config.js';
+import {
+  AUTH_CONFIGURATION,
+  loadAuthConfiguration,
+} from '../../common/auth/auth-configuration.js';
+import { JwtTokenService } from '../../common/auth/jwt-token.service.js';
+import { PasswordPolicy } from '../../common/auth/password-policy.js';
+import { PostgresLoginRateLimiter } from '../../common/auth/postgres-login-rate-limiter.js';
+import { StructuredApiExceptionFilter } from '../../common/errors/structured-api-exception.filter.js';
+import type { TenantAuthenticatedRequest } from '../../common/auth/auth-types.js';
+import { TenantPermissions } from '../../common/auth/auth-decorators.js';
+import {
+  MASTER_DATA_SOURCE_NAME,
+  createTestMasterDataSourceOptions,
+} from '../master/master-database.config.js';
 import {
   createTenantRuntimeDataSourceOptions,
+  createTenantMigrationDataSourceOptions,
   createTestTenantProvisionerCredentials,
   TenantDatabaseCredentials,
 } from './tenant-database.config.js';
@@ -12,12 +37,47 @@ import { TenantMigrationRunner } from './tenant-migration-runner.js';
 import { TenantTestDatabaseCleanup } from './tenant-test-database-cleanup.js';
 import { AesGcmTenantConnectionSecretCipher } from '../../master/provisioning/aes-gcm-tenant-connection-secret-cipher.js';
 import { CompaniesService } from '../../master/companies/companies.service.js';
+import { CompaniesController } from '../../master/companies/companies.controller.js';
 import { CompanyEntity } from '../../master/companies/company.entity.js';
 import { ProvisioningService, ProvisioningSnapshot } from '../../master/provisioning/provisioning.service.js';
+import { PlatformAuthController } from '../../master/platform-auth/platform-auth.controller.js';
+import { PlatformAuthGuard } from '../../master/platform-auth/platform-auth.guard.js';
+import { PlatformAuthService } from '../../master/platform-auth/platform-auth.service.js';
+import { PlatformPermissionGuard } from '../../master/platform-auth/platform-permission.guard.js';
+import { PlatformSessionRepository } from '../../master/platform-auth/platform-session.repository.js';
+import { PlatformRbacService } from '../../master/platform-rbac/platform-rbac.service.js';
+import { seedPlatformPermissions } from '../../master/platform-rbac/platform-permission.seed.js';
+import { TenantAuthController } from '../../tenant/auth/tenant-auth.controller.js';
+import { TenantAuthGuard } from '../../tenant/auth/tenant-auth.guard.js';
+import { TenantAuthService } from '../../tenant/auth/tenant-auth.service.js';
+import { TenantPermissionGuard } from '../../tenant/auth/tenant-permission.guard.js';
+import { TenantSessionRepository } from '../../tenant/auth/tenant-session.repository.js';
 import { MasterTenantLookupService } from '../../tenant/tenant-resolver/master-tenant-lookup.service.js';
+import { TenantResolverService } from '../../tenant/tenant-resolver/tenant-resolver.service.js';
 import { TenantConnectionManager } from '../../tenant/tenant-connection/tenant-connection.manager.js';
+import { TenantRbacService } from '../../tenant/rbac/tenant-rbac.service.js';
 import { seedDefaultTenantAdmin } from '../../tenant/users/tenant-admin.seed.js';
 import { seedTenantPermissions, TENANT_PERMISSION_SEEDS } from '../../tenant/rbac/tenant-permission.seed.js';
+
+class TenantPermissionIntegrationProbe {
+  @TenantPermissions('workers.view')
+  workersView(): void {}
+
+  @TenantPermissions('companies.create')
+  platformPermission(): void {}
+}
+
+function tenantExecutionContext(
+  requestContext: TenantAuthenticatedRequest,
+  handler: () => void,
+  controller: new () => TenantPermissionIntegrationProbe,
+): ExecutionContext {
+  return {
+    getHandler: () => handler,
+    getClass: () => controller,
+    switchToHttp: () => ({ getRequest: () => requestContext }),
+  } as unknown as ExecutionContext;
+}
 
 const TEST_DATABASE_VARIABLES = [
   'TEST_MASTER_DB_HOST',
@@ -42,6 +102,15 @@ const testDataSourceOptions = configuredTestVariables.length === TEST_DATABASE_V
 const testProvisionerCredentials = configuredTestVariables.length === TEST_DATABASE_VARIABLES.length
   ? createTestTenantProvisionerCredentials(process.env)
   : undefined;
+const testAuthConfiguration = loadAuthConfiguration({
+  PLATFORM_JWT_ACCESS_SECRET: 'platform-access-secret-that-is-long-enough-001',
+  PLATFORM_JWT_REFRESH_SECRET: 'platform-refresh-secret-that-is-long-enough-02',
+  TENANT_JWT_ACCESS_SECRET: 'tenant-access-secret-that-is-long-enough-0003',
+  TENANT_JWT_REFRESH_SECRET: 'tenant-refresh-secret-that-is-long-enough-004',
+  AUTH_LOGIN_BUCKET_HASH_SECRET: 'login-bucket-hash-secret-that-is-long-enough',
+  AUTH_LOGIN_MAX_ATTEMPTS: '5',
+  AUTH_LOGIN_WINDOW_SECONDS: '60',
+});
 
 interface CompanyConnectionRow {
   db_name: string;
@@ -173,6 +242,27 @@ integrationDescribe(
       return result;
     }
 
+    async function expectDatabaseConstraintViolation(
+      operation: Promise<unknown>,
+      expectedConstraint: string,
+    ): Promise<void> {
+      const unexpectedSuccessMessage = `Expected database constraint ${expectedConstraint} to reject the write`;
+      try {
+        await operation;
+        throw new Error(unexpectedSuccessMessage);
+      } catch (error) {
+        if (error instanceof Error && error.message === unexpectedSuccessMessage) {
+          throw error;
+        }
+        const driverError = error instanceof Error ? Reflect.get(error, 'driverError') : undefined;
+        const actualConstraint =
+          typeof driverError === 'object' && driverError !== null
+            ? Reflect.get(driverError, 'constraint')
+            : undefined;
+        expect(actualConstraint).toBe(expectedConstraint);
+      }
+    }
+
     async function insertPendingCompany(): Promise<string> {
       const id = randomUUID();
       cleanup.trackCompany(id);
@@ -230,7 +320,7 @@ integrationDescribe(
         provisioningStatus: 'ACTIVE',
         failureStep: null,
         failureReason: null,
-        schemaVersion: 'InitialTenantFoundation20260926000000',
+        schemaVersion: 'AddTenantAuthInfrastructure20260926000200',
       });
       expect(JSON.stringify(result)).not.toContain(admin.password);
       await expect(provisioningService.provision(result.companyId)).resolves.toMatchObject({
@@ -241,7 +331,7 @@ integrationDescribe(
       const { databaseName, credentials } = await companyConnection(result.companyId);
       expect(databaseName).toMatch(/^tenant_test_[0-9a-f]{32}$/);
       const migrationDataSource = new DataSource(
-        createTenantRuntimeDataSourceOptions(tenantDatabaseManager.migrationCredentials(databaseName)),
+        createTenantMigrationDataSourceOptions(tenantDatabaseManager.migrationCredentials(databaseName)),
       );
       await migrationDataSource.initialize();
       try {
@@ -250,11 +340,25 @@ integrationDescribe(
            WHERE "table_schema" = 'public' ORDER BY "table_name"`,
         );
         expect(tableRows.map(({ table_name }) => table_name)).toEqual([
+          'auth_sessions',
+          'login_rate_limits',
           'permissions',
           'role_permissions',
           'roles',
           'tenant_typeorm_migrations',
           'users',
+        ]);
+
+        await migrationDataSource.undoLastMigration({ transaction: 'all' });
+        const tablesAfterRevert: Array<{ table_name: string }> = await migrationDataSource.query(
+          `SELECT "table_name" FROM "information_schema"."tables"
+           WHERE "table_schema" = 'public' AND "table_name" IN ('auth_sessions', 'login_rate_limits')`,
+        );
+        expect(tablesAfterRevert).toHaveLength(0);
+
+        const reappliedMigrations = await migrationDataSource.runMigrations({ transaction: 'all' });
+        expect(reappliedMigrations.map(({ name }) => name)).toEqual([
+          'AddTenantAuthInfrastructure20260926000200',
         ]);
       } finally {
         await migrationDataSource.destroy();
@@ -304,6 +408,104 @@ integrationDescribe(
         expect(users).toHaveLength(1);
         expect(users[0]?.password_hash).not.toContain(admin.password);
         expect(await verify(users[0]?.password_hash ?? '', admin.password)).toBe(true);
+
+        const refreshHash = createHash('sha256').update(randomUUID()).digest('hex');
+        const sessionExpiry = new Date(Date.now() + 60_000);
+        await runtimeDataSource.query(
+          `INSERT INTO "auth_sessions" ("user_id", "refresh_token_hash", "expires_at")
+           VALUES ($1, $2, $3)`,
+          [users[0]?.id, refreshHash, sessionExpiry],
+        );
+        await expectDatabaseConstraintViolation(
+          runtimeDataSource.query(
+            `INSERT INTO "auth_sessions" ("user_id", "refresh_token_hash", "expires_at")
+             VALUES ($1, $2, $3)`,
+            [users[0]?.id, refreshHash, sessionExpiry],
+          ),
+          'uq_auth_sessions_refresh_token_hash',
+        );
+        await expectDatabaseConstraintViolation(
+          runtimeDataSource.query(
+            `INSERT INTO "auth_sessions" ("user_id", "refresh_token_hash", "expires_at")
+             VALUES ($1, $2, $3)`,
+            [randomUUID(), createHash('sha256').update(randomUUID()).digest('hex'), sessionExpiry],
+          ),
+          'fk_auth_sessions_user_id',
+        );
+        await expectDatabaseConstraintViolation(
+          runtimeDataSource.query(
+            `INSERT INTO "login_rate_limits" (
+               "bucket_hash", "window_started_at", "attempt_count", "expires_at"
+             ) VALUES ($1, now(), 0, now() + interval '15 minutes')`,
+            [createHash('sha256').update(randomUUID()).digest('hex')],
+          ),
+          'ck_login_rate_limits_attempt_count',
+        );
+
+        const rateLimiter = new PostgresLoginRateLimiter(testAuthConfiguration);
+        const ipAddress = '198.51.100.38';
+        const rateLimitResults = await Promise.all(
+          Array.from({ length: 12 }, async () => {
+            try {
+              await rateLimiter.consume(runtimeDataSource, {
+                scope: 'tenant',
+                companyId: result.companyId,
+                identifier: admin.email,
+                ipAddress,
+              });
+              return 'allowed';
+            } catch (error) {
+              if (error instanceof HttpException && error.getStatus() === 429) {
+                return 'limited';
+              }
+              throw error;
+            }
+          }),
+        );
+        const accountBucketHash = createHmac(
+          'sha256',
+          testAuthConfiguration.loginRateLimit.hashSecret,
+        ).update(`tenant\0${result.companyId}\0account\0${admin.email.toLowerCase()}`)
+          .digest('hex');
+        const ipBucketHash = createHmac(
+          'sha256',
+          testAuthConfiguration.loginRateLimit.hashSecret,
+        ).update(`tenant\0${result.companyId}\0ip\0${ipAddress}`).digest('hex');
+        const limitRows: Array<{ bucket_hash: string; attempt_count: number }> =
+          await runtimeDataSource.query(
+            `SELECT "bucket_hash", "attempt_count" FROM "login_rate_limits"
+             WHERE "bucket_hash" = ANY($1::varchar[]) ORDER BY "bucket_hash"`,
+            [[accountBucketHash, ipBucketHash]],
+          );
+        expect(rateLimitResults.filter((value) => value === 'allowed')).toHaveLength(5);
+        expect(rateLimitResults.filter((value) => value === 'limited')).toHaveLength(7);
+        expect(limitRows).toHaveLength(2);
+        expect(limitRows.map(({ attempt_count }) => attempt_count)).toEqual([12, 12]);
+
+        const restartedLimiter = new PostgresLoginRateLimiter(testAuthConfiguration);
+        await expect(restartedLimiter.consume(runtimeDataSource, {
+          scope: 'tenant',
+          companyId: result.companyId,
+          identifier: admin.email,
+          ipAddress,
+        })).rejects.toMatchObject({ response: { code: 'TOO_MANY_LOGIN_ATTEMPTS' } });
+        await runtimeDataSource.query(
+          `UPDATE "login_rate_limits" SET "expires_at" = now()
+           WHERE "bucket_hash" = ANY($1::varchar[])`,
+          [[accountBucketHash, ipBucketHash]],
+        );
+        await restartedLimiter.consume(runtimeDataSource, {
+          scope: 'tenant',
+          companyId: result.companyId,
+          identifier: admin.email,
+          ipAddress,
+        });
+        const resetRows: Array<{ attempt_count: number }> = await runtimeDataSource.query(
+          `SELECT "attempt_count" FROM "login_rate_limits"
+           WHERE "bucket_hash" = ANY($1::varchar[]) ORDER BY "bucket_hash"`,
+          [[accountBucketHash, ipBucketHash]],
+        );
+        expect(resetRows.map(({ attempt_count }) => attempt_count)).toEqual([1, 1]);
       } finally {
         await runtimeDataSource.destroy();
       }
@@ -359,7 +561,10 @@ integrationDescribe(
         const migrations: Array<{ name: string }> = await migrationDataSource.query(
           'SELECT "name" FROM "tenant_typeorm_migrations"',
         );
-        expect(migrations.map(({ name }) => name)).toEqual(['InitialTenantFoundation20260926000000']);
+        expect(migrations.map(({ name }) => name)).toEqual([
+          'InitialTenantFoundation20260926000000',
+          'AddTenantAuthInfrastructure20260926000200',
+        ]);
         const userCount: Array<{ count: string }> = await migrationDataSource.query(
           'SELECT count(*) AS "count" FROM "users" WHERE "email" = $1',
           [retryAdmin.email.toLowerCase()],
@@ -392,7 +597,10 @@ integrationDescribe(
         const migrations: Array<{ name: string }> = await migrationDataSource.query(
           'SELECT "name" FROM "tenant_typeorm_migrations"',
         );
-        expect(migrations).toHaveLength(1);
+        expect(migrations.map(({ name }) => name)).toEqual([
+          'InitialTenantFoundation20260926000000',
+          'AddTenantAuthInfrastructure20260926000200',
+        ]);
       } finally {
         await migrationDataSource.destroy();
       }
@@ -487,6 +695,271 @@ integrationDescribe(
       await manager.close();
       expect(first.isInitialized).toBe(false);
     }, 30_000);
+
+    it('creates a company through protected platform auth and logs in its provisioned tenant admin', async () => {
+      await seedPlatformPermissions(masterDataSource);
+      const passwordPolicy = new PasswordPolicy();
+      const jwtTokens = new JwtTokenService();
+      const loginRateLimiter = new PostgresLoginRateLimiter(testAuthConfiguration);
+      const superadminId = randomUUID();
+      const superadminEmail = `superadmin-${randomUUID()}@example.test`;
+      const superadminPassword = 'platform-integration-strong-password';
+      await masterDataSource.query(
+        `INSERT INTO "platform_users" ("id", "email", "password_hash", "status")
+         VALUES ($1, $2, $3, 'ACTIVE')`,
+        [superadminId, superadminEmail, await passwordPolicy.hash(superadminPassword)],
+      );
+      await masterDataSource.query(
+        `INSERT INTO "platform_user_roles" ("user_id", "role_id")
+         SELECT $1, "id" FROM "platform_roles" WHERE "name" = 'Superadmin'`,
+        [superadminId],
+      );
+
+      const unprivilegedPlatformId = randomUUID();
+      const unprivilegedPlatformEmail = `platform-user-${randomUUID()}@example.test`;
+      const unprivilegedPlatformPassword = 'platform-unprivileged-password';
+      await masterDataSource.query(
+        `INSERT INTO "platform_users" ("id", "email", "password_hash", "status")
+         VALUES ($1, $2, $3, 'ACTIVE')`,
+        [
+          unprivilegedPlatformId,
+          unprivilegedPlatformEmail,
+          await passwordPolicy.hash(unprivilegedPlatformPassword),
+        ],
+      );
+
+      const jwtTokensConfiguration = testAuthConfiguration;
+      const tenantResolver = new TenantResolverService(new MasterTenantLookupService(masterDataSource));
+      const tenantSessionRepository = new TenantSessionRepository();
+      const platformAuthService = new PlatformAuthService(
+        masterDataSource,
+        new PlatformSessionRepository(masterDataSource),
+        passwordPolicy,
+        jwtTokens,
+        loginRateLimiter,
+        jwtTokensConfiguration,
+      );
+      const tenantAuthService = new TenantAuthService(
+        tenantResolver,
+        tenantConnectionManager,
+        tenantSessionRepository,
+        passwordPolicy,
+        jwtTokens,
+        loginRateLimiter,
+        jwtTokensConfiguration,
+      );
+      const platformRbacService = new PlatformRbacService(masterDataSource);
+      const tenantRbacService = new TenantRbacService();
+      const moduleFixture = await Test.createTestingModule({
+        controllers: [PlatformAuthController, TenantAuthController, CompaniesController],
+        providers: [
+          { provide: getDataSourceToken(MASTER_DATA_SOURCE_NAME), useValue: masterDataSource },
+          { provide: AUTH_CONFIGURATION, useValue: jwtTokensConfiguration },
+          { provide: JwtTokenService, useValue: jwtTokens },
+          { provide: TenantResolverService, useValue: tenantResolver },
+          { provide: TenantConnectionManager, useValue: tenantConnectionManager },
+          { provide: PlatformAuthService, useValue: platformAuthService },
+          { provide: TenantAuthService, useValue: tenantAuthService },
+          { provide: CompaniesService, useValue: companiesService },
+          { provide: PlatformRbacService, useValue: platformRbacService },
+          { provide: TenantRbacService, useValue: tenantRbacService },
+          { provide: Reflector, useValue: new Reflector() },
+          PlatformAuthGuard,
+          PlatformPermissionGuard,
+          TenantAuthGuard,
+          TenantPermissionGuard,
+        ],
+      }).compile();
+      const app: INestApplication = moduleFixture.createNestApplication();
+      app.useGlobalPipes(new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        forbidUnknownValues: true,
+        transform: true,
+      }));
+      app.useGlobalFilters(new StructuredApiExceptionFilter());
+      await app.init();
+
+      const companyASlug = `auth-${randomUUID().slice(0, 8)}`;
+      const tenantAdminEmail = `tenant-admin-${randomUUID()}@example.test`;
+      const tenantAdminPassword = 'tenant-integration-admin-password';
+      try {
+        const platformLogin = await request(app.getHttpServer())
+          .post('/api/v1/platform/auth/login')
+          .send({ email: superadminEmail, password: superadminPassword })
+          .expect(200);
+        const platformTokens = platformLogin.body as {
+          access_token: string;
+          refresh_token: string;
+        };
+
+        const companyAResponse = await request(app.getHttpServer())
+          .post('/api/v1/platform/companies')
+          .set('Authorization', `Bearer ${platformTokens.access_token}`)
+          .send({
+            name: 'Authenticated Integration Textile',
+            slug: companyASlug,
+            defaultAdmin: {
+              email: tenantAdminEmail,
+              fullName: 'Integration Tenant Admin',
+              password: tenantAdminPassword,
+            },
+          })
+          .expect(201);
+        const companyA = companyAResponse.body as ProvisioningSnapshot;
+        cleanup.trackCompany(companyA.companyId);
+        expect(companyA.status).toBe('ACTIVE');
+        expect(JSON.stringify(companyAResponse.body)).not.toContain(tenantAdminPassword);
+
+        const tenantLogin = await request(app.getHttpServer())
+          .post('/api/v1/auth/login')
+          .set('Host', `${companyASlug}.erp.example.test`)
+          .send({ email: tenantAdminEmail, password: tenantAdminPassword })
+          .expect(200);
+        const tenantTokens = tenantLogin.body as {
+          access_token: string;
+          refresh_token: string;
+          user: { id: string };
+          company: { id: string; slug: string };
+        };
+        expect(tenantTokens.company).toEqual({ id: companyA.companyId, slug: companyASlug });
+        expect(JSON.stringify(tenantLogin.body)).not.toContain(tenantAdminPassword);
+
+        const tenantDataSource = await tenantConnectionManager.getDataSource(companyA.companyId);
+        const adminRows: Array<{ id: string; role_id: string }> = await tenantDataSource.query(
+          'SELECT "id", "role_id" FROM "users" WHERE lower("email") = $1',
+          [tenantAdminEmail.toLowerCase()],
+        );
+        expect(adminRows).toHaveLength(1);
+        expect(await tenantRbacService.hasAllPermissions(
+          tenantDataSource,
+          tenantTokens.user.id,
+          ['workers.view'],
+        )).toBe(true);
+
+        await tenantDataSource.query(
+          `INSERT INTO "permissions" ("code", "description")
+           VALUES ('companies.create', 'test-only invalid tenant permission')
+           ON CONFLICT ("code") DO NOTHING`,
+        );
+        await expect(tenantRbacService.grantRolePermissions(
+          tenantDataSource,
+          adminRows[0]?.role_id ?? '',
+          ['companies.create'],
+        )).rejects.toMatchObject({ response: { code: 'TENANT_PERMISSION_NOT_ALLOWED' } });
+        expect(await tenantRbacService.hasAllPermissions(
+          tenantDataSource,
+          tenantTokens.user.id,
+          ['companies.create'],
+        )).toBe(false);
+        expect(await platformRbacService.hasAllPermissions(superadminId, ['workers.view'])).toBe(false);
+
+        const tenantRequest = {
+          hostname: `${companyASlug}.erp.example.test`,
+          headers: { authorization: `Bearer ${tenantTokens.access_token}` },
+        } as unknown as TenantAuthenticatedRequest;
+        const tenantAuthGuard = moduleFixture.get(TenantAuthGuard);
+        const requestContext = {
+          switchToHttp: () => ({ getRequest: () => tenantRequest }),
+        } as unknown as ExecutionContext;
+        await expect(tenantAuthGuard.canActivate(requestContext)).resolves.toBe(true);
+
+        const probe = new TenantPermissionIntegrationProbe();
+        const permissionGuard = moduleFixture.get(TenantPermissionGuard);
+        await expect(permissionGuard.canActivate(tenantExecutionContext(
+          tenantRequest,
+          probe.workersView,
+          TenantPermissionIntegrationProbe,
+        ))).resolves.toBe(true);
+        await expect(permissionGuard.canActivate(tenantExecutionContext(
+          tenantRequest,
+          probe.platformPermission,
+          TenantPermissionIntegrationProbe,
+        ))).rejects.toBeInstanceOf(ForbiddenException);
+
+        const companyBSlug = `other-${randomUUID().slice(0, 8)}`;
+        const companyBResponse = await request(app.getHttpServer())
+          .post('/api/v1/platform/companies')
+          .set('Authorization', `Bearer ${platformTokens.access_token}`)
+          .send({
+            name: 'Second Isolated Integration Textile',
+            slug: companyBSlug,
+            defaultAdmin: {
+              email: tenantAdminEmail,
+              fullName: 'Integration Tenant Admin',
+              password: tenantAdminPassword,
+            },
+          })
+          .expect(201);
+        const companyB = companyBResponse.body as ProvisioningSnapshot;
+        cleanup.trackCompany(companyB.companyId);
+        expect(companyB.companyId).not.toBe(companyA.companyId);
+
+        const crossTenantRequest = {
+          hostname: `${companyBSlug}.erp.example.test`,
+          headers: { authorization: `Bearer ${tenantTokens.access_token}` },
+        } as unknown as TenantAuthenticatedRequest;
+        await expect(tenantAuthGuard.canActivate({
+          switchToHttp: () => ({ getRequest: () => crossTenantRequest }),
+        } as unknown as ExecutionContext)).rejects.toMatchObject({
+          response: { code: 'TENANT_CONTEXT_MISMATCH' },
+        });
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/refresh')
+          .set('Host', `${companyBSlug}.erp.example.test`)
+          .send({ refresh_token: tenantTokens.refresh_token })
+          .expect(403);
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/refresh')
+          .set('Host', `${companyASlug}.erp.example.test`)
+          .send({ refresh_token: platformTokens.refresh_token })
+          .expect(401);
+
+        const tenantRotation = await request(app.getHttpServer())
+          .post('/api/v1/auth/refresh')
+          .set('Host', `${companyASlug}.erp.example.test`)
+          .send({ refresh_token: tenantTokens.refresh_token })
+          .expect(200);
+        expect(tenantRotation.body.refresh_token).not.toBe(tenantTokens.refresh_token);
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/refresh')
+          .set('Host', `${companyASlug}.erp.example.test`)
+          .send({ refresh_token: tenantTokens.refresh_token })
+          .expect(401);
+
+        const unprivilegedLogin = await request(app.getHttpServer())
+          .post('/api/v1/platform/auth/login')
+          .send({ email: unprivilegedPlatformEmail, password: unprivilegedPlatformPassword })
+          .expect(200);
+        await request(app.getHttpServer())
+          .post('/api/v1/platform/companies')
+          .set('Authorization', `Bearer ${unprivilegedLogin.body.access_token}`)
+          .send({ name: 'Forbidden Platform Company', slug: `forbidden-${randomUUID().slice(0, 8)}` })
+          .expect(403);
+
+        const platformRotation = await request(app.getHttpServer())
+          .post('/api/v1/platform/auth/refresh')
+          .send({ refresh_token: platformTokens.refresh_token })
+          .expect(200);
+        expect(platformRotation.body.refresh_token).not.toBe(platformTokens.refresh_token);
+        await request(app.getHttpServer())
+          .post('/api/v1/platform/auth/refresh')
+          .send({ refresh_token: platformTokens.refresh_token })
+          .expect(401);
+        await request(app.getHttpServer())
+          .post('/api/v1/platform/companies')
+          .set('Authorization', `Bearer ${platformRotation.body.access_token}`)
+          .send({ name: 'Revoked Platform Session', slug: `revoked-${randomUUID().slice(0, 8)}` })
+          .expect(401);
+        await request(app.getHttpServer())
+          .post('/api/v1/platform/companies')
+          .set('Authorization', `Bearer ${tenantTokens.access_token}`)
+          .send({ name: 'Tenant Cannot Create Platform Company', slug: `tenant-${randomUUID().slice(0, 8)}` })
+          .expect(401);
+      } finally {
+        await app.close();
+      }
+    }, 120_000);
 
     it('refuses test cleanup configuration without the required test suffix', () => {
       expect(

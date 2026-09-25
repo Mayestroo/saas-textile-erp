@@ -1,5 +1,8 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
+import { HttpException } from '@nestjs/common';
 import { DataSource } from 'typeorm';
+import { loadAuthConfiguration } from '../../common/auth/auth-configuration.js';
+import { PostgresLoginRateLimiter } from '../../common/auth/postgres-login-rate-limiter.js';
 import { createTestMasterDataSourceOptions } from './master-database.config.js';
 
 const TEST_DATABASE_VARIABLES = [
@@ -22,6 +25,15 @@ const integrationDescribe = configuredTestVariables.length === TEST_DATABASE_VAR
 const testDataSourceOptions = configuredTestVariables.length === TEST_DATABASE_VARIABLES.length
   ? createTestMasterDataSourceOptions(process.env)
   : undefined;
+const testAuthConfiguration = loadAuthConfiguration({
+  PLATFORM_JWT_ACCESS_SECRET: 'platform-access-secret-that-is-long-enough-001',
+  PLATFORM_JWT_REFRESH_SECRET: 'platform-refresh-secret-that-is-long-enough-02',
+  TENANT_JWT_ACCESS_SECRET: 'tenant-access-secret-that-is-long-enough-0003',
+  TENANT_JWT_REFRESH_SECRET: 'tenant-refresh-secret-that-is-long-enough-004',
+  AUTH_LOGIN_BUCKET_HASH_SECRET: 'login-bucket-hash-secret-that-is-long-enough',
+  AUTH_LOGIN_MAX_ATTEMPTS: '5',
+  AUTH_LOGIN_WINDOW_SECONDS: '60',
+});
 
 integrationDescribe(
   configuredTestVariables.length === 0
@@ -127,6 +139,9 @@ integrationDescribe(
       expect(migrationRows.map(({ name }) => name)).toContain(
         'AddDefaultAdminRequirement20260926000100',
       );
+      expect(migrationRows.map(({ name }) => name)).toContain(
+        'AddPlatformAuthInfrastructure20260926000200',
+      );
 
       const companyTableQueryRunner = dataSource.createQueryRunner();
       let companyTable;
@@ -138,6 +153,17 @@ integrationDescribe(
       expect(companyTable?.findColumnByName('failure_step')).not.toBeUndefined();
       expect(companyTable?.findColumnByName('failure_reason')).not.toBeUndefined();
       expect(companyTable?.findColumnByName('default_admin_required')).not.toBeUndefined();
+
+      const sessionTable = dataSource.createQueryRunner();
+      try {
+        const table = await sessionTable.getTable('platform_auth_sessions');
+        expect(table?.findColumnByName('refresh_token_hash')).not.toBeUndefined();
+        expect(table?.foreignKeys.map(({ name }) => name)).toContain(
+          'fk_platform_auth_sessions_user_id',
+        );
+      } finally {
+        await sessionTable.release();
+      }
     });
 
     it('seeds only platform permissions and remains idempotent', async () => {
@@ -230,6 +256,90 @@ integrationDescribe(
       );
     });
 
+    it('enforces platform session user, refresh hash, and login bucket constraints', async () => {
+      const userId = randomUUID();
+      await dataSource.query(
+        `INSERT INTO "platform_users" ("id", "email", "password_hash", "status")
+         VALUES ($1, $2, 'argon-placeholder', 'ACTIVE')`,
+        [userId, `auth-${userId}@example.test`],
+      );
+      const sessionId = randomUUID();
+      const refreshHash = 'a'.repeat(64);
+      const expiresAt = new Date(Date.now() + 60_000);
+      await dataSource.query(
+        `INSERT INTO "platform_auth_sessions" ("id", "user_id", "refresh_token_hash", "expires_at")
+         VALUES ($1, $2, $3, $4)`,
+        [sessionId, userId, refreshHash, expiresAt],
+      );
+
+      await expectDatabaseConstraintViolation(
+        dataSource.query(
+          `INSERT INTO "platform_auth_sessions" ("user_id", "refresh_token_hash", "expires_at")
+           VALUES ($1, $2, $3)`,
+          [userId, refreshHash, expiresAt],
+        ),
+        'uq_platform_auth_sessions_refresh_token_hash',
+      );
+      await expectDatabaseConstraintViolation(
+        dataSource.query(
+          `INSERT INTO "platform_auth_sessions" ("user_id", "refresh_token_hash", "expires_at")
+           VALUES ($1, $2, $3)`,
+          [randomUUID(), 'b'.repeat(64), expiresAt],
+        ),
+        'fk_platform_auth_sessions_user_id',
+      );
+      await expectDatabaseConstraintViolation(
+        dataSource.query(
+          `INSERT INTO "platform_login_rate_limits" (
+             "bucket_hash", "window_started_at", "attempt_count", "expires_at"
+           ) VALUES ($1, now(), 0, now() + interval '15 minutes')`,
+          ['c'.repeat(64)],
+        ),
+        'ck_platform_login_rate_limits_attempt_count',
+      );
+    });
+
+    it('increments platform login limits atomically under concurrent PostgreSQL attempts', async () => {
+      const limiter = new PostgresLoginRateLimiter(testAuthConfiguration);
+      const identifier = `concurrent-${randomUUID()}@example.test`;
+      const ipAddress = '198.51.100.27';
+      const results = await Promise.all(
+        Array.from({ length: 20 }, async () => {
+          try {
+            await limiter.consume(dataSource, {
+              scope: 'platform',
+              identifier,
+              ipAddress,
+            });
+            return 'allowed';
+          } catch (error) {
+            if (error instanceof HttpException && error.getStatus() === 429) {
+              return 'limited';
+            }
+            throw error;
+          }
+        }),
+      );
+      const accountHash = createHmac(
+        'sha256',
+        testAuthConfiguration.loginRateLimit.hashSecret,
+      ).update(`platform\0account\0${identifier.toLowerCase()}`).digest('hex');
+      const ipHash = createHmac(
+        'sha256',
+        testAuthConfiguration.loginRateLimit.hashSecret,
+      ).update(`platform\0ip\0${ipAddress}`).digest('hex');
+      const rows: Array<{ bucket_hash: string; attempt_count: number }> = await dataSource.query(
+        `SELECT "bucket_hash", "attempt_count" FROM "platform_login_rate_limits"
+         WHERE "bucket_hash" = ANY($1::varchar[]) ORDER BY "bucket_hash"`,
+        [[accountHash, ipHash]],
+      );
+
+      expect(results.filter((result) => result === 'allowed')).toHaveLength(5);
+      expect(results.filter((result) => result === 'limited')).toHaveLength(15);
+      expect(rows).toHaveLength(2);
+      expect(rows.map(({ attempt_count }) => attempt_count)).toEqual([20, 20]);
+    });
+
     it('enforces the device company foreign key', async () => {
       const deviceId = randomUUID();
       const seenAt = new Date();
@@ -319,6 +429,7 @@ integrationDescribe(
       await dataSource.undoLastMigration({ transaction: 'all' });
       await dataSource.undoLastMigration({ transaction: 'all' });
       await dataSource.undoLastMigration({ transaction: 'all' });
+      await dataSource.undoLastMigration({ transaction: 'all' });
 
       const queryRunner = dataSource.createQueryRunner();
       try {
@@ -337,6 +448,7 @@ integrationDescribe(
         'InitialMasterDatabase20260925000000',
         'AddCompanyProvisioningFailure20260926000000',
         'AddDefaultAdminRequirement20260926000100',
+        'AddPlatformAuthInfrastructure20260926000200',
       ]);
       expect(await hasCompanyTable()).toBe(true);
     });

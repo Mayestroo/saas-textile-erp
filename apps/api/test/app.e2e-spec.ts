@@ -2,6 +2,7 @@ import { INestApplication, Module } from '@nestjs/common';
 import { Test, TestingModule } from '@nestjs/testing';
 import request from 'supertest';
 import { AppModule } from './../src/app.module.js';
+import { AuthCoreModule } from './../src/common/auth/auth-core.module.js';
 import { MasterModule } from './../src/master/master.module.js';
 import { TenantModule } from './../src/tenant/tenant.module.js';
 
@@ -10,6 +11,9 @@ class TestMasterModule {}
 
 @Module({})
 class TestTenantModule {}
+
+@Module({})
+class TestAuthCoreModule {}
 
 describe('AppController (e2e)', () => {
   let app: INestApplication;
@@ -22,6 +26,8 @@ describe('AppController (e2e)', () => {
       .useModule(TestMasterModule)
       .overrideModule(TenantModule)
       .useModule(TestTenantModule)
+      .overrideModule(AuthCoreModule)
+      .useModule(TestAuthCoreModule)
       .compile();
 
     app = moduleFixture.createNestApplication();

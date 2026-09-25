@@ -24,6 +24,13 @@ export const TENANT_PERMISSION_SEEDS = [
   { code: 'audit.view', description: 'Audit yozuvlarini ko‘rish' },
 ] as const;
 
+export const TENANT_PERMISSION_CODES = TENANT_PERMISSION_SEEDS.map(({ code }) => code);
+const TENANT_PERMISSION_CODE_SET = new Set<string>(TENANT_PERMISSION_CODES);
+
+export function isTenantPermissionCode(code: string): boolean {
+  return TENANT_PERMISSION_CODE_SET.has(code);
+}
+
 export const TENANT_ADMIN_ROLE_NAME = 'Korxona administratori';
 
 async function insertTenantPermissionSeeds(manager: EntityManager): Promise<void> {

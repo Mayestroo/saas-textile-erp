@@ -1,5 +1,5 @@
-import { hash, argon2id } from 'argon2';
 import { DataSource, EntityManager } from 'typeorm';
+import { PasswordPolicy } from '../../common/auth/password-policy.js';
 import { TENANT_ADMIN_ROLE_NAME } from '../rbac/tenant-permission.seed.js';
 
 export interface DefaultTenantAdminInput {
@@ -17,6 +17,8 @@ interface ExistingTenantAdminRow {
   role_id: string;
 }
 
+const passwordPolicy = new PasswordPolicy();
+
 function normalizeAndValidateAdmin(input: DefaultTenantAdminInput): DefaultTenantAdminInput {
   const email = input.email.trim().toLocaleLowerCase('en-US');
   const fullName = input.fullName.trim();
@@ -26,9 +28,7 @@ function normalizeAndValidateAdmin(input: DefaultTenantAdminInput): DefaultTenan
   if (fullName.length === 0 || fullName.length > 200) {
     throw new Error('Default tenant administrator full name is invalid');
   }
-  if (input.password.length < 12 || input.password.length > 1024) {
-    throw new Error('Default tenant administrator password must contain 12 to 1024 characters');
-  }
+  passwordPolicy.assertValidForCreation(input.password);
 
   return { email, fullName, password: input.password };
 }
@@ -59,7 +59,7 @@ async function seedAdmin(
     return;
   }
 
-  const passwordHash = await hash(normalized.password, { type: argon2id });
+  const passwordHash = await passwordPolicy.hash(normalized.password);
   await manager.query(
     `INSERT INTO "users" ("role_id", "email", "full_name", "password_hash", "status")
      VALUES ($1, $2, $3, $4, 'ACTIVE')
