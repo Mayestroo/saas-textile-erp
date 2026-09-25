@@ -54,6 +54,9 @@ describe('Master database configuration', () => {
       TEST_MASTER_DB_PASSWORD: ' test_password ',
     });
 
+    if (options.type !== 'postgres') {
+      throw new Error('Expected a PostgreSQL test DataSource');
+    }
     expect(options.password).toBe(' test_password ');
   });
 

@@ -121,6 +121,23 @@ integrationDescribe(
         'SELECT "name" FROM "master_typeorm_migrations"',
       );
       expect(migrationRows.map(({ name }) => name)).toContain('InitialMasterDatabase20260925000000');
+      expect(migrationRows.map(({ name }) => name)).toContain(
+        'AddCompanyProvisioningFailure20260926000000',
+      );
+      expect(migrationRows.map(({ name }) => name)).toContain(
+        'AddDefaultAdminRequirement20260926000100',
+      );
+
+      const companyTableQueryRunner = dataSource.createQueryRunner();
+      let companyTable;
+      try {
+        companyTable = await companyTableQueryRunner.getTable('companies');
+      } finally {
+        await companyTableQueryRunner.release();
+      }
+      expect(companyTable?.findColumnByName('failure_step')).not.toBeUndefined();
+      expect(companyTable?.findColumnByName('failure_reason')).not.toBeUndefined();
+      expect(companyTable?.findColumnByName('default_admin_required')).not.toBeUndefined();
     });
 
     it('seeds only platform permissions and remains idempotent', async () => {
@@ -300,6 +317,8 @@ integrationDescribe(
 
     it('reverts the initial migration and reapplies it without dropping the shared citext extension', async () => {
       await dataSource.undoLastMigration({ transaction: 'all' });
+      await dataSource.undoLastMigration({ transaction: 'all' });
+      await dataSource.undoLastMigration({ transaction: 'all' });
 
       const queryRunner = dataSource.createQueryRunner();
       try {
@@ -314,7 +333,11 @@ integrationDescribe(
       }
 
       const appliedAgain = await dataSource.runMigrations({ transaction: 'all' });
-      expect(appliedAgain.map(({ name }) => name)).toContain('InitialMasterDatabase20260925000000');
+      expect(appliedAgain.map(({ name }) => name)).toEqual([
+        'InitialMasterDatabase20260925000000',
+        'AddCompanyProvisioningFailure20260926000000',
+        'AddDefaultAdminRequirement20260926000100',
+      ]);
       expect(await hasCompanyTable()).toBe(true);
     });
   },
