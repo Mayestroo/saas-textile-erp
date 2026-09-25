@@ -1,0 +1,51 @@
+﻿services:
+
+  postgres:
+    image: postgres:16.15-alpine
+    container_name: textile-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: textile_admin
+      POSTGRES_PASSWORD: textile_dev_password
+      POSTGRES_DB: textile_master
+
+    ports:
+      - "5432:5432"
+
+    volumes:
+      - textile_postgres_data:/var/lib/postgresql/data
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U textile_admin -d textile_master"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+
+  redis:
+    image: redis:8.2.9-alpine
+    container_name: textile-redis
+    restart: unless-stopped
+
+    ports:
+      - "6379:6379"
+
+    volumes:
+      - textile_redis_data:/data
+
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+
+volumes:
+  textile_postgres_data:
+  textile_redis_data:

@@ -1,0 +1,39 @@
+﻿# Node
+node_modules/
+
+# Builds
+dist/
+out/
+release/
+coverage/
+
+# Environment
+.env
+.env.local
+.env.development
+.env.production
+
+# Keep examples
+!.env.example
+
+# Logs
+*.log
+npm-debug.log*
+
+# SQLite runtime
+*.sqlite
+*.sqlite3
+*.db
+apps/desktop/.data/
+
+# Electron
+apps/desktop/dist/
+apps/desktop/out/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
