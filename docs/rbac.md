@@ -36,6 +36,17 @@ database. They include the models, workers/badges, Patta, Patta varag'i, users,
 roles, reports, payroll, license-view, and audit-view codes. Platform codes are
 not part of this catalog.
 
+Workers and badge history use the existing tenant codes:
+
+- Worker list/get and badge history/resolution reads require `workers.view`.
+- Worker create/update/deactivate requires `workers.manage`.
+- Badge assignment/reassignment/release requires `workers.badge.manage`.
+
+All routes use the tenant auth and permission guards against the authenticated
+tenant DataSource. Badge resolution is protected (there is no public resolver),
+and a platform token or a tenant token used with another company's hostname is
+rejected before business data access.
+
 Use `@TenantPermissions('workers.view')` with `TenantAuthGuard` and
 `TenantPermissionGuard`. The guard uses the `DataSource` attached after verified
 hostname/company resolution and reads only the current tenant's role and

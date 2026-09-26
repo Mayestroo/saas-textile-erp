@@ -19,7 +19,7 @@ An additive tenant migration creates:
 
 - `workers`: generated non-reused `BIGINT` identity, display `full_name`,
   `ACTIVE`/`INACTIVE` status, positive `BIGINT` version, and database-managed
-  timestamps. Names are trimmed and consecutive ASCII whitespace is collapsed;
+  timestamps. Names are trimmed and consecutive whitespace is collapsed;
   the user's letter casing is preserved, names are not unique, and they are
   never identity keys.
 - `worker_badge_history`: UUID row identity, canonical trimmed badge string,

@@ -108,6 +108,39 @@ npm run test --workspace=apps/api -- src/tenant/models/models.service.spec.ts sr
 npm run test:e2e --workspace=apps/api -- src/tenant/models/models-operations.e2e-spec.ts
 ```
 
+## Workers and badge history integration
+
+Workers/badge PostgreSQL tests use only the dedicated `TEST_MASTER_DB_*`
+variables and require `TEST_MASTER_DB_NAME` to end in `_test`. They create only
+generated `tenant_test_<uuid>` databases and use the tracked cleanup helper.
+Run them with:
+
+```powershell
+npm run test:workers-badges --workspace=apps/api
+```
+
+The suite applies, rolls back, and reapplies migration
+`20260926000400-AddWorkersAndBadgeHistory.js`; checks legacy UUID audit-key
+backfill, universal `entity_key`, fail-safe rollback, runtime table grants,
+BIGINT identity serialization, FK/check/no-delete constraints, half-open
+intervals, and PostgreSQL GiST overlap rejection. It tests concurrent assignment
+of one badge to two workers, transactional audit rollback, deactivation closing
+badge history, and two independent tenant databases that can each own worker ID
+`1` and badge `125`.
+
+Historical January/June attribution uses a test-only SQL fixture with badge
+`125` assigned to worker `18` through May and worker `47` from May onward. The
+ordinary mutation service is separately tested to reject
+`effective_at < transaction_timestamp()`; it is never used to create the
+backdated fixture. Service unit tests cover worker optimistic version conflicts,
+same-name workers, casing-preserving normalization, badge assign/reassign/release,
+inactive-worker rejection, and protected history resolution. HTTP e2e tests
+cover tenant/platform tokens, `workers.view`, `workers.manage`,
+`workers.badge.manage`, DTO validation, and cross-tenant hostname rejection.
+
+If any `TEST_MASTER_DB_*` variable is absent, the PostgreSQL integration suite
+is blocked/skipped and does not count as a database-test pass.
+
 ## Authentication and RBAC tests
 
 The API requires five independent secrets, each at least 32 bytes:

@@ -12,7 +12,7 @@
 
 - Work only on `feature/workers-badges`.
 - `workers.id` is permanent historical identity; worker IDs and BIGINT versions serialize as decimal strings.
-- Name cleanup trims/collapses ASCII whitespace and preserves the user's casing; names are non-unique.
+- Name cleanup trims/collapses whitespace and preserves the user's casing; names are non-unique.
 - Badge values remain canonical trimmed strings, never integers; intervals are `[valid_from, valid_to)`.
 - Ordinary badge mutations reject `effective_at < DB NOW()`; past historical fixtures must bypass mutation services explicitly.
 - Worker and badge mutations/audit are atomic; no hard-delete endpoint exists.
@@ -30,6 +30,7 @@
 - `apps/api/src/tenant/workers/{workers.module.ts,workers.controller.ts,workers.service.ts,worker-errors.ts,worker-name.ts,worker-id.pipe.ts}`
 - `apps/api/src/tenant/workers/dto/{create-worker.dto.ts,update-worker.dto.ts,list-workers.dto.ts}`
 - `apps/api/src/tenant/badges/{badges.controller.ts,badge-history.service.ts,badge-resolution.service.ts,badge-number.pipe.ts}`
+- `apps/api/src/tenant/badges/badge-errors.ts` — structured badge domain errors and PostgreSQL constraint mapping.
 - `apps/api/src/tenant/badges/dto/{assign-badge.dto.ts,reassign-badge.dto.ts,release-badge.dto.ts,resolve-badge.dto.ts}`
 - `apps/api/src/tenant/workers/workers.service.spec.ts`
 - `apps/api/src/tenant/audit/audit.service.spec.ts`
@@ -43,6 +44,7 @@
 - `apps/api/package.json` — add `test:workers-badges` integration script.
 - `apps/api/src/database/tenant/tenant-database-manager.ts` — grant runtime DML on the two feature tables.
 - `apps/api/src/tenant/tenant.module.ts` — register WorkersModule.
+- `apps/api/src/tenant/models/models-operations.integration.spec.ts` and `apps/api/src/database/tenant/tenant-provisioning.integration.spec.ts` — account for migration 004 in latest-schema, down/up, and runtime-grant assertions.
 - `docs/database.md`, `docs/rbac.md`, `docs/testing.md` — feature schema/security/test workflow.
 
 Existing `workers.view`, `workers.manage`, and `workers.badge.manage` seeds already exist; preserve/reuse them.
@@ -78,7 +80,7 @@ update(source: DataSource, actor: string, id: string, input: UpdateWorkerDto): P
 
 - [ ] Test whitespace cleanup (`'  Abdullayeva\t Nodira  '` → `'Abdullayeva Nodira'`), case preservation, blank rejection, duplicate names allowed, generated string ID/version, list/get, missing record, expected-version increment/conflict, and no delete query.
 - [ ] Run `npm run test --workspace=apps/api -- src/tenant/workers/workers.service.spec.ts`; expected: fail before implementation.
-- [ ] Implement cleanup with `value.replace(/[ \t\n\v\f\r]+/g, ' ').trim()` only. DTOs accept only ACTIVE/INACTIVE, positive decimal-string IDs/versions, and reject unknown fields through existing global ValidationPipe.
+- [ ] Implement cleanup with `value.replace(/\s+/gu, ' ').trim()` only. DTOs accept only ACTIVE/INACTIVE, positive decimal-string IDs/versions, and reject unknown fields through existing global ValidationPipe.
 - [ ] Implement SQL serialization with `id::text`, `version::text`, and UTC timestamps. Create/update run inside `DataSource.transaction`; update locks the worker `FOR UPDATE`, compares `expected_version`, increments version, and writes worker audit before commit.
 - [ ] Route an ACTIVE→INACTIVE update through the transaction's badge-close operation: lock badge rows, close all currently open assignments at one DB transaction timestamp, update status/version, append badge-close and worker-deactivate audit, then commit. Any close/audit failure rolls back the status change.
 - [ ] Return structured Uzbek errors for worker not-found, invalid name, and `VERSION_CONFLICT`; never expose driver SQL text. Re-run worker unit tests; expected: all assertions pass.

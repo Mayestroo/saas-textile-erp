@@ -27,6 +27,7 @@
     "test:master-db": "vitest run src/database/master/master-database.integration.spec.ts",
     "test:tenant-provisioning": "vitest run src/database/tenant/tenant-provisioning.integration.spec.ts",
     "test:models-operations": "vitest run src/tenant/models/models-operations.integration.spec.ts",
+    "test:workers-badges": "vitest run src/tenant/workers/workers-badges.integration.spec.ts",
     "watch:compile": "swc src --out-dir dist --config-file .swcrc --ignore \"**/*.spec.ts\" --strip-leading-paths --watch",
     "typecheck": "tsc --noEmit -p tsconfig.build.json"
   },

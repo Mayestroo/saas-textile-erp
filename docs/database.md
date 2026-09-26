@@ -139,3 +139,40 @@ account and IP counters in deterministic key order. The stable
 `AUTH_LOGIN_BUCKET_HASH_SECRET` must remain unchanged while bucket windows are
 active; rotate it only after the maximum login window has elapsed, or all
 existing hashed bucket identities will become unreachable.
+
+## Workers and badge history
+
+Additive tenant migration
+`20260926000400-AddWorkersAndBadgeHistory.js` creates `workers` and
+`worker_badge_history`. Worker IDs use PostgreSQL `BIGINT GENERATED ALWAYS AS
+IDENTITY`, are permanent and never hard-deleted, and serialize to decimal
+strings at the API boundary. Worker names are whitespace-trimmed/collapsed while
+preserving user-entered letter casing; duplicate names are allowed. Worker
+updates use a positive BIGINT `version` and expected-version optimistic locking.
+Deactivation locks the worker and open badge rows, closes all effective open
+assignments at the same database transaction timestamp, updates status/version,
+and appends audit events in one transaction.
+
+`worker_badge_history` stores a trimmed badge string and a worker FK over
+`[valid_from, valid_to)` intervals. Badge numbers remain strings (including
+leading zeroes) and may be reused only across non-overlapping intervals. The
+migration reuses `btree_gist` and enforces badge equality plus `tstzrange`
+overlap exclusion in PostgreSQL. FK/check constraints, no-delete triggers, and
+a close-only history trigger protect historical identity. Indexes cover worker,
+badge, effective-time, timeline, and tenant-local current/history lookups.
+
+The migration also adds the universal `audit_log.entity_key VARCHAR NOT NULL`,
+backfills existing UUID `entity_id` values as their UUID text, and indexes
+`(entity_type, entity_key)`. The old UUID `entity_id` stays nullable for
+compatibility: UUID events write both fields, while BIGINT worker IDs use values
+such as `entity_key = '18'` and `entity_id = NULL`. Badge events use the
+`worker_badge_history.id` UUID as their audit key, never the reusable badge
+number. Audit JSON captures badge number, worker ID, and interval boundaries.
+
+Migration down is intentionally guarded. It refuses if either feature table is
+populated or if any audit row cannot be represented exactly by the legacy UUID
+identity and model/operation checks. A compatible empty/UUID-only tenant can
+revert and reapply without changing old UUID values; non-UUID worker identities
+and worker/badge audit categories fail before DDL/data changes. Tenant runtime
+roles receive DML on both feature tables and the identity sequence through the
+existing `TenantDatabaseManager` grant flow.

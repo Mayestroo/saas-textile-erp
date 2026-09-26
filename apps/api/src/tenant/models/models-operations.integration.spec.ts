@@ -42,6 +42,7 @@ const provisionerCredentials = configuredVariables.length === TEST_DATABASE_VARI
   ? createTestTenantProvisionerCredentials(process.env)
   : undefined;
 const MIGRATION_NAME = 'AddModelsOperationsAndPriceHistory20260926000300';
+const WORKERS_BADGES_MIGRATION_NAME = 'AddWorkersAndBadgeHistory20260926000400';
 
 interface ConstraintError {
   driverError?: {
@@ -205,7 +206,8 @@ integrationDescribe(
       const migrations: Array<{ name: string }> = await tenant.migrationDataSource.query(
         `SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"`,
       );
-      expect(migrations.at(-1)?.name).toBe(MIGRATION_NAME);
+      expect(migrations.at(-1)?.name).toBe(WORKERS_BADGES_MIGRATION_NAME);
+      expect(migrations.map(({ name }) => name)).toContain(MIGRATION_NAME);
 
       const tableRows: Array<{ table_name: string }> = await tenant.runtimeDataSource.query(
         `SELECT "table_name" FROM "information_schema"."tables"
@@ -678,8 +680,8 @@ integrationDescribe(
       }
       const auditRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
         `INSERT INTO "audit_log"
-           ("actor_user_id", "entity_type", "entity_id", "action", "before_json", "after_json")
-         VALUES ($1, 'model', $2, 'model.create', NULL, '{"name":"Audit"}'::jsonb)
+          ("actor_user_id", "entity_type", "entity_id", "entity_key", "action", "before_json", "after_json")
+         VALUES ($1, 'model', $2::uuid, $2::uuid::text, 'model.create', NULL, '{"name":"Audit"}'::jsonb)
          RETURNING "id"`,
         [userId, randomUUID()],
       );
@@ -700,6 +702,7 @@ integrationDescribe(
       );
 
       await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       const featureTables: Array<{ table_name: string }> = await tenant.migrationDataSource.query(
         `SELECT "table_name" FROM "information_schema"."tables"
          WHERE "table_schema" = 'public' AND "table_name" = ANY($1::varchar[])`,
@@ -714,7 +717,16 @@ integrationDescribe(
       expect(authTables).toHaveLength(2);
 
       const applied = await tenant.migrationDataSource.runMigrations({ transaction: 'all' });
-      expect(applied.map(({ name }) => name)).toEqual([MIGRATION_NAME]);
+      expect(applied.map(({ name }) => name)).toEqual([
+        MIGRATION_NAME,
+        WORKERS_BADGES_MIGRATION_NAME,
+      ]);
+      const runtimeSecret = tenantDatabaseManager.createSecret(tenant.companyId);
+      await tenantDatabaseManager.grantRuntimePrivileges(
+        tenant.companyId,
+        tenant.databaseName,
+        runtimeSecret,
+      );
     });
   },
 );

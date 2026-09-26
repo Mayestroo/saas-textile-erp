@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { EntityManager } from 'typeorm';
 
-export type AuditEntityType = 'model' | 'operation';
+export type AuditEntityType = 'model' | 'operation' | 'worker' | 'badge';
 export type AuditAction =
   | 'model.create'
   | 'model.update'
@@ -9,7 +9,14 @@ export type AuditAction =
   | 'operation.create'
   | 'operation.update'
   | 'operation.deactivate'
-  | 'operation.price_change';
+  | 'operation.price_change'
+  | 'worker.create'
+  | 'worker.update'
+  | 'worker.deactivate'
+  | 'badge.assign'
+  | 'badge.reassign'
+  | 'badge.close'
+  | 'badge.release';
 
 export interface AuditEventInput {
   actorUserId: string;
@@ -20,17 +27,20 @@ export interface AuditEventInput {
   after: object;
 }
 
+const CANONICAL_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 @Injectable()
 export class AuditService {
   async append(manager: EntityManager, event: AuditEventInput): Promise<void> {
     await manager.query(
       `INSERT INTO "audit_log"
-         ("actor_user_id", "entity_type", "entity_id", "action", "before_json", "after_json")
-       VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)`,
+       ("actor_user_id", "entity_type", "entity_id", "entity_key", "action", "before_json", "after_json")
+       VALUES ($1, $2, $3::uuid, $4, $5, $6::jsonb, $7::jsonb)`,
       [
         event.actorUserId,
         event.entityType,
-        event.entityId,
+        CANONICAL_UUID_PATTERN.test(event.entityId) ? event.entityId : null,
+        String(event.entityId),
         event.action,
         event.before === null ? null : JSON.stringify(event.before),
         JSON.stringify(event.after),
