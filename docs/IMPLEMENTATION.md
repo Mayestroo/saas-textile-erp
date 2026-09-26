@@ -878,11 +878,15 @@ Bu tekshiruv faqat application kodida emas, database darajasida ham bo‘lsin.
 ```text
 id UUID PK
 name VARCHAR NOT NULL
-status ENUM(ACTIVE, INACTIVE)
-created_at TIMESTAMPTZ
-updated_at TIMESTAMPTZ
-version BIGINT
+status VARCHAR(ACTIVE, INACTIVE) NOT NULL
+version BIGINT NOT NULL DEFAULT 1
+created_at TIMESTAMPTZ NOT NULL
+updated_at TIMESTAMPTZ NOT NULL
 ```
+
+Model nomi trim qilinadi, ASCII whitespace ketma-ketliklari bitta probelga
+aylantiriladi va case-insensitive solishtiriladi. Active model nomi tenant
+ichida unique; o‘chirish o‘rniga `INACTIVE` qilinadi.
 
 ---
 
@@ -895,14 +899,16 @@ id UUID PK
 model_id UUID FK
 name VARCHAR NOT NULL
 price NUMERIC(14,2) NOT NULL
-sort_order INTEGER
-status ENUM(ACTIVE, INACTIVE)
-created_at TIMESTAMPTZ
-updated_at TIMESTAMPTZ
-version BIGINT
+sort_order INTEGER NOT NULL
+status VARCHAR(ACTIVE, INACTIVE) NOT NULL
+created_at TIMESTAMPTZ NOT NULL
+updated_at TIMESTAMPTZ NOT NULL
+version BIGINT NOT NULL DEFAULT 1
 ```
 
-`price` faqat hozirgi narx.
+`price` faqat compatibility/denormalized maydon; uni business yoki current-price
+source sifatida ishlatish mumkin emas. Joriy narx ham `OperationPriceService`
+orqali database vaqtida history jadvalidan olinadi.
 
 Eski ishlab chiqarish shu maydondan qayta hisoblanmaydi.
 
@@ -923,12 +929,21 @@ created_at TIMESTAMPTZ
 ```
 
 Bir operatsiya uchun narx intervallari overlap qilmasligi kerak.
+Interval semantikasi `[valid_from, valid_to)`; PostgreSQL `btree_gist`
+exclusion constraint overlap-i database darajasida rad qiladi.
 
 Narx o‘zgartirilganda:
 
 1. eski price history yopiladi;
 2. yangi history row ochiladi;
-3. `model_operations.price` current price sifatida yangilanadi.
+3. `model_operations.price` faqat latest configured price denormalizationi
+   sifatida yangilanadi;
+4. operation `version` oshiriladi va audit bir transactionda yoziladi.
+
+`effective_from` optional: berilmasa DB transaction timestamp olinadi; berilsa
+u shu timestampdan oldin bo‘lishi mumkin emas. Kelajakdagi intervalni ichidan
+split qilish yoki oldingi schedule tartibini o‘zgartirish hozircha explicit
+conflict qaytaradi. Yangi narx faqat oxirgi open intervaldan keyin qo‘shiladi.
 
 ---
 
