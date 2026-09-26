@@ -3,6 +3,8 @@ import { Decimal } from 'decimal.js';
 import type { DataSource } from 'typeorm';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuditAction } from '../audit/audit.service.js';
+import { createSyncProjection } from '../sync/sync-projections.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { canonicalizeBusinessName } from '../models/business-name.js';
 import {
   duplicateOperationName,
@@ -102,6 +104,7 @@ export class OperationsService {
   constructor(
     private readonly auditService: AuditService,
     private readonly operationPriceService: OperationPriceService,
+    private readonly syncChangeRecorder: SyncChangeRecorder,
   ) {}
 
   async listByModel(
@@ -213,6 +216,27 @@ export class OperationsService {
           before: null,
           after: result,
         });
+        await this.syncChangeRecorder.record(manager, {
+          entityType: 'model_operations',
+          entityId: result.id,
+          operation: 'UPSERT',
+          entityVersion: result.version,
+          projectionVersion: 1,
+          payload: createSyncProjection({
+            entityType: 'model_operations',
+            data: {
+              id: result.id,
+              model_id: result.model_id,
+              name: result.name,
+              sort_order: result.sort_order,
+              status: result.status,
+              version: result.version,
+              created_at: result.created_at,
+              updated_at: result.updated_at,
+            },
+            entityVersion: result.version,
+          }),
+        });
         return result;
       });
     } catch (error) {
@@ -318,6 +342,27 @@ export class OperationsService {
           action,
           before,
           after,
+        });
+        await this.syncChangeRecorder.record(manager, {
+          entityType: 'model_operations',
+          entityId: after.id,
+          operation: 'UPSERT',
+          entityVersion: after.version,
+          projectionVersion: 1,
+          payload: createSyncProjection({
+            entityType: 'model_operations',
+            data: {
+              id: after.id,
+              model_id: after.model_id,
+              name: after.name,
+              sort_order: after.sort_order,
+              status: after.status,
+              version: after.version,
+              created_at: after.created_at,
+              updated_at: after.updated_at,
+            },
+            entityVersion: after.version,
+          }),
         });
         return after;
       });

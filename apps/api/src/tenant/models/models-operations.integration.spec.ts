@@ -9,12 +9,12 @@ import {
   type TenantDatabaseCredentials,
 } from '../../database/tenant/tenant-database.config.js';
 import { TenantDatabaseManager } from '../../database/tenant/tenant-database-manager.js';
-import { PattaSequenceInitializer } from '../../database/tenant/patta-sequence.initializer.js';
 import { TenantTestDatabaseCleanup } from '../../database/tenant/tenant-test-database-cleanup.js';
 import { AuditService } from '../audit/audit.service.js';
 import { OperationPriceService } from '../operations/operation-price.service.js';
 import { OperationsService } from '../operations/operations.service.js';
 import { TenantRbacService } from '../rbac/tenant-rbac.service.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { ModelsService } from './models.service.js';
 
 const TEST_DATABASE_VARIABLES = [
@@ -43,8 +43,8 @@ const provisionerCredentials = configuredVariables.length === TEST_DATABASE_VARI
   ? createTestTenantProvisionerCredentials(process.env)
   : undefined;
 const MIGRATION_NAME = 'AddModelsOperationsAndPriceHistory20260926000300';
-const WORKERS_BADGES_MIGRATION_NAME = 'AddWorkersAndBadgeHistory20260926000400';
 const PATTA_MIGRATION_NAME = 'AddPattaFoundation20260926000500';
+const SYNC_MIGRATION_NAME = 'AddOfflineSyncInfrastructure20260926000600';
 
 interface ConstraintError {
   driverError?: {
@@ -176,12 +176,13 @@ integrationDescribe(
 
     function featureServices() {
       const audit = new AuditService();
-      const prices = new OperationPriceService(audit);
+      const syncChangeRecorder = new SyncChangeRecorder();
+      const prices = new OperationPriceService(audit, syncChangeRecorder);
       return {
         audit,
         prices,
-        models: new ModelsService(audit),
-        operations: new OperationsService(audit, prices),
+        models: new ModelsService(audit, syncChangeRecorder),
+        operations: new OperationsService(audit, prices, syncChangeRecorder),
       };
     }
 
@@ -208,8 +209,9 @@ integrationDescribe(
       const migrations: Array<{ name: string }> = await tenant.migrationDataSource.query(
         `SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"`,
       );
-      expect(migrations.at(-1)?.name).toBe(PATTA_MIGRATION_NAME);
+      expect(migrations.at(-1)?.name).toBe(SYNC_MIGRATION_NAME);
       expect(migrations.map(({ name }) => name)).toContain(MIGRATION_NAME);
+      expect(migrations.map(({ name }) => name)).toContain(PATTA_MIGRATION_NAME);
 
       const tableRows: Array<{ table_name: string }> = await tenant.runtimeDataSource.query(
         `SELECT "table_name" FROM "information_schema"."tables"
@@ -452,6 +454,43 @@ integrationDescribe(
       await expect(prices.resolvePrice(operation.id, secondEffectiveFrom, tenant.runtimeDataSource))
         .resolves.toBe('1350.00');
 
+      const priceChanges: Array<{
+        sequence_id: string;
+        id: string;
+        price: string;
+        valid_from: string;
+        valid_to: string | null;
+      }> = await tenant.runtimeDataSource.query(
+        `SELECT change."sequence_id"::text AS "sequence_id",
+                change."payload_json" #>> '{data,id}' AS "id",
+                change."payload_json" #>> '{data,price}' AS "price",
+                change."payload_json" #>> '{data,valid_from}' AS "valid_from",
+                change."payload_json" #>> '{data,valid_to}' AS "valid_to"
+         FROM "server_change_log" AS change
+         WHERE change."entity_type" = 'model_operation_prices'
+           AND change."payload_json" #>> '{data,operation_id}' = $1
+         ORDER BY change."sequence_id"`,
+        [operation.id],
+      );
+      expect(priceChanges).toHaveLength(5);
+      expect(priceChanges.map(({ price }) => price)).toEqual([
+        '1000.00',
+        '1000.00',
+        '1200.00',
+        '1200.00',
+        '1350.00',
+      ]);
+      expect(priceChanges.map(({ id }) => id)).toEqual([
+        intervals[0]?.id,
+        intervals[0]?.id,
+        intervals[1]?.id,
+        intervals[1]?.id,
+        intervals[2]?.id,
+      ]);
+      expect(priceChanges[1]?.valid_to).toBe(priceChanges[2]?.valid_from);
+      expect(priceChanges[3]?.valid_to).toBe(priceChanges[4]?.valid_from);
+      expect(priceChanges.every(({ sequence_id }) => /^[1-9][0-9]*$/.test(sequence_id))).toBe(true);
+
       const currentOperation = await operations.getById(tenant.runtimeDataSource, operation.id);
       expect(currentOperation.price).toBe('1000.00');
       const storedCompatibilityPrice: Array<{ price: string }> = await tenant.runtimeDataSource.query(
@@ -658,7 +697,66 @@ integrationDescribe(
         .resolves.toMatchObject({ status: 'ACTIVE' });
     });
 
-    it('keeps audit rows append-only and rolls the feature migration down and up again', async () => {
+    it('rolls back a model and its audit when sync change recording fails', async () => {
+      const tenant = tenants[0];
+      if (!tenant) {
+        throw new Error('Tenant fixture was not initialized');
+      }
+      const actorId = await createActor(tenant.runtimeDataSource);
+      const modelName = `Sync rollback ${randomUUID()}`;
+      await tenant.migrationDataSource.query(`
+        CREATE FUNCTION "sync_test_reject_change_log_insert"()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          RAISE EXCEPTION 'injected sync recorder failure'
+            USING ERRCODE = 'P0001', CONSTRAINT = 'sync_test_recorder_failure';
+        END
+        $$
+      `);
+      await tenant.migrationDataSource.query(`
+        CREATE TRIGGER "sync_test_reject_change_log_insert"
+        BEFORE INSERT ON "server_change_log"
+        FOR EACH ROW EXECUTE FUNCTION "sync_test_reject_change_log_insert"()
+      `);
+
+      try {
+        await expect(
+          featureServices().models.create(tenant.runtimeDataSource, actorId, {
+            name: modelName,
+          }),
+        ).rejects.toThrow('injected sync recorder failure');
+
+        const models: Array<{ count: string }> = await tenant.migrationDataSource.query(
+          'SELECT count(*)::text AS count FROM "models" WHERE "name" = $1',
+          [modelName],
+        );
+        const auditRows: Array<{ count: string }> = await tenant.migrationDataSource.query(
+          `SELECT count(*)::text AS count FROM "audit_log"
+           WHERE "entity_type" = 'model' AND "action" = 'model.create'
+             AND "after_json" ->> 'name' = $1`,
+          [modelName],
+        );
+        const changeRows: Array<{ count: string }> = await tenant.migrationDataSource.query(
+          `SELECT count(*)::text AS count FROM "server_change_log"
+           WHERE "entity_type" = 'models' AND "payload_json" #>> '{data,name}' = $1`,
+          [modelName],
+        );
+        expect(models[0]?.count).toBe('0');
+        expect(auditRows[0]?.count).toBe('0');
+        expect(changeRows[0]?.count).toBe('0');
+      } finally {
+        await tenant.migrationDataSource.query(
+          'DROP TRIGGER IF EXISTS "sync_test_reject_change_log_insert" ON "server_change_log"',
+        );
+        await tenant.migrationDataSource.query(
+          'DROP FUNCTION IF EXISTS "sync_test_reject_change_log_insert"()',
+        );
+      }
+    });
+
+    it('keeps audit rows append-only and prevents rollback after sync changes are recorded', async () => {
       const tenant = tenants[0];
       if (!tenant) {
         throw new Error('Tenant fixture was not initialized');
@@ -703,35 +801,14 @@ integrationDescribe(
         'trg_audit_log_append_only',
       );
 
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      const featureTables: Array<{ table_name: string }> = await tenant.migrationDataSource.query(
-        `SELECT "table_name" FROM "information_schema"."tables"
-         WHERE "table_schema" = 'public' AND "table_name" = ANY($1::varchar[])`,
-        [['models', 'model_operations', 'model_operation_prices', 'audit_log']],
-      );
-      expect(featureTables).toHaveLength(0);
-      const authTables: Array<{ table_name: string }> = await tenant.migrationDataSource.query(
-        `SELECT "table_name" FROM "information_schema"."tables"
-         WHERE "table_schema" = 'public' AND "table_name" = ANY($1::varchar[])`,
-        [['auth_sessions', 'login_rate_limits']],
-      );
-      expect(authTables).toHaveLength(2);
-
-      const applied = await tenant.migrationDataSource.runMigrations({ transaction: 'all' });
-      expect(applied.map(({ name }) => name)).toEqual([
-        MIGRATION_NAME,
-        WORKERS_BADGES_MIGRATION_NAME,
-        PATTA_MIGRATION_NAME,
-      ]);
-      await new PattaSequenceInitializer().initialize(tenant.migrationDataSource, 1n);
-      const runtimeSecret = tenantDatabaseManager.createSecret(tenant.companyId);
-      await tenantDatabaseManager.grantRuntimePrivileges(
-        tenant.companyId,
-        tenant.databaseName,
-        runtimeSecret,
-      );
+      await expect(
+        tenant.migrationDataSource.undoLastMigration({ transaction: 'all' }),
+      ).rejects.toThrow('cannot revert sync schema');
+      const latestMigration: Array<{ name: string }> =
+        await tenant.migrationDataSource.query(
+          `SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp" DESC LIMIT 1`,
+        );
+      expect(latestMigration[0]?.name).toBe(SYNC_MIGRATION_NAME);
     });
   },
 );

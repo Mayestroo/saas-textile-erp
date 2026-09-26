@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, NotFoundException } from '@nest
 import type { DataSource, EntityManager } from 'typeorm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuditService } from '../audit/audit.service.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { OperationPriceService } from './operation-price.service.js';
 
 const actorUserId = '11111111-1111-4111-8111-111111111111';
@@ -40,13 +41,20 @@ function createHarness() {
       work(manager as unknown as EntityManager)),
   };
   const auditService = { append: vi.fn(async () => undefined) };
+  const syncChangeRecorder = {
+    record: vi.fn(async () => ({ sequenceId: '1' })),
+  };
   return {
     manager,
     dataSource: dataSource as unknown as DataSource,
     query: dataSource.query,
     transaction: dataSource.transaction,
     auditService,
-    service: new OperationPriceService(auditService as unknown as AuditService),
+    syncChangeRecorder,
+    service: new OperationPriceService(
+      auditService as unknown as AuditService,
+      syncChangeRecorder as unknown as SyncChangeRecorder,
+    ),
   };
 }
 
@@ -64,7 +72,16 @@ function scheduleHappyPath(
     created_at: '2026-09-26T00:00:00.000000Z',
   };
   harness.manager.query
-    .mockResolvedValueOnce([{ id: operationId, model_id: '22222222-2222-4222-8222-222222222222', name: 'Yeng tikish', status: 'ACTIVE', version: options.operationVersion ?? '1' }])
+    .mockResolvedValueOnce([{
+      id: operationId,
+      model_id: '22222222-2222-4222-8222-222222222222',
+      name: 'Yeng tikish',
+      sort_order: 0,
+      status: 'ACTIVE',
+      version: options.operationVersion ?? '1',
+      created_at: '2026-09-01T00:00:00.000000Z',
+      updated_at: '2026-09-01T00:00:00.000000Z',
+    }])
     .mockResolvedValueOnce([{ transaction_time: transactionTime }])
     .mockResolvedValueOnce([openHistory({ price: options.openPrice ?? '1000.00' })])
     .mockResolvedValueOnce([{ not_past: true, after_open: true }])
@@ -80,6 +97,49 @@ describe('OperationPriceService', () => {
 
   beforeEach(() => {
     harness = createHarness();
+  });
+
+  it('records an initial effective-price projection in the caller transaction', async () => {
+    const initial = {
+      id: historyId,
+      operation_id: operationId,
+      price: '1000.00',
+      valid_from: '2026-09-26T00:00:00.000000Z',
+      valid_to: null,
+      created_by: actorUserId,
+      created_at: '2026-09-26T00:00:00.000000Z',
+    };
+    harness.manager.query.mockResolvedValueOnce([initial]);
+
+    await expect(harness.service.createInitialPrice(
+      harness.manager as unknown as EntityManager,
+      operationId,
+      '1000',
+      actorUserId,
+      transactionTime,
+    )).resolves.toEqual(initial);
+    expect(harness.syncChangeRecorder.record).toHaveBeenCalledWith(
+      harness.manager,
+      expect.objectContaining({
+        entityType: 'model_operation_prices',
+        entityId: historyId,
+        entityVersion: null,
+        operation: 'UPSERT',
+        projectionVersion: 1,
+        payload: expect.objectContaining({
+          entity_type: 'model_operation_prices',
+          entity_id: historyId,
+          data: expect.objectContaining({
+            id: initial.id,
+            operation_id: initial.operation_id,
+            price: initial.price,
+            valid_from: initial.valid_from,
+            valid_to: initial.valid_to,
+            created_at: initial.created_at,
+          }),
+        }),
+      }),
+    );
   });
 
   it('resolves a historical price only from the interval table', async () => {
@@ -139,6 +199,54 @@ describe('OperationPriceService', () => {
       expect.anything(),
       expect.objectContaining({ action: 'operation.price_change', actorUserId }),
     );
+    expect(harness.syncChangeRecorder.record.mock.calls).toEqual([
+      [
+        expect.anything(),
+        expect.objectContaining({
+          entityType: 'model_operation_prices',
+          entityId: historyId,
+          entityVersion: null,
+          operation: 'UPSERT',
+          payload: expect.objectContaining({
+            entity_type: 'model_operation_prices',
+            data: expect.objectContaining({
+              id: historyId,
+              valid_to: '2026-10-01T00:00:00.000000Z',
+              price: '1000.00',
+            }),
+          }),
+        }),
+      ],
+      [
+        expect.anything(),
+        expect.objectContaining({
+          entityType: 'model_operation_prices',
+          entityVersion: null,
+          operation: 'UPSERT',
+          payload: expect.objectContaining({
+            entity_type: 'model_operation_prices',
+            data: expect.objectContaining({ price: '1200.00', valid_to: null }),
+          }),
+        }),
+      ],
+      [
+        expect.anything(),
+        expect.objectContaining({
+          entityType: 'model_operations',
+          entityId: operationId,
+          entityVersion: '2',
+          operation: 'UPSERT',
+          payload: expect.objectContaining({
+            entity_type: 'model_operations',
+            data: expect.objectContaining({
+              id: operationId,
+              version: '2',
+              name: 'Yeng tikish',
+            }),
+          }),
+        }),
+      ],
+    ]);
   });
 
   it('uses the transaction database timestamp when effective_from is omitted', async () => {

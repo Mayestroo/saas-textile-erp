@@ -2,6 +2,7 @@ import { NotFoundException } from '@nestjs/common';
 import type { DataSource, EntityManager } from 'typeorm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuditService } from '../audit/audit.service.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { canonicalizeBusinessName } from './business-name.js';
 import { ModelsService } from './models.service.js';
 
@@ -38,13 +39,20 @@ function createHarness() {
       work(manager as unknown as EntityManager)),
   };
   const auditService = { append: vi.fn(async () => undefined) };
+  const syncChangeRecorder = {
+    record: vi.fn(async () => ({ sequenceId: '1' })),
+  };
   return {
     manager,
     dataSource: dataSource as unknown as DataSource,
     query: dataSource.query,
     transaction: dataSource.transaction,
     auditService,
-    service: new ModelsService(auditService as unknown as AuditService),
+    syncChangeRecorder,
+    service: new ModelsService(
+      auditService as unknown as AuditService,
+      syncChangeRecorder as unknown as SyncChangeRecorder,
+    ),
   };
 }
 
@@ -88,6 +96,22 @@ describe('ModelsService', () => {
         entityId: modelId,
         action: 'model.create',
         before: null,
+      }),
+    );
+    expect(harness.syncChangeRecorder.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'models',
+        entityId: modelId,
+        operation: 'UPSERT',
+        entityVersion: '1',
+        projectionVersion: 1,
+        payload: expect.objectContaining({
+          projection_version: 1,
+          entity_type: 'models',
+          entity_id: modelId,
+          entity_version: '1',
+        }),
       }),
     );
   });
@@ -134,6 +158,16 @@ describe('ModelsService', () => {
     expect(harness.auditService.append).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'model.update', before: serializedBefore, after: serializedAfter }),
+    );
+    expect(harness.syncChangeRecorder.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'models',
+        entityId: modelId,
+        operation: 'UPSERT',
+        entityVersion: '2',
+        payload: expect.objectContaining({ entity_version: '2', data: serializedAfter }),
+      }),
     );
   });
 

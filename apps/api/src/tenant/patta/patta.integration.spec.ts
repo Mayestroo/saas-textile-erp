@@ -14,6 +14,7 @@ import { PattaSequenceInitializer } from '../../database/tenant/patta-sequence.i
 import { TenantTestDatabaseCleanup } from '../../database/tenant/tenant-test-database-cleanup.js';
 import { DeviceAccessService } from '../../master/devices/device-access.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { ModelsService } from '../models/models.service.js';
 import { OperationPriceService } from '../operations/operation-price.service.js';
 import { OperationsService } from '../operations/operations.service.js';
@@ -230,13 +231,14 @@ integrationDescribe(
 
     function featureServices(configuration: PattaConfiguration = TEST_PATTA_CONFIGURATION) {
       const audit = new AuditService();
-      const prices = new OperationPriceService(audit);
+      const syncChangeRecorder = new SyncChangeRecorder();
+      const prices = new OperationPriceService(audit, syncChangeRecorder);
       const blocks = new PattaNumberBlocksService(audit, configuration);
       return {
         audit,
         prices,
-        models: new ModelsService(audit),
-        operations: new OperationsService(audit, prices),
+        models: new ModelsService(audit, syncChangeRecorder),
+        operations: new OperationsService(audit, prices, syncChangeRecorder),
         templates: new PattaTemplatesService(audit),
         blocks,
         pattas: new PattaService(audit, prices, configuration),

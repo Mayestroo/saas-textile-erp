@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException } from '@nes
 import type { DataSource, EntityManager } from 'typeorm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuditService } from '../audit/audit.service.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { OperationsService } from './operations.service.js';
 import { OperationPriceService } from './operation-price.service.js';
 
@@ -43,6 +44,9 @@ function createHarness() {
       work(manager as unknown as EntityManager)),
   };
   const auditService = { append: vi.fn(async () => undefined) };
+  const syncChangeRecorder = {
+    record: vi.fn(async () => ({ sequenceId: '1' })),
+  };
   const priceService = {
     createInitialPrice: vi.fn(async () => ({
       id: '44444444-4444-4444-8444-444444444444',
@@ -62,10 +66,12 @@ function createHarness() {
     query: dataSource.query,
     transaction: dataSource.transaction,
     auditService,
+    syncChangeRecorder,
     priceService,
     service: new OperationsService(
       auditService as unknown as AuditService,
       priceService as unknown as OperationPriceService,
+      syncChangeRecorder as unknown as SyncChangeRecorder,
     ),
   };
 }
@@ -112,6 +118,22 @@ describe('OperationsService', () => {
         actorUserId,
         entityId: operationId,
         before: null,
+      }),
+    );
+    expect(harness.syncChangeRecorder.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'model_operations',
+        entityId: operationId,
+        operation: 'UPSERT',
+        entityVersion: '1',
+        projectionVersion: 1,
+        payload: expect.objectContaining({
+          projection_version: 1,
+          entity_type: 'model_operations',
+          entity_id: operationId,
+          entity_version: '1',
+        }),
       }),
     );
   });
@@ -204,6 +226,19 @@ describe('OperationsService', () => {
     expect(harness.auditService.append).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'operation.update' }),
+    );
+    expect(harness.syncChangeRecorder.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'model_operations',
+        entityId: operationId,
+        entityVersion: '2',
+        operation: 'UPSERT',
+        payload: expect.objectContaining({
+          entity_version: '2',
+          data: expect.objectContaining({ version: '2', name: 'Yeng biriktirish' }),
+        }),
+      }),
     );
   });
 
