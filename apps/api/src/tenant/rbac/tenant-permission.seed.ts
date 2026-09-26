@@ -22,6 +22,8 @@ export const TENANT_PERMISSION_SEEDS = [
   { code: 'payroll.view', description: 'Ish haqi ma’lumotlarini ko‘rish' },
   { code: 'license.view', description: 'Litsenziya ma’lumotlarini ko‘rish' },
   { code: 'audit.view', description: 'Audit yozuvlarini ko‘rish' },
+  { code: 'sync.pull', description: 'Ma’lumotlarni sinxronlash orqali olish' },
+  { code: 'sync.push', description: 'Oflayn ma’lumotlarni sinxronlash' },
 ] as const;
 
 export const TENANT_PERMISSION_CODES = TENANT_PERMISSION_SEEDS.map(({ code }) => code);

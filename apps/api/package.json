@@ -42,6 +42,7 @@
     "@nestjs/terminus": "^12.1.0",
     "@nestjs/typeorm": "^12.0.1",
     "@noble/ed25519": "^3.2.0",
+    "@textile/sync-protocol": "0.1.0",
     "argon2": "^0.45.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
@@ -54,7 +55,6 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "typeorm": "^1.1.1",
-    "@textile/sync-protocol": "0.1.0",
     "uuid": "^14.0.2"
   },
   "devDependencies": {
