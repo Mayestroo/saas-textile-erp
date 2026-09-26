@@ -9,6 +9,7 @@ import {
   type TenantDatabaseCredentials,
 } from '../../database/tenant/tenant-database.config.js';
 import { TenantDatabaseManager } from '../../database/tenant/tenant-database-manager.js';
+import { PattaSequenceInitializer } from '../../database/tenant/patta-sequence.initializer.js';
 import { TenantTestDatabaseCleanup } from '../../database/tenant/tenant-test-database-cleanup.js';
 import { AuditService } from '../audit/audit.service.js';
 import { BadgeHistoryService } from '../badges/badge-history.service.js';
@@ -39,6 +40,7 @@ const provisionerCredentials = configuredVariables.length === TEST_DATABASE_VARI
   ? createTestTenantProvisionerCredentials(process.env)
   : undefined;
 const MIGRATION_NAME = 'AddWorkersAndBadgeHistory20260926000400';
+const PATTA_MIGRATION_NAME = 'AddPattaFoundation20260926000500';
 
 interface DriverError {
   message?: string;
@@ -193,7 +195,7 @@ integrationDescribe(
       const rows: Array<{ name: string }> = await tenantA.migrationDataSource.query(
         `SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"`,
       );
-      expect(rows.at(-1)?.name).toBe(MIGRATION_NAME);
+      expect(rows.at(-1)?.name).toBe(PATTA_MIGRATION_NAME);
 
       const schemaRows: Array<{ table_name: string }> = await tenantA.runtimeDataSource.query(
         `SELECT "table_name" FROM "information_schema"."tables"
@@ -312,6 +314,7 @@ integrationDescribe(
     it('backfills UUID audit keys and supports only lossless empty/UUID-compatible rollback', async () => {
       const tenant = await createTenant();
       await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       const actorUserId = await createActor(tenant.runtimeDataSource);
       const entityId = randomUUID();
       const auditRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
@@ -327,7 +330,8 @@ integrationDescribe(
       }
 
       const reapplied = await tenant.migrationDataSource.runMigrations({ transaction: 'all' });
-      expect(reapplied.map(({ name }) => name)).toEqual([MIGRATION_NAME]);
+      expect(reapplied.map(({ name }) => name)).toEqual([MIGRATION_NAME, PATTA_MIGRATION_NAME]);
+      await new PattaSequenceInitializer().initialize(tenant.migrationDataSource, 1n);
       const backfilled: Array<{ entity_key: string; entity_id: string }> = await tenant.runtimeDataSource.query(
         'SELECT "entity_key", "entity_id"::text AS "entity_id" FROM "audit_log" WHERE "id" = $1',
         [auditId],
@@ -335,13 +339,15 @@ integrationDescribe(
       expect(backfilled[0]).toEqual({ entity_key: entityId, entity_id: entityId });
 
       await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       const legacyAfterDown: Array<{ entity_id: string }> = await tenant.runtimeDataSource.query(
         'SELECT "entity_id"::text AS "entity_id" FROM "audit_log" WHERE "id" = $1',
         [auditId],
       );
       expect(legacyAfterDown[0]?.entity_id).toBe(entityId);
       const finalReapply = await tenant.migrationDataSource.runMigrations({ transaction: 'all' });
-      expect(finalReapply.map(({ name }) => name)).toEqual([MIGRATION_NAME]);
+      expect(finalReapply.map(({ name }) => name)).toEqual([MIGRATION_NAME, PATTA_MIGRATION_NAME]);
+      await new PattaSequenceInitializer().initialize(tenant.migrationDataSource, 1n);
       await tenantDatabaseManager.grantRuntimePrivileges(tenant.companyId, tenant.databaseName,
         tenantDatabaseManager.createSecret(tenant.companyId));
     }, 30_000);
@@ -356,6 +362,7 @@ integrationDescribe(
         [actorUserId],
       );
 
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       await expectMigrationRefusal(tenant.migrationDataSource, 'ck_audit_log_entity_key_reversible');
       const remaining: Array<{ entity_key: string; entity_id: string | null }> =
         await tenant.runtimeDataSource.query(
@@ -380,6 +387,7 @@ integrationDescribe(
         [actorUserId, entityId],
       );
 
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       await expectMigrationRefusal(tenant.migrationDataSource, 'ck_audit_log_legacy_values');
       const remains: Array<{ entity_type: string; action: string; entity_key: string }> =
         await tenant.runtimeDataSource.query(
@@ -654,6 +662,7 @@ integrationDescribe(
     }, 30_000);
 
     it('refuses to revert a populated worker/badge tenant without changing migration state', async () => {
+      await tenantA.migrationDataSource.undoLastMigration({ transaction: 'all' });
       await expectMigrationRefusal(tenantA.migrationDataSource, 'ck_workers_badges_empty_before_revert');
       const migrations: Array<{ name: string }> = await tenantA.migrationDataSource.query(
         'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp" DESC LIMIT 1',

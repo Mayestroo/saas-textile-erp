@@ -5,6 +5,7 @@ import type { TenantAuthenticatedRequest } from '../../common/auth/auth-types.js
 export interface TenantRequestContext {
   dataSource: DataSource;
   actorUserId: string;
+  companyId: string;
 }
 
 export function requireTenantContext(request: TenantAuthenticatedRequest): TenantRequestContext {
@@ -18,5 +19,6 @@ export function requireTenantContext(request: TenantAuthenticatedRequest): Tenan
   return {
     dataSource: request.tenantDataSource,
     actorUserId: request.tenantUser.userId,
+    companyId: request.tenantUser.companyId,
   };
 }

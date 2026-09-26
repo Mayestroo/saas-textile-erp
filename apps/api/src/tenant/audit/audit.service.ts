@@ -1,7 +1,14 @@
 import { Injectable } from '@nestjs/common';
 import type { EntityManager } from 'typeorm';
 
-export type AuditEntityType = 'model' | 'operation' | 'worker' | 'badge';
+export type AuditEntityType =
+  | 'model'
+  | 'operation'
+  | 'worker'
+  | 'badge'
+  | 'patta_template'
+  | 'patta_number_block'
+  | 'patta';
 export type AuditAction =
   | 'model.create'
   | 'model.update'
@@ -16,7 +23,13 @@ export type AuditAction =
   | 'badge.assign'
   | 'badge.reassign'
   | 'badge.close'
-  | 'badge.release';
+  | 'badge.release'
+  | 'patta_template.create'
+  | 'patta_template.update'
+  | 'patta_template.deactivate'
+  | 'patta_number_block.allocate'
+  | 'patta_number_block.cancel'
+  | 'patta.create';
 
 export interface AuditEventInput {
   actorUserId: string;
