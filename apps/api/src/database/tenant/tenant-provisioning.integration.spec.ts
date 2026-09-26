@@ -320,7 +320,7 @@ integrationDescribe(
         provisioningStatus: 'ACTIVE',
         failureStep: null,
         failureReason: null,
-        schemaVersion: 'AddTenantAuthInfrastructure20260926000200',
+        schemaVersion: 'AddModelsOperationsAndPriceHistory20260926000300',
       });
       expect(JSON.stringify(result)).not.toContain(admin.password);
       await expect(provisioningService.provision(result.companyId)).resolves.toMatchObject({
@@ -340,8 +340,12 @@ integrationDescribe(
            WHERE "table_schema" = 'public' ORDER BY "table_name"`,
         );
         expect(tableRows.map(({ table_name }) => table_name)).toEqual([
+          'audit_log',
           'auth_sessions',
           'login_rate_limits',
+          'model_operation_prices',
+          'model_operations',
+          'models',
           'permissions',
           'role_permissions',
           'roles',
@@ -352,13 +356,20 @@ integrationDescribe(
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
         const tablesAfterRevert: Array<{ table_name: string }> = await migrationDataSource.query(
           `SELECT "table_name" FROM "information_schema"."tables"
-           WHERE "table_schema" = 'public' AND "table_name" IN ('auth_sessions', 'login_rate_limits')`,
+           WHERE "table_schema" = 'public' AND "table_name" IN
+             ('models', 'model_operations', 'model_operation_prices', 'audit_log')`,
         );
         expect(tablesAfterRevert).toHaveLength(0);
 
+        const committedAuthTables: Array<{ table_name: string }> = await migrationDataSource.query(
+          `SELECT "table_name" FROM "information_schema"."tables"
+           WHERE "table_schema" = 'public' AND "table_name" IN ('auth_sessions', 'login_rate_limits')`,
+        );
+        expect(committedAuthTables).toHaveLength(2);
+
         const reappliedMigrations = await migrationDataSource.runMigrations({ transaction: 'all' });
         expect(reappliedMigrations.map(({ name }) => name)).toEqual([
-          'AddTenantAuthInfrastructure20260926000200',
+          'AddModelsOperationsAndPriceHistory20260926000300',
         ]);
       } finally {
         await migrationDataSource.destroy();
@@ -564,6 +575,7 @@ integrationDescribe(
         expect(migrations.map(({ name }) => name)).toEqual([
           'InitialTenantFoundation20260926000000',
           'AddTenantAuthInfrastructure20260926000200',
+          'AddModelsOperationsAndPriceHistory20260926000300',
         ]);
         const userCount: Array<{ count: string }> = await migrationDataSource.query(
           'SELECT count(*) AS "count" FROM "users" WHERE "email" = $1',
@@ -600,6 +612,7 @@ integrationDescribe(
         expect(migrations.map(({ name }) => name)).toEqual([
           'InitialTenantFoundation20260926000000',
           'AddTenantAuthInfrastructure20260926000200',
+          'AddModelsOperationsAndPriceHistory20260926000300',
         ]);
       } finally {
         await migrationDataSource.destroy();

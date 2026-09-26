@@ -77,6 +77,37 @@ advisory-lock serialization, separate company databases, runtime role
 privileges, cross-tenant/Master/maintenance database denial, connection health,
 pool reuse, failed initialization cleanup, and test database cleanup safety.
 
+## Models, operations, and price history integration
+
+The feature suite uses only all five `TEST_MASTER_DB_*` variables and requires
+`TEST_MASTER_DB_NAME` to end in `_test`. It creates generated
+`tenant_test_<uuid>` tenant databases and cleans only those databases/roles.
+Run it with:
+
+```powershell
+npm run test:models-operations --workspace=apps/api
+```
+
+The PostgreSQL suite applies, rolls back, and reapplies the additive models and
+price-history migration. It verifies runtime-role DML grants; generated-name
+canonicalization and uniqueness; model/operation/price checks and foreign keys;
+half-open adjacent and overlapping price intervals; append-only audit; initial
+price history; DB-time, future, historical and current-price resolution;
+future-schedule chaining and reorder conflicts; transaction rollback; stale
+concurrent `expected_version`; inactive model/operation rules; and isolation
+between separately generated tenant databases. `model_operations.price` is
+asserted to differ from the API-resolved current effective price when a future
+price is scheduled.
+
+The feature also has unit tests for services and HTTP e2e tests for tenant
+authentication, platform-token rejection, `models.view`/`models.manage`, and
+backend DTO validation:
+
+```powershell
+npm run test --workspace=apps/api -- src/tenant/models/models.service.spec.ts src/tenant/operations/operations.service.spec.ts src/tenant/operations/operation-price.service.spec.ts
+npm run test:e2e --workspace=apps/api -- src/tenant/models/models-operations.e2e-spec.ts
+```
+
 ## Authentication and RBAC tests
 
 The API requires five independent secrets, each at least 32 bytes:

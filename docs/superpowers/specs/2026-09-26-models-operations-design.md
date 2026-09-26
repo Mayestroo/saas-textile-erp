@@ -25,9 +25,9 @@ An additive tenant migration creates:
 - `audit_log`: append-only tenant audit events with actor, entity type/id,
   action, before/after JSON, and creation time.
 
-Names are canonicalized by trimming and collapsing consecutive whitespace to a
-single space, then compared using the PostgreSQL lowercase form. The database
-owns the canonical form and partial unique
+Names are canonicalized by trimming ASCII space/tab/LF/VT/FF/CR and collapsing
+consecutive such characters to one ASCII space, then compared using the
+PostgreSQL lowercase form. The database owns the canonical form and partial unique
 indexes enforce uniqueness among active models and among active operation names
 within one model. Inactive historical records remain; reactivation can fail
 with a structured duplicate-name conflict.
@@ -90,9 +90,11 @@ created initial history starts at the database transaction timestamp.
 
 Price creation and scheduling run in a tenant transaction:
 
-1. Lock the operation row and check its expected version/status.
-2. Read the database transaction timestamp once and use that same value for
-   validation and any database-generated effective timestamp; equality is
+1. Lock the operation row and check its expected version/status after acquiring
+   the lock. Reject a schedule for an `INACTIVE` operation.
+2. Read the database transaction timestamp once. If optional `effective_from`
+   is omitted, use this value; otherwise use the supplied timestamp. Use the
+   same DB timestamp for validation and initial interval creation; equality is
    accepted.
 3. Reject an `effective_from` earlier than that timestamp.
 4. Require the new effective time to be after the current open interval's
@@ -106,7 +108,12 @@ Price creation and scheduling run in a tenant transaction:
 
 The database exclusion constraint remains the final defense against concurrent
 or direct overlapping writes. A newly created operation receives its initial
-open price interval in the same transaction as the operation row.
+open price interval in the same transaction as the operation row. A DB trigger
+makes price history immutable except a one-time transition of an open interval's
+`valid_to` from NULL to its closing boundary; history rows cannot be deleted.
+Model and operation rows also cannot be hard-deleted. Operation creation and
+operation reactivation require an active parent model. Deactivating a model
+does not change child operation status.
 
 For example, sequential scheduling yields:
 

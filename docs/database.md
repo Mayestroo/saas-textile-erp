@@ -94,6 +94,44 @@ tokens are never persisted. Tenant runtime database roles receive DML access to
 only their own auth session and login-limit tables; Master sessions stay in the
 Master database.
 
+## Models, operations, and operation price history
+
+Additive tenant migration
+`20260926000300-AddModelsOperationsAndPriceHistory.js` creates `models`,
+`model_operations`, `model_operation_prices`, and append-only `audit_log`.
+Models and operations use `ACTIVE`/`INACTIVE`, positive `BIGINT` optimistic
+versions, restrictive historical foreign keys, and active-only canonical-name
+uniqueness. `canonicalize_business_name(text)` trims ASCII whitespace
+(`space`, tab, LF, VT, FF, CR), collapses every internal sequence to one ASCII
+space, and compares using PostgreSQL `lower()`; the service uses the same
+canonicalization before storing display names. Model names are unique per
+tenant; operation names are unique per model, among active records. Inactive
+records remain and can be reactivated only if they do not collide.
+
+`model_operation_prices` is authoritative for both current and historical
+prices. Each price is `NUMERIC(14,2)` and applies to `[valid_from, valid_to)`.
+The migration enables shared `btree_gist` and adds an exclusion constraint on
+`operation_id` plus overlapping `tstzrange(valid_from,
+COALESCE(valid_to, 'infinity'), '[)')`, so adjacent intervals are allowed but
+overlaps are rejected by PostgreSQL. `effective_from` may be omitted (the DB
+transaction timestamp is used), equal to the transaction timestamp, or future;
+backdating is rejected. Only appending after the current open interval is
+allowed; attempts to insert/reorder an existing future schedule return a
+structured conflict. Operation row locking and the expected version prevent
+concurrent stale price changes.
+
+`model_operations.price` is a compatibility/denormalized latest configured
+price only. The API's current price and every effective-time lookup resolve
+through `OperationPriceService` against `model_operation_prices`; application
+business logic never reads the compatibility column as an effective price.
+Operation creation inserts the initial price interval atomically. Price
+interval changes, operation version changes, and the `operation.price_change`
+audit row commit in one transaction. Model/operation creates, updates, and
+deactivations likewise append audit in their mutation transaction. An
+append-only trigger rejects audit updates and deletes. Provisioned tenant
+runtime roles receive DML access to the tenant-local feature tables; the audit
+trigger continues to forbid record edits/deletions.
+
 The PostgreSQL login-limit tables store only HMAC-hashed account/IP bucket keys,
 fixed-window start, attempt count, and expiry. Each login transaction deletes
 up to 100 expired rows using the expiry index, then atomically upserts the

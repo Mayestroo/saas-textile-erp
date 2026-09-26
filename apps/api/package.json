@@ -26,6 +26,7 @@
     "db:master:seed": "npm run build && node dist/database/master/master-database.cli.js seed",
     "test:master-db": "vitest run src/database/master/master-database.integration.spec.ts",
     "test:tenant-provisioning": "vitest run src/database/tenant/tenant-provisioning.integration.spec.ts",
+    "test:models-operations": "vitest run src/tenant/models/models-operations.integration.spec.ts",
     "watch:compile": "swc src --out-dir dist --config-file .swcrc --ignore \"**/*.spec.ts\" --strip-leading-paths --watch",
     "typecheck": "tsc --noEmit -p tsconfig.build.json"
   },
