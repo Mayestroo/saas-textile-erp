@@ -128,9 +128,10 @@ unique keys prevent duplicate items within a session. A cascading FK from items
 to the session is allowed because these are temporary staging rows, not business
 history.
 
-Bootstrap creation uses one tenant connection and a short materialization
-transaction; no transaction or DB connection survives the HTTP request. Exact
-lock/snapshot order:
+Bootstrap creation uses one tenant connection and a bounded materialization
+transaction. No transaction, MVCC snapshot, or checked-out QueryRunner
+connection survives the request; the shared tenant pool may retain an idle
+connection for reuse. Exact lock/snapshot order:
 
 1. On a dedicated `QueryRunner`, acquire a device-scoped session lock to
    serialize bootstrap creation for that device, then acquire the session-level
