@@ -4,8 +4,9 @@ import { TenantConnectionModule } from './tenant-connection/tenant-connection.mo
 import { TenantAuthModule } from './auth/tenant-auth.module.js';
 import { ModelsModule } from './models/models.module.js';
 import { OperationsModule } from './operations/operations.module.js';
+import { WorkersModule } from './workers/workers.module.js';
 
 @Module({
-  imports: [TenantResolverModule, TenantConnectionModule, TenantAuthModule, ModelsModule, OperationsModule]
+  imports: [TenantResolverModule, TenantConnectionModule, TenantAuthModule, ModelsModule, OperationsModule, WorkersModule]
 })
 export class TenantModule {}

@@ -320,7 +320,7 @@ integrationDescribe(
         provisioningStatus: 'ACTIVE',
         failureStep: null,
         failureReason: null,
-        schemaVersion: 'AddModelsOperationsAndPriceHistory20260926000300',
+        schemaVersion: 'AddWorkersAndBadgeHistory20260926000400',
       });
       expect(JSON.stringify(result)).not.toContain(admin.password);
       await expect(provisioningService.provision(result.companyId)).resolves.toMatchObject({
@@ -351,8 +351,11 @@ integrationDescribe(
           'roles',
           'tenant_typeorm_migrations',
           'users',
+          'worker_badge_history',
+          'workers',
         ]);
 
+        await migrationDataSource.undoLastMigration({ transaction: 'all' });
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
         const tablesAfterRevert: Array<{ table_name: string }> = await migrationDataSource.query(
           `SELECT "table_name" FROM "information_schema"."tables"
@@ -370,7 +373,13 @@ integrationDescribe(
         const reappliedMigrations = await migrationDataSource.runMigrations({ transaction: 'all' });
         expect(reappliedMigrations.map(({ name }) => name)).toEqual([
           'AddModelsOperationsAndPriceHistory20260926000300',
+          'AddWorkersAndBadgeHistory20260926000400',
         ]);
+        await tenantDatabaseManager.grantRuntimePrivileges(
+          result.companyId,
+          databaseName,
+          tenantDatabaseManager.createSecret(result.companyId),
+        );
       } finally {
         await migrationDataSource.destroy();
       }
@@ -576,6 +585,7 @@ integrationDescribe(
           'InitialTenantFoundation20260926000000',
           'AddTenantAuthInfrastructure20260926000200',
           'AddModelsOperationsAndPriceHistory20260926000300',
+          'AddWorkersAndBadgeHistory20260926000400',
         ]);
         const userCount: Array<{ count: string }> = await migrationDataSource.query(
           'SELECT count(*) AS "count" FROM "users" WHERE "email" = $1',
@@ -613,6 +623,7 @@ integrationDescribe(
           'InitialTenantFoundation20260926000000',
           'AddTenantAuthInfrastructure20260926000200',
           'AddModelsOperationsAndPriceHistory20260926000300',
+          'AddWorkersAndBadgeHistory20260926000400',
         ]);
       } finally {
         await migrationDataSource.destroy();
