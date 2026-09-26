@@ -76,3 +76,28 @@ The command runner builds the API and then opens the named Master DataSource.
 The seed transaction idempotently upserts the eight platform permissions and
 the `Superadmin` role, then attaches those platform permissions to that role.
 It does not seed a platform user or add tenant permissions.
+
+## Authentication tables
+
+Additive Master migration
+`20260926000200-AddPlatformAuthInfrastructure.js` creates
+`platform_auth_sessions` and `platform_login_rate_limits`. The additive tenant
+migration `20260926000200-AddTenantAuthInfrastructure.js` creates
+`auth_sessions` and `login_rate_limits` in each tenant. Session user foreign
+keys remain inside their own database; the unique refresh-token hash and expiry
+constraints/indexes are domain-local. Existing committed migrations are not
+modified.
+
+Session rows store a SHA-256 refresh-token hash, user/session identity, optional
+device ID, expiry, revocation, creation, and last-use timestamps. Plain refresh
+tokens are never persisted. Tenant runtime database roles receive DML access to
+only their own auth session and login-limit tables; Master sessions stay in the
+Master database.
+
+The PostgreSQL login-limit tables store only HMAC-hashed account/IP bucket keys,
+fixed-window start, attempt count, and expiry. Each login transaction deletes
+up to 100 expired rows using the expiry index, then atomically upserts the
+account and IP counters in deterministic key order. The stable
+`AUTH_LOGIN_BUCKET_HASH_SECRET` must remain unchanged while bucket windows are
+active; rotate it only after the maximum login window has elapsed, or all
+existing hashed bucket identities will become unreachable.

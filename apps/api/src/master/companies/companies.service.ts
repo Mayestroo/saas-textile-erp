@@ -1,4 +1,4 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { randomUUID } from 'node:crypto';
 import { DataSource } from 'typeorm';
@@ -38,15 +38,27 @@ function validateCompanyInput(input: CreateCompanyInput): {
   const slug = input.slug.trim().toLowerCase();
   const timezone = input.timezone?.trim() || process.env.DEFAULT_TENANT_TIMEZONE || 'Asia/Tashkent';
   if (name.length === 0 || name.length > 255) {
-    throw new Error('Company name must contain 1 to 255 characters');
+    throw new BadRequestException({
+      code: 'INVALID_COMPANY_NAME',
+      message: 'Korxona nomi 1–255 belgidan iborat bo‘lishi kerak',
+      details: {},
+    });
   }
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(slug)) {
-    throw new Error('Company slug must contain lowercase letters, digits, and internal hyphens');
+    throw new BadRequestException({
+      code: 'INVALID_COMPANY_SLUG',
+      message: 'Korxona manzili yaroqsiz',
+      details: {},
+    });
   }
   try {
     new Intl.DateTimeFormat('en-US', { timeZone: timezone });
   } catch {
-    throw new Error('Company timezone is invalid');
+    throw new BadRequestException({
+      code: 'INVALID_COMPANY_TIMEZONE',
+      message: 'Vaqt mintaqasi yaroqsiz',
+      details: {},
+    });
   }
   return { name, slug, timezone };
 }

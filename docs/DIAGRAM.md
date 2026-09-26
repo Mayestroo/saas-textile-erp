@@ -30,8 +30,8 @@ SAAS TEKSTIL ERP — ASCII ARCHITECTURE / WORKTREE
                 │                     │   TENANT RESOLVER     │       │        REDIS        │
                 │                     │                       │       │                     │
                 │                     │ subdomain             │       │ Patta cache         │
-                │                     │ + JWT company_id      │       │ permission cache    │
-                │                     │ + company status      │       │ rate limit          │
+                │                     │ + JWT company_id      │       │ optional perm cache │
+                 │                     │ + company status      │       │ optional rate cache  │
                 │                     └───────────┬───────────┘       └─────────────────────┘
                 │                                 │
                 │                                 ▼

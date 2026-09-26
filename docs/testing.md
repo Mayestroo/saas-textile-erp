@@ -76,3 +76,47 @@ migration failure and retry without database replacement, same-company
 advisory-lock serialization, separate company databases, runtime role
 privileges, cross-tenant/Master/maintenance database denial, connection health,
 pool reuse, failed initialization cleanup, and test database cleanup safety.
+
+## Authentication and RBAC tests
+
+The API requires five independent secrets, each at least 32 bytes:
+
+- `PLATFORM_JWT_ACCESS_SECRET`
+- `PLATFORM_JWT_REFRESH_SECRET`
+- `TENANT_JWT_ACCESS_SECRET`
+- `TENANT_JWT_REFRESH_SECRET`
+- `AUTH_LOGIN_BUCKET_HASH_SECRET`
+
+Never reuse a secret between domains or token types. Keep the login-bucket HMAC
+secret stable while rate-limit windows exist. The access-token lifetime defaults
+to 900 seconds and the refresh-token lifetime defaults to 2,592,000 seconds.
+`AUTH_LOGIN_MAX_ATTEMPTS` and `AUTH_LOGIN_WINDOW_SECONDS` configure the login
+limit.
+
+PostgreSQL is the sole login rate-limit authority. Counters are updated with
+atomic upserts in separate Master/tenant tables and are tested under concurrent
+requests against PostgreSQL. Redis is not consulted by the login limiter, so
+Redis outage/recovery cannot split or reset a window. If the relevant
+PostgreSQL database is unavailable, login returns structured HTTP 503.
+Expired buckets are indexed and removed in bounded batches during login checks.
+
+The Master and tenant integration suites also apply, revert, and reapply the new
+auth migrations; check session user FKs and unique refresh hashes; exercise
+refresh rotation/reuse; and verify the protected platform company-create HTTP
+endpoint provisions an isolated tenant whose default administrator can log in.
+They reject platform tokens on tenant authorization, tenant tokens on platform
+routes, cross-company tenant tokens, and attempts to grant a platform permission
+from a tenant database.
+
+With the same dedicated `TEST_MASTER_DB_*` values described above, run:
+
+```powershell
+npm run test:master-db --workspace=apps/api
+npm run test:tenant-provisioning --workspace=apps/api
+npm run test:e2e --workspace=apps/api
+```
+
+`full-api-module.e2e-spec.ts` starts the real application module only when all
+five test database variables are set and `TEST_MASTER_DB_NAME` ends in `_test`.
+Without test database variables, that specific application-graph test is
+skipped; unit, controller, and mocked Nest e2e tests still run.

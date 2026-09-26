@@ -1,11 +1,21 @@
-import { ForbiddenException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Inject,
+  Injectable,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { normalizeCompanyUuid } from '../../database/tenant/tenant-database-names.js';
 import { MASTER_TENANT_READER } from './master-tenant-lookup.service.js';
-import type { MasterTenantReader } from './master-tenant-lookup.service.js';
+import type { MasterTenantMetadata, MasterTenantReader } from './master-tenant-lookup.service.js';
 
 export interface TenantResolutionInput {
   hostname: string;
   authenticatedCompanyId: string | null | undefined;
+}
+
+export interface TenantLoginResolutionInput {
+  hostname: string;
 }
 
 export interface ResolvedTenantContext {
@@ -60,13 +70,55 @@ export class TenantResolverService {
       });
     }
 
-    const company = await this.masterTenantReader.findTenantById(companyId);
+    let company: MasterTenantMetadata | null;
+    try {
+      company = await this.masterTenantReader.findTenantById(companyId);
+    } catch {
+      throw new ServiceUnavailableException({
+        code: 'TENANT_RESOLUTION_UNAVAILABLE',
+        message: 'Korxona ma’lumotini tekshirish xizmati vaqtincha ishlamayapti',
+        details: {},
+      });
+    }
     if (
       !company ||
       company.slug !== slug ||
       company.status !== 'ACTIVE' ||
       !company.connectionCiphertext
     ) {
+      throw new ForbiddenException({
+        code: 'TENANT_CONTEXT_MISMATCH',
+        message: 'Korxona konteksti tasdiqlanmadi',
+      });
+    }
+
+    return {
+      companyId: company.id,
+      slug: company.slug,
+      databaseName: company.databaseName,
+    };
+  }
+
+  async resolveForLogin(input: TenantLoginResolutionInput): Promise<ResolvedTenantContext> {
+    const slug = hostnameTenantSlug(input.hostname);
+    if (!slug) {
+      throw new ForbiddenException({
+        code: 'TENANT_HOST_INVALID',
+        message: 'Korxona manzili aniqlanmadi',
+      });
+    }
+
+    let company: MasterTenantMetadata | null;
+    try {
+      company = await this.masterTenantReader.findTenantBySlug(slug);
+    } catch {
+      throw new ServiceUnavailableException({
+        code: 'TENANT_RESOLUTION_UNAVAILABLE',
+        message: 'Korxona ma’lumotini tekshirish xizmati vaqtincha ishlamayapti',
+        details: {},
+      });
+    }
+    if (!company || company.status !== 'ACTIVE' || !company.connectionCiphertext) {
       throw new ForbiddenException({
         code: 'TENANT_CONTEXT_MISMATCH',
         message: 'Korxona konteksti tasdiqlanmadi',

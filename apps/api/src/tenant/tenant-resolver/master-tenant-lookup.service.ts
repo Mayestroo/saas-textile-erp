@@ -13,6 +13,7 @@ export interface MasterTenantMetadata {
 
 export interface MasterTenantReader {
   findTenantById(companyId: string): Promise<MasterTenantMetadata | null>;
+  findTenantBySlug(slug: string): Promise<MasterTenantMetadata | null>;
 }
 
 export const MASTER_TENANT_READER = Symbol('MASTER_TENANT_READER');
@@ -26,10 +27,21 @@ export class MasterTenantLookupService implements MasterTenantReader {
   constructor(@InjectDataSource(MASTER_DATA_SOURCE_NAME) private readonly masterDataSource: DataSource) {}
 
   async findTenantById(companyId: string): Promise<MasterTenantMetadata | null> {
+    return this.findTenant('id', companyId);
+  }
+
+  async findTenantBySlug(slug: string): Promise<MasterTenantMetadata | null> {
+    return this.findTenant('slug', slug);
+  }
+
+  private async findTenant(
+    identityColumn: 'id' | 'slug',
+    identityValue: string,
+  ): Promise<MasterTenantMetadata | null> {
     const result: unknown = await this.masterDataSource.query(
       `SELECT "id", "slug", "status", "db_name", "db_connection_ciphertext"
-       FROM "companies" WHERE "id" = $1`,
-      [companyId],
+       FROM "companies" WHERE "${identityColumn}" = $1`,
+      [identityValue],
     );
     if (!Array.isArray(result)) {
       throw new Error('Master tenant query returned an invalid result');
