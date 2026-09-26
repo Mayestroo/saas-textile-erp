@@ -54,6 +54,7 @@
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
     "typeorm": "^1.1.1",
+    "@textile/sync-protocol": "0.1.0",
     "uuid": "^14.0.2"
   },
   "devDependencies": {

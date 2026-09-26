@@ -24,6 +24,7 @@
   "dependencies": {
     "@electron-toolkit/preload": "^3.0.2",
     "@electron-toolkit/utils": "^4.0.0",
+    "@textile/sync-protocol": "0.1.0",
     "better-sqlite3": "^13.0.3",
     "decimal.js": "^10.6.0",
     "uuid": "^14.0.2",
