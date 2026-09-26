@@ -261,7 +261,7 @@ export class PattaNumberBlocksService {
   }
 
   async assertAllocatedNumber(
-    dataSource: DataSource,
+    dataSource: DataSource | EntityManager,
     validatedDeviceId: string,
     blockId: string,
     pattaNumber: bigint,

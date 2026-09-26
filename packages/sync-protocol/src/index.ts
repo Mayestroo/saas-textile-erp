@@ -43,6 +43,11 @@ export interface SyncPattaCreatePayload {
   razmer: string | null;
   rang: string | null;
   block_id: string;
+  template_overrides?: {
+    konveyer?: string;
+    razmer?: string | null;
+    rang?: string | null;
+  };
   reference_versions: {
     model: string;
     template: string | null;

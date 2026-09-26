@@ -4,6 +4,7 @@ import { AuditService } from '../audit/audit.service.js';
 import { OperationPriceService } from '../operations/operation-price.service.js';
 import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import type { PattaConfiguration } from './patta.config.js';
+import type { PattaOfflineRegistrationValidator } from './patta-offline-registration.validator.js';
 import { PattaService } from './patta.service.js';
 
 const actorId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -58,6 +59,7 @@ function createService(
       priceService as unknown as OperationPriceService,
       configuration,
       syncChangeRecorder as unknown as SyncChangeRecorder,
+      {} as PattaOfflineRegistrationValidator,
     ),
     dataSource,
     query,

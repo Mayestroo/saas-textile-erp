@@ -7,6 +7,7 @@ import { TenantPermissionGuard } from '../auth/tenant-permission.guard.js';
 import { TenantConnectionModule } from '../tenant-connection/tenant-connection.module.js';
 import { TenantResolverModule } from '../tenant-resolver/tenant-resolver.module.js';
 import { TenantSyncCoreModule } from '../sync/sync-core.module.js';
+import { PattaSyncHandler } from '../sync/patta-sync-handler.js';
 import { OperationsModule } from '../operations/operations.module.js';
 import { PattaConfigurationModule } from './patta.config.js';
 import { PattaController } from './patta.controller.js';
@@ -33,9 +34,10 @@ import { PattaTemplatesService } from './patta-templates.service.js';
     PattaOfflineRegistrationValidator,
     PattaService,
     PattaTemplatesService,
+    PattaSyncHandler,
     TenantAuthGuard,
     TenantPermissionGuard,
   ],
-  exports: [PattaNumberBlocksService, PattaOfflineRegistrationValidator, PattaService, PattaTemplatesService],
+  exports: [PattaNumberBlocksService, PattaOfflineRegistrationValidator, PattaService, PattaTemplatesService, PattaSyncHandler],
 })
 export class PattaModule {}

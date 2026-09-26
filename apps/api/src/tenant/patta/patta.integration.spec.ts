@@ -242,8 +242,14 @@ integrationDescribe(
         operations: new OperationsService(audit, prices, syncChangeRecorder),
         templates: new PattaTemplatesService(audit, syncChangeRecorder),
         blocks,
-        pattas: new PattaService(audit, prices, configuration, syncChangeRecorder),
         offline: new PattaOfflineRegistrationValidator(blocks),
+        pattas: new PattaService(
+          audit,
+          prices,
+          configuration,
+          syncChangeRecorder,
+          new PattaOfflineRegistrationValidator(blocks),
+        ),
       };
     }
 
@@ -807,6 +813,240 @@ integrationDescribe(
         template_id: template.id,
         count: 1,
       })).rejects.toMatchObject({ response: { code: 'PATTA_TEMPLATE_INACTIVE' } });
+    }, 30_000);
+
+    it('registers offline Patta IDs and historical snapshots only against matching references', async () => {
+      const tenant = tenants[0];
+      if (!tenant) throw new Error('Tenant A fixture was not initialized');
+      const actorId = await createActor(tenant.runtimeDataSource);
+      const feature = featureServices();
+      const model = await feature.models.create(tenant.runtimeDataSource, actorId, {
+        name: `Offline model ${randomUUID()}`,
+      });
+      const operation = await feature.operations.create(
+        tenant.runtimeDataSource,
+        model.id,
+        actorId,
+        { name: 'Offline stitch', price: '10.00', sort_order: 0 },
+      );
+      const activeDevice = await createMasterDevice(tenant.companyId, 'ACTIVE');
+      const device = await new DeviceAccessService(masterDataSource)
+        .assertActiveDevice(tenant.companyId, activeDevice);
+      const block = await feature.blocks.allocate(tenant.runtimeDataSource, actorId, device.id);
+      const cursorRows: Array<{ cursor: string }> = await tenant.runtimeDataSource.query(
+        `SELECT COALESCE(MAX("sequence_id"), 0)::text AS "cursor" FROM "server_change_log"`,
+      );
+      const referenceCursor = cursorRows[0]?.cursor;
+      if (!referenceCursor) throw new Error('Server reference cursor was not returned');
+      const occurredAt = await futureTimestamp(tenant.runtimeDataSource, '0 seconds');
+      const pattaId = randomUUID();
+      const snapshotId = randomUUID();
+      const eventId = randomUUID();
+      const makeEvent = (unitPrice: string, overrides: Record<string, unknown> = {}) => ({
+        event_id: eventId,
+        entity_type: 'patta',
+        entity_id: pattaId,
+        operation: 'CREATE',
+        base_version: '0',
+        client_created_at: occurredAt,
+        occurred_at: occurredAt,
+        reference_cursor: referenceCursor,
+        payload: {
+          partiya_number: 'OFFLINE-1',
+          patta_number: block.range_start,
+          model_id: model.id,
+          model_name_snapshot: model.name,
+          template_id: null,
+          konveyer_snapshot: '1-konveyer',
+          razmer: null,
+          rang: null,
+          block_id: block.id,
+          reference_versions: {
+            model: model.version,
+            template: null,
+            operations: { [operation.id]: operation.version },
+          },
+          operations: [{
+            id: snapshotId,
+            operation_id: operation.id,
+            operation_name_snapshot: operation.name,
+            unit_price_snapshot: unitPrice,
+            sort_order: operation.sort_order,
+          }],
+          ...overrides,
+        },
+      });
+
+      await expect(tenant.runtimeDataSource.transaction((manager) =>
+        feature.pattas.registerOffline(manager, actorId, device.id, makeEvent('99.00')),
+      )).rejects.toMatchObject({
+        response: { code: 'PATTA_SNAPSHOT_MISMATCH' },
+      });
+
+      const registration = await tenant.runtimeDataSource.transaction((manager) =>
+        feature.pattas.registerOffline(manager, actorId, device.id, makeEvent('10.00')),
+      );
+      expect(registration).toMatchObject({
+        version: '1',
+        record: {
+          id: pattaId,
+          partiya_number: 'OFFLINE-1',
+          patta_number: block.range_start,
+          operations: [{ operation_id: operation.id, unit_price_snapshot: '10.00' }],
+        },
+      });
+
+      const offlineAttribution: Array<{
+        created_device_id: string;
+        created_from_block_id: string;
+        client_created_at: string;
+        occurred_at: string;
+      }> = await tenant.runtimeDataSource.query(
+        `SELECT "created_device_id"::text AS "created_device_id",
+                "created_from_block_id"::text AS "created_from_block_id",
+                to_char("client_created_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "client_created_at",
+                to_char("occurred_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "occurred_at"
+         FROM "patta_hisob" WHERE "id" = $1`,
+        [pattaId],
+      );
+      expect(offlineAttribution).toEqual([{
+        created_device_id: device.id,
+        created_from_block_id: block.id,
+        client_created_at: occurredAt,
+        occurred_at: occurredAt,
+      }]);
+
+      const snapshotRows: Array<{ id: string; price: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "id"::text AS "id", "unit_price_snapshot"::text AS "price"
+         FROM "patta_operation_snapshots" WHERE "patta_hisob_id" = $1`,
+        [pattaId],
+      );
+      expect(snapshotRows).toEqual([{ id: snapshotId, price: '10.00' }]);
+      const syncRows: Array<{ sequence_id: string; entity_type: string; entity_id: string }> =
+        await tenant.runtimeDataSource.query(
+          `SELECT "sequence_id"::text AS "sequence_id", "entity_type", "entity_id"
+           FROM "server_change_log"
+           WHERE "entity_id" = ANY($1::varchar[])
+           ORDER BY "sequence_id"`,
+          [[pattaId, snapshotId]],
+        );
+      expect(syncRows).toEqual([
+        { sequence_id: registration.changeSequence, entity_type: 'patta_hisob', entity_id: pattaId },
+        { sequence_id: expect.any(String), entity_type: 'patta_operation_snapshots', entity_id: snapshotId },
+      ]);
+
+      await expect(tenant.runtimeDataSource.transaction((manager) =>
+        feature.pattas.registerOffline(manager, actorId, device.id, {
+          ...makeEvent('10.00'),
+          event_id: randomUUID(),
+        }),
+      )).rejects.toMatchObject({
+        response: { code: 'PATTA_ALREADY_EXISTS' },
+      });
+
+      const template = await feature.templates.create(tenant.runtimeDataSource, actorId, {
+        name: `Offline template ${randomUUID()}`,
+        model_id: model.id,
+        konveyer: '2-konveyer',
+        razmer: '42',
+        rang: 'Ko‘k',
+      });
+      const templateCursorRows: Array<{ cursor: string }> = await tenant.runtimeDataSource.query(
+        `SELECT COALESCE(MAX("sequence_id"), 0)::text AS "cursor" FROM "server_change_log"`,
+      );
+      const templateCursor = templateCursorRows[0]?.cursor;
+      if (!templateCursor) throw new Error('Template reference cursor was not returned');
+      const templatePattaId = randomUUID();
+      const templateSnapshotId = randomUUID();
+      const templateEvent = {
+        ...makeEvent('10.00', {
+          partiya_number: 'OFFLINE-TEMPLATE',
+          patta_number: (BigInt(block.range_start) + 1n).toString(),
+          template_id: template.id,
+          konveyer_snapshot: template.konveyer,
+          razmer: template.razmer,
+          rang: null,
+          template_overrides: { rang: null },
+          reference_versions: {
+            model: model.version,
+            template: template.version,
+            operations: { [operation.id]: operation.version },
+          },
+          operations: [{
+            id: templateSnapshotId,
+            operation_id: operation.id,
+            operation_name_snapshot: operation.name,
+            unit_price_snapshot: '10.00',
+            sort_order: operation.sort_order,
+          }],
+        }),
+        event_id: randomUUID(),
+        entity_id: templatePattaId,
+        reference_cursor: templateCursor,
+      };
+      const templateRegistration = await tenant.runtimeDataSource.transaction((manager) =>
+        feature.pattas.registerOffline(manager, actorId, device.id, templateEvent),
+      );
+      expect(templateRegistration.record).toMatchObject({
+        id: templatePattaId,
+        template_id: template.id,
+        konveyer_snapshot: template.konveyer,
+        razmer: template.razmer,
+        rang: null,
+      });
+
+      await expect(tenant.runtimeDataSource.transaction((manager) =>
+        feature.pattas.registerOffline(manager, actorId, device.id, {
+          ...templateEvent,
+          event_id: randomUUID(),
+          entity_id: randomUUID(),
+          reference_cursor: templateCursor,
+          payload: {
+            ...templateEvent.payload,
+            partiya_number: 'OFFLINE-TEMPLATE-MISMATCH',
+            patta_number: (BigInt(block.range_start) + 2n).toString(),
+            konveyer_snapshot: 'wrong-conveyor',
+            rang: template.rang,
+            template_overrides: {},
+            operations: [{
+              id: randomUUID(),
+              operation_id: operation.id,
+              operation_name_snapshot: operation.name,
+              unit_price_snapshot: '10.00',
+              sort_order: operation.sort_order,
+            }],
+          },
+        }),
+      )).rejects.toMatchObject({ response: { code: 'PATTA_SNAPSHOT_MISMATCH' } });
+
+      await feature.prices.changePrice(tenant.runtimeDataSource, {
+        operationId: operation.id,
+        actorUserId: actorId,
+        price: '12.00',
+        effectiveFrom: await futureTimestamp(tenant.runtimeDataSource, '2 seconds'),
+        expectedVersion: '1',
+      });
+      await expect(tenant.runtimeDataSource.transaction((manager) =>
+        feature.pattas.registerOffline(manager, actorId, device.id, {
+          ...makeEvent('12.00'),
+          event_id: randomUUID(),
+          entity_id: randomUUID(),
+          payload: {
+            ...(makeEvent('12.00').payload as Record<string, unknown>),
+            partiya_number: 'OFFLINE-2',
+            patta_number: (BigInt(block.range_start) + 1n).toString(),
+            operations: [{
+              id: randomUUID(),
+              operation_id: operation.id,
+              operation_name_snapshot: operation.name,
+              unit_price_snapshot: '12.00',
+              sort_order: operation.sort_order,
+            }],
+          },
+        }),
+      )).rejects.toMatchObject({
+        response: { code: 'REFERENCE_DATA_STALE' },
+      });
     }, 30_000);
 
     it('serializes Patta snapshots against concurrent operation rename/create/deactivation/price changes', async () => {
