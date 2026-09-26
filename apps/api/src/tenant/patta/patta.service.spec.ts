@@ -2,6 +2,7 @@ import type { DataSource, EntityManager } from 'typeorm';
 import { describe, expect, it, vi } from 'vitest';
 import { AuditService } from '../audit/audit.service.js';
 import { OperationPriceService } from '../operations/operation-price.service.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import type { PattaConfiguration } from './patta.config.js';
 import { PattaService } from './patta.service.js';
 
@@ -39,6 +40,9 @@ function createService(
       callback(manager)),
   } as unknown as DataSource;
   const auditService = { append: vi.fn(async () => undefined) };
+  const syncChangeRecorder = {
+    record: vi.fn(async () => ({ sequenceId: '1' })),
+  };
   const priceService = {
     resolvePrice: vi.fn(async () => options.price ?? '1000.00'),
   };
@@ -53,11 +57,13 @@ function createService(
       auditService as unknown as AuditService,
       priceService as unknown as OperationPriceService,
       configuration,
+      syncChangeRecorder as unknown as SyncChangeRecorder,
     ),
     dataSource,
     query,
     auditService,
     priceService,
+    syncChangeRecorder,
   };
 }
 
@@ -116,7 +122,7 @@ function generationQueryHandler(count: number) {
 
 describe('PattaService', () => {
   it('creates a batch from locked template values and one locked operation/price set', async () => {
-    const { service, dataSource, query, auditService, priceService } = createService(
+    const { service, dataSource, query, auditService, priceService, syncChangeRecorder } = createService(
       generationQueryHandler(2),
     );
 
@@ -160,6 +166,35 @@ describe('PattaService', () => {
       action: 'patta.create',
       after: expect.objectContaining({ device_id: deviceId, block_id: null, source: 'ONLINE' }),
     }));
+    expect(syncChangeRecorder.record).toHaveBeenCalledTimes(4);
+    expect(syncChangeRecorder.record).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'patta_hisob',
+        entityId: result[0]?.id,
+        operation: 'UPSERT',
+        entityVersion: '1',
+      }),
+    );
+    expect(syncChangeRecorder.record).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'patta_operation_snapshots',
+        entityId: expect.stringMatching(/^[0-9a-f-]{36}$/i),
+        operation: 'UPSERT',
+        payload: expect.objectContaining({
+          entity_type: 'patta_operation_snapshots',
+          data: expect.objectContaining({ patta_hisob_id: result[0]?.id, operation_id: operationId }),
+        }),
+      }),
+    );
+    expect(syncChangeRecorder.record).toHaveBeenNthCalledWith(
+      3,
+      expect.anything(),
+      expect.objectContaining({ entityType: 'patta_hisob', entityId: result[1]?.id }),
+    );
   });
 
   it('rejects a batch above the configured limit before opening a transaction', async () => {

@@ -3,6 +3,8 @@ import { BadRequestException, ConflictException, Inject, Injectable, NotFoundExc
 import type { DataSource, EntityManager } from 'typeorm';
 import { AuditService } from '../audit/audit.service.js';
 import { OperationPriceService } from '../operations/operation-price.service.js';
+import { createSyncProjection } from '../sync/sync-projections.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import type { GeneratePattaDto } from './dto/generate-patta.dto.js';
 import type { ListPattaDto } from './dto/list-patta.dto.js';
 import { PATTA_CONFIGURATION } from './patta.config.js';
@@ -144,6 +146,11 @@ interface PattaDraft {
   snapshots: ResolvedOperationSnapshot[];
 }
 
+interface PersistedOperationSnapshot {
+  id: string;
+  snapshot: ResolvedOperationSnapshot;
+}
+
 const MAX_POSTGRES_BIGINT = 9_223_372_036_854_775_807n;
 const POSITIVE_DECIMAL_PATTERN = /^[1-9][0-9]*$/;
 const PATTA_COLUMNS = `"id", "partiya_number", "patta_number"::text AS "patta_number",
@@ -257,6 +264,7 @@ export class PattaService {
     private readonly auditService: AuditService,
     private readonly operationPriceService: OperationPriceService,
     @Inject(PATTA_CONFIGURATION) private readonly configuration: PattaConfiguration,
+    private readonly syncChangeRecorder: SyncChangeRecorder,
   ) {}
 
   async generate(
@@ -413,14 +421,18 @@ export class PattaService {
           [nextNumber.toString()],
         );
 
+        const snapshotsByPatta = new Map<string, PersistedOperationSnapshot[]>();
         for (const draft of drafts) {
+          const persistedSnapshots: PersistedOperationSnapshot[] = [];
           for (const snapshot of draft.snapshots) {
+            const snapshotId = randomUUID();
             await manager.query(
               `INSERT INTO "patta_operation_snapshots"
-                 ("patta_hisob_id", "operation_id", "operation_name_snapshot",
+                 ("id", "patta_hisob_id", "operation_id", "operation_name_snapshot",
                   "unit_price_snapshot", "sort_order")
-               VALUES ($1, $2, $3, $4::numeric(14,2), $5)`,
+               VALUES ($1, $2, $3, $4, $5::numeric(14,2), $6)`,
               [
+                snapshotId,
                 draft.id,
                 snapshot.operation_id,
                 snapshot.operation_name_snapshot,
@@ -428,7 +440,9 @@ export class PattaService {
                 snapshot.sort_order,
               ],
             );
+            persistedSnapshots.push({ id: snapshotId, snapshot });
           }
+          snapshotsByPatta.set(draft.id, persistedSnapshots);
         }
 
         const results: PattaRecord[] = [];
@@ -487,6 +501,61 @@ export class PattaService {
               ish_soni: result.ish_soni,
             },
           });
+          await this.syncChangeRecorder.record(manager, {
+            entityType: 'patta_hisob',
+            entityId: result.id,
+            operation: 'UPSERT',
+            entityVersion: '1',
+            projectionVersion: 1,
+            payload: createSyncProjection({
+              entityType: 'patta_hisob',
+              entityVersion: '1',
+              data: {
+                id: result.id,
+                partiya_number: result.partiya_number,
+                patta_number: result.patta_number,
+                model_id: result.model_id,
+                model_name_snapshot: result.model_name_snapshot,
+                template_id: result.template_id,
+                konveyer_snapshot: result.konveyer_snapshot,
+                razmer: result.razmer,
+                rang: result.rang,
+                ish_soni: result.ish_soni,
+                created_device_id: validatedDeviceId,
+                created_from_block_id: null,
+                created_at: result.created_at,
+                client_created_at: null,
+                occurred_at: null,
+              },
+            }),
+          });
+          const persistedSnapshots = snapshotsByPatta.get(result.id);
+          if (!persistedSnapshots) {
+            throw new Error('Patta operation snapshots were not retained for sync recording');
+          }
+          for (const persisted of persistedSnapshots) {
+            const snapshotData = {
+              id: persisted.id,
+              patta_hisob_id: result.id,
+              operation_id: persisted.snapshot.operation_id,
+              operation_name_snapshot: persisted.snapshot.operation_name_snapshot,
+              unit_price_snapshot: persisted.snapshot.unit_price_snapshot,
+              sort_order: persisted.snapshot.sort_order,
+              created_at: formatTimestamp(transactionTime),
+            };
+            await this.syncChangeRecorder.record(manager, {
+              entityType: 'patta_operation_snapshots',
+              entityId: persisted.id,
+              operation: 'UPSERT',
+              entityVersion: null,
+              projectionVersion: 1,
+              payload: createSyncProjection({
+                entityType: 'patta_operation_snapshots',
+                entityVersion: null,
+                data: snapshotData,
+              }),
+            });
+          }
           results.push(result);
         }
 

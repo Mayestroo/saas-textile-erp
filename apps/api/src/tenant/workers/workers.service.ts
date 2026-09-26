@@ -2,6 +2,8 @@ import { Injectable } from '@nestjs/common';
 import type { DataSource } from 'typeorm';
 import { AuditService } from '../audit/audit.service.js';
 import { BadgeHistoryService } from '../badges/badge-history.service.js';
+import { createSyncProjection } from '../sync/sync-projections.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { CreateWorkerDto } from './dto/create-worker.dto.js';
 import { UpdateWorkerDto } from './dto/update-worker.dto.js';
 import {
@@ -71,6 +73,7 @@ export class WorkersService {
   constructor(
     private readonly auditService: AuditService,
     private readonly badgeHistoryService: BadgeHistoryService,
+    private readonly syncChangeRecorder: SyncChangeRecorder,
   ) {}
 
   async list(
@@ -127,6 +130,18 @@ export class WorkersService {
           action: 'worker.create',
           before: null,
           after: result,
+        });
+        await this.syncChangeRecorder.record(manager, {
+          entityType: 'workers',
+          entityId: result.id,
+          operation: 'UPSERT',
+          entityVersion: result.version,
+          projectionVersion: 1,
+          payload: createSyncProjection({
+            entityType: 'workers',
+            data: result,
+            entityVersion: result.version,
+          }),
         });
         return result;
       });
@@ -234,6 +249,18 @@ export class WorkersService {
             : 'worker.update',
           before,
           after,
+        });
+        await this.syncChangeRecorder.record(manager, {
+          entityType: 'workers',
+          entityId: after.id,
+          operation: 'UPSERT',
+          entityVersion: after.version,
+          projectionVersion: 1,
+          payload: createSyncProjection({
+            entityType: 'workers',
+            data: after,
+            entityVersion: after.version,
+          }),
         });
         return after;
       });

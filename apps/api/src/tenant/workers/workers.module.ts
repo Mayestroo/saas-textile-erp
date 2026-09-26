@@ -8,11 +8,18 @@ import { BadgeHistoryService } from '../badges/badge-history.service.js';
 import { BadgeResolutionService } from '../badges/badge-resolution.service.js';
 import { TenantConnectionModule } from '../tenant-connection/tenant-connection.module.js';
 import { TenantResolverModule } from '../tenant-resolver/tenant-resolver.module.js';
+import { TenantSyncCoreModule } from '../sync/sync-core.module.js';
 import { WorkersController } from './workers.controller.js';
 import { WorkersService } from './workers.service.js';
 
 @Module({
-  imports: [TenantAuthModule, TenantConnectionModule, TenantResolverModule, TenantAuditModule],
+  imports: [
+    TenantAuthModule,
+    TenantConnectionModule,
+    TenantResolverModule,
+    TenantAuditModule,
+    TenantSyncCoreModule,
+  ],
   controllers: [WorkersController, BadgesController],
   providers: [
     WorkersService,

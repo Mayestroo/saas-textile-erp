@@ -1,6 +1,8 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { DataSource, EntityManager } from 'typeorm';
 import { AuditService } from '../audit/audit.service.js';
+import { createSyncProjection } from '../sync/sync-projections.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { PATTA_CONFIGURATION } from './patta.config.js';
 import type { PattaConfiguration } from './patta.config.js';
 import {
@@ -98,6 +100,7 @@ export class PattaNumberBlocksService {
   constructor(
     private readonly auditService: AuditService,
     @Inject(PATTA_CONFIGURATION) private readonly configuration: PattaConfiguration,
+    private readonly syncChangeRecorder: SyncChangeRecorder,
   ) {}
 
   async allocate(
@@ -160,6 +163,7 @@ export class PattaNumberBlocksService {
           before: null,
           after: result,
         });
+        await this.recordBlockChange(manager, result);
         return result;
       });
     } catch (error) {
@@ -214,7 +218,9 @@ export class PattaNumberBlocksService {
       if (!updated) {
         throw pattaNumberBlockNotFound();
       }
-      return serializeBlock(updated);
+      const result = serializeBlock(updated);
+      await this.recordBlockChange(manager, result);
+      return result;
     });
   }
 
@@ -249,6 +255,7 @@ export class PattaNumberBlocksService {
         before,
         after,
       });
+      await this.recordBlockChange(manager, after);
       return after;
     });
   }
@@ -295,5 +302,32 @@ export class PattaNumberBlocksService {
     if (block.device_id !== validatedDeviceId) {
       throw pattaNumberBlockDeviceMismatch();
     }
+  }
+
+  private recordBlockChange(
+    manager: EntityManager,
+    block: PattaNumberBlockRecord,
+  ): Promise<unknown> {
+    return this.syncChangeRecorder.record(manager, {
+      entityType: 'patta_number_blocks',
+      entityId: block.id,
+      operation: 'UPSERT',
+      entityVersion: null,
+      projectionVersion: 1,
+      payload: createSyncProjection({
+        entityType: 'patta_number_blocks',
+        data: {
+          id: block.id,
+          device_id: block.device_id,
+          range_start: block.range_start,
+          range_end: block.range_end,
+          reported_used_count: block.reported_used_count,
+          status: block.status,
+          allocated_at: block.allocated_at,
+          exhausted_at: block.exhausted_at,
+        },
+        entityVersion: null,
+      }),
+    });
   }
 }

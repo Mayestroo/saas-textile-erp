@@ -11,6 +11,8 @@ import type {
   SyncTemplateProjection,
   SyncWorkerProjection,
 } from '@textile/sync-protocol';
+import type { BadgeAssignmentRecord } from '../badges/badge-history.service.js';
+import type { SyncChangeInput } from './sync-change-recorder.js';
 
 interface ProjectionDataByEntity {
   workers: SyncWorkerProjection;
@@ -121,4 +123,26 @@ export function createSyncProjection(
         data: input.data,
       };
   }
+}
+
+export function toBadgeChange(record: BadgeAssignmentRecord): SyncChangeInput {
+  return {
+    entityType: 'worker_badge_history',
+    entityId: record.id,
+    operation: 'UPSERT',
+    entityVersion: null,
+    projectionVersion: 1,
+    payload: createSyncProjection({
+      entityType: 'worker_badge_history',
+      data: {
+        id: record.id,
+        badge_number: record.badge_number,
+        worker_id: record.worker_id,
+        valid_from: record.valid_from,
+        valid_to: record.valid_to,
+        created_at: record.created_at,
+      },
+      entityVersion: null,
+    }),
+  };
 }

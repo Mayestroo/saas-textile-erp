@@ -12,6 +12,7 @@ import { TenantDatabaseManager } from '../../database/tenant/tenant-database-man
 import { PattaSequenceInitializer } from '../../database/tenant/patta-sequence.initializer.js';
 import { TenantTestDatabaseCleanup } from '../../database/tenant/tenant-test-database-cleanup.js';
 import { AuditService } from '../audit/audit.service.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { BadgeHistoryService } from '../badges/badge-history.service.js';
 import { BadgeResolutionService } from '../badges/badge-resolution.service.js';
 import { WorkersService } from './workers.service.js';
@@ -41,6 +42,7 @@ const provisionerCredentials = configuredVariables.length === TEST_DATABASE_VARI
   : undefined;
 const MIGRATION_NAME = 'AddWorkersAndBadgeHistory20260926000400';
 const PATTA_MIGRATION_NAME = 'AddPattaFoundation20260926000500';
+const SYNC_MIGRATION_NAME = 'AddOfflineSyncInfrastructure20260926000600';
 
 interface DriverError {
   message?: string;
@@ -182,12 +184,14 @@ integrationDescribe(
 
     function services() {
       const audit = new AuditService();
-      const badges = new BadgeHistoryService(audit);
+      const syncChangeRecorder = new SyncChangeRecorder();
+      const badges = new BadgeHistoryService(audit, syncChangeRecorder);
       return {
         audit,
+        syncChangeRecorder,
         badges,
         resolution: new BadgeResolutionService(),
-        workers: new WorkersService(audit, badges),
+        workers: new WorkersService(audit, badges, syncChangeRecorder),
       };
     }
 
@@ -195,7 +199,7 @@ integrationDescribe(
       const rows: Array<{ name: string }> = await tenantA.migrationDataSource.query(
         `SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"`,
       );
-      expect(rows.at(-1)?.name).toBe(PATTA_MIGRATION_NAME);
+      expect(rows.at(-1)?.name).toBe(SYNC_MIGRATION_NAME);
 
       const schemaRows: Array<{ table_name: string }> = await tenantA.runtimeDataSource.query(
         `SELECT "table_name" FROM "information_schema"."tables"
@@ -315,6 +319,7 @@ integrationDescribe(
       const tenant = await createTenant();
       await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       const actorUserId = await createActor(tenant.runtimeDataSource);
       const entityId = randomUUID();
       const auditRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
@@ -330,7 +335,11 @@ integrationDescribe(
       }
 
       const reapplied = await tenant.migrationDataSource.runMigrations({ transaction: 'all' });
-      expect(reapplied.map(({ name }) => name)).toEqual([MIGRATION_NAME, PATTA_MIGRATION_NAME]);
+      expect(reapplied.map(({ name }) => name)).toEqual([
+        MIGRATION_NAME,
+        PATTA_MIGRATION_NAME,
+        SYNC_MIGRATION_NAME,
+      ]);
       await new PattaSequenceInitializer().initialize(tenant.migrationDataSource, 1n);
       const backfilled: Array<{ entity_key: string; entity_id: string }> = await tenant.runtimeDataSource.query(
         'SELECT "entity_key", "entity_id"::text AS "entity_id" FROM "audit_log" WHERE "id" = $1',
@@ -340,13 +349,18 @@ integrationDescribe(
 
       await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       const legacyAfterDown: Array<{ entity_id: string }> = await tenant.runtimeDataSource.query(
         'SELECT "entity_id"::text AS "entity_id" FROM "audit_log" WHERE "id" = $1',
         [auditId],
       );
       expect(legacyAfterDown[0]?.entity_id).toBe(entityId);
       const finalReapply = await tenant.migrationDataSource.runMigrations({ transaction: 'all' });
-      expect(finalReapply.map(({ name }) => name)).toEqual([MIGRATION_NAME, PATTA_MIGRATION_NAME]);
+      expect(finalReapply.map(({ name }) => name)).toEqual([
+        MIGRATION_NAME,
+        PATTA_MIGRATION_NAME,
+        SYNC_MIGRATION_NAME,
+      ]);
       await new PattaSequenceInitializer().initialize(tenant.migrationDataSource, 1n);
       await tenantDatabaseManager.grantRuntimePrivileges(tenant.companyId, tenant.databaseName,
         tenantDatabaseManager.createSecret(tenant.companyId));
@@ -362,6 +376,7 @@ integrationDescribe(
         [actorUserId],
       );
 
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       await expectMigrationRefusal(tenant.migrationDataSource, 'ck_audit_log_entity_key_reversible');
       const remaining: Array<{ entity_key: string; entity_id: string | null }> =
@@ -387,6 +402,7 @@ integrationDescribe(
         [actorUserId, entityId],
       );
 
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       await expectMigrationRefusal(tenant.migrationDataSource, 'ck_audit_log_legacy_values');
       const remains: Array<{ entity_type: string; action: string; entity_key: string }> =
@@ -459,6 +475,17 @@ integrationDescribe(
         { entity_type: 'worker', entity_key: '47', entity_id: null, action: 'worker.create' },
         { entity_type: 'worker', entity_key: '18', entity_id: null, action: 'worker.update' },
       ]));
+      const workerChanges: Array<{ entity_version: string; full_name: string }> =
+        await tenantA.runtimeDataSource.query(
+          `SELECT "entity_version", "payload_json" #>> '{data,full_name}' AS "full_name"
+           FROM "server_change_log"
+           WHERE "entity_type" = 'workers' AND "entity_id" = '18'
+           ORDER BY "sequence_id"`,
+        );
+      expect(workerChanges).toEqual([
+        { entity_version: '1', full_name: 'Abdullayeva Nodira' },
+        { entity_version: '2', full_name: 'aBDULLAYEVA nODIRA' },
+      ]);
     }, 30_000);
 
     it('assigns/reassigns/releases badges, resolves historical fixtures, and closes badges on deactivation', async () => {
@@ -498,10 +525,42 @@ integrationDescribe(
         worker_id: '18',
         effective_at: '2026-06-01T00:00:00Z',
       })).rejects.toMatchObject({ response: { code: 'BADGE_EFFECTIVE_AT_IN_PAST' } });
+      const oldOpenHistory: Array<{ id: string }> = await tenantA.runtimeDataSource.query(
+        `SELECT "id"::text AS "id" FROM "worker_badge_history"
+         WHERE "badge_number" = '125' AND "worker_id" = 47 AND "valid_to" IS NULL`,
+      );
+      const oldAssignmentId = oldOpenHistory[0]?.id;
+      if (!oldAssignmentId) throw new Error('Open historical badge assignment was not found');
       const current = await feature.badges.reassign(tenantA.runtimeDataSource, actorUserId, '125', {
         worker_id: '18',
       });
       expect(current.worker_id).toBe('18');
+      const reassignmentChanges: Array<{
+        entity_id: string;
+        data: { badge_number: string; worker_id: string; valid_from: string; valid_to: string | null };
+      }> = await tenantA.runtimeDataSource.query(
+        `SELECT change."entity_id", change."payload_json" -> 'data' AS "data"
+         FROM "server_change_log" AS change
+         WHERE change."entity_type" = 'worker_badge_history'
+           AND change."entity_id" = ANY($1::varchar[])
+         ORDER BY change."sequence_id"`,
+        [[oldAssignmentId, current.id]],
+      );
+      expect(reassignmentChanges.map(({ entity_id }) => entity_id)).toEqual([
+        oldAssignmentId,
+        current.id,
+      ]);
+      expect(reassignmentChanges[0]?.data).toMatchObject({
+        badge_number: '125',
+        worker_id: '47',
+        valid_to: current.valid_from,
+      });
+      expect(reassignmentChanges[1]?.data).toMatchObject({
+        badge_number: '125',
+        worker_id: '18',
+        valid_from: current.valid_from,
+        valid_to: null,
+      });
       await expect(feature.resolution.resolve(
         tenantA.runtimeDataSource,
         '125',
@@ -543,6 +602,40 @@ integrationDescribe(
         );
       expect(deactivatedHistory).toHaveLength(2);
       expect(deactivatedHistory.every(({ valid_to, worker_updated_at }) => valid_to === worker_updated_at)).toBe(true);
+      const deactivationChanges: Array<{
+        sequence_id: string;
+        entity_type: string;
+        entity_version: string | null;
+        data: Record<string, unknown>;
+      }> = await tenantA.runtimeDataSource.query(
+        `SELECT change."sequence_id"::text AS "sequence_id", change."entity_type",
+                change."entity_version", change."payload_json" -> 'data' AS "data"
+         FROM "server_change_log" AS change
+         WHERE (change."entity_type" = 'worker_badge_history'
+                AND change."payload_json" #>> '{data,badge_number}' = ANY($1::varchar[]))
+            OR (change."entity_type" = 'workers' AND change."entity_id" = '18'
+                AND change."entity_version" = '3')
+         ORDER BY change."sequence_id"`,
+        [['DEACT-125', 'DEACT-126']],
+      );
+      expect(deactivationChanges.map(({ entity_type, data }) =>
+        entity_type === 'workers'
+          ? 'WORKER'
+          : `${String(data.badge_number)}:${data.valid_to === null ? 'OPEN' : 'CLOSED'}`,
+      )).toEqual([
+        'DEACT-125:OPEN',
+        'DEACT-126:OPEN',
+        'DEACT-125:CLOSED',
+        'DEACT-126:CLOSED',
+        'WORKER',
+      ]);
+      expect(deactivationChanges.slice(0, 2).every(({ data }) => data.valid_to === null)).toBe(true);
+      expect(deactivationChanges.slice(2, 4).every(({ data }) => data.valid_to === deactivationChanges[4]?.data.updated_at)).toBe(true);
+      expect(deactivationChanges[4]?.data).toMatchObject({
+        id: '18',
+        status: 'INACTIVE',
+        version: '3',
+      });
       await expect(feature.badges.assign(tenantA.runtimeDataSource, actorUserId, '18', {
         badge_number: 'INACTIVE-125',
       })).rejects.toMatchObject({ response: { code: 'WORKER_INACTIVE' } });
@@ -661,13 +754,15 @@ integrationDescribe(
       expect(openRows[0]?.count).toBe('1');
     }, 30_000);
 
-    it('refuses to revert a populated worker/badge tenant without changing migration state', async () => {
-      await tenantA.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await expectMigrationRefusal(tenantA.migrationDataSource, 'ck_workers_badges_empty_before_revert');
+    it('refuses to revert sync history after worker/badge changes are recorded', async () => {
+      await expectMigrationRefusal(
+        tenantA.migrationDataSource,
+        'ck_sync_schema_empty_before_revert',
+      );
       const migrations: Array<{ name: string }> = await tenantA.migrationDataSource.query(
         'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp" DESC LIMIT 1',
       );
-      expect(migrations[0]?.name).toBe(MIGRATION_NAME);
+      expect(migrations[0]?.name).toBe(SYNC_MIGRATION_NAME);
       const auditRows: Array<{ count: string }> = await tenantA.runtimeDataSource.query(
         'SELECT count(*)::text AS "count" FROM "audit_log"',
       );

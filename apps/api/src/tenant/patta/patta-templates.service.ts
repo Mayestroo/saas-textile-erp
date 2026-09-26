@@ -2,6 +2,8 @@ import { BadRequestException, ConflictException, Injectable } from '@nestjs/comm
 import type { DataSource, EntityManager } from 'typeorm';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuditAction } from '../audit/audit.service.js';
+import { createSyncProjection } from '../sync/sync-projections.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { canonicalizeBusinessName } from '../models/business-name.js';
 import { modelNotFound, postgresConstraint } from '../models/model-errors.js';
 import { pattaModelInactive, pattaTemplateNameConflict, pattaTemplateNotFound, pattaVersionConflict } from './patta-errors.js';
@@ -108,7 +110,10 @@ function mapTemplateWriteError(error: unknown): never {
 
 @Injectable()
 export class PattaTemplatesService {
-  constructor(private readonly auditService: AuditService) {}
+  constructor(
+    private readonly auditService: AuditService,
+    private readonly syncChangeRecorder: SyncChangeRecorder,
+  ) {}
 
   async list(
     dataSource: DataSource,
@@ -168,6 +173,18 @@ export class PattaTemplatesService {
           action: 'patta_template.create',
           before: null,
           after: result,
+        });
+        await this.syncChangeRecorder.record(manager, {
+          entityType: 'patta_templates',
+          entityId: result.id,
+          operation: 'UPSERT',
+          entityVersion: result.version,
+          projectionVersion: 1,
+          payload: createSyncProjection({
+            entityType: 'patta_templates',
+            data: result,
+            entityVersion: result.version,
+          }),
         });
         return result;
       });
@@ -271,6 +288,18 @@ export class PattaTemplatesService {
           action,
           before,
           after,
+        });
+        await this.syncChangeRecorder.record(manager, {
+          entityType: 'patta_templates',
+          entityId: after.id,
+          operation: 'UPSERT',
+          entityVersion: after.version,
+          projectionVersion: 1,
+          payload: createSyncProjection({
+            entityType: 'patta_templates',
+            data: after,
+            entityVersion: after.version,
+          }),
         });
         return after;
       });

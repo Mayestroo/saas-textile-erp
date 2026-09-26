@@ -2,6 +2,8 @@ import { BadRequestException, HttpException, Injectable } from '@nestjs/common';
 import type { DataSource, EntityManager } from 'typeorm';
 import { AuditService } from '../audit/audit.service.js';
 import { workerNotFound } from '../workers/worker-errors.js';
+import { toBadgeChange } from '../sync/sync-projections.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import type { AssignBadgeDto } from './dto/assign-badge.dto.js';
 import type { ReassignBadgeDto } from './dto/reassign-badge.dto.js';
 import type { ReleaseBadgeDto } from './dto/release-badge.dto.js';
@@ -135,7 +137,10 @@ function mapBadgeWriteError(error: unknown): never {
 
 @Injectable()
 export class BadgeHistoryService {
-  constructor(private readonly auditService: AuditService) {}
+  constructor(
+    private readonly auditService: AuditService,
+    private readonly syncChangeRecorder: SyncChangeRecorder,
+  ) {}
 
   async assign(
     dataSource: DataSource,
@@ -173,6 +178,7 @@ export class BadgeHistoryService {
           before: null,
           after: inserted,
         });
+        await this.syncChangeRecorder.record(manager, toBadgeChange(inserted));
         return inserted;
       });
     } catch (error) {
@@ -220,6 +226,8 @@ export class BadgeHistoryService {
           before: current,
           after: { ...inserted, previous_assignment: closed },
         });
+        await this.syncChangeRecorder.record(manager, toBadgeChange(closed));
+        await this.syncChangeRecorder.record(manager, toBadgeChange(inserted));
         return inserted;
       });
     } catch (error) {
@@ -254,6 +262,7 @@ export class BadgeHistoryService {
           before: current,
           after: closed,
         });
+        await this.syncChangeRecorder.record(manager, toBadgeChange(closed));
         return closed;
       });
     } catch (error) {
@@ -309,6 +318,7 @@ export class BadgeHistoryService {
         before,
         after: closed,
       });
+      await this.syncChangeRecorder.record(manager, toBadgeChange(closed));
       closedAssignments.push(closed);
     }
     return closedAssignments;

@@ -1,6 +1,7 @@
 import type { DataSource, EntityManager } from 'typeorm';
 import { describe, expect, it, vi } from 'vitest';
 import { AuditService } from '../audit/audit.service.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import type { PattaConfiguration } from './patta.config.js';
 import { PattaNumberBlocksService } from './patta-number-blocks.service.js';
 
@@ -29,6 +30,9 @@ function createService(queryHandler: (sql: string, parameters?: unknown[]) => Pr
       callback(manager)),
   } as unknown as DataSource;
   const auditService = { append: vi.fn(async () => undefined) };
+  const syncChangeRecorder = {
+    record: vi.fn(async () => ({ sequenceId: '1' })),
+  };
   const service = new PattaNumberBlocksService(
     auditService as unknown as AuditService,
     {
@@ -37,13 +41,14 @@ function createService(queryHandler: (sql: string, parameters?: unknown[]) => Pr
       maxActiveBlocksPerDevice: 2,
       maxBatchSize: 100,
     } satisfies PattaConfiguration,
+    syncChangeRecorder as unknown as SyncChangeRecorder,
   );
-  return { service, dataSource, query, auditService };
+  return { service, dataSource, query, auditService, syncChangeRecorder };
 }
 
 describe('PattaNumberBlocksService', () => {
   it('allocates a block by locking and advancing the singleton BIGINT sequence', async () => {
-    const { service, dataSource, query, auditService } = createService(async (sql) => {
+    const { service, dataSource, query, auditService, syncChangeRecorder } = createService(async (sql) => {
       if (sql.includes('FROM "patta_number_sequence"')) return [sequenceRow];
       if (sql.includes('count(*)::text')) return [{ active_count: '0' }];
       if (sql.includes('INSERT INTO "patta_number_blocks"')) return [blockRow];
@@ -63,6 +68,24 @@ describe('PattaNumberBlocksService', () => {
       action: 'patta_number_block.allocate',
       after: expect.objectContaining({ device_id: deviceId, range_start: '1000', range_end: '1999' }),
     }));
+    expect(syncChangeRecorder.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'patta_number_blocks',
+        entityId: blockId,
+        entityVersion: null,
+        operation: 'UPSERT',
+        payload: expect.objectContaining({
+          entity_type: 'patta_number_blocks',
+          entity_id: blockId,
+          data: expect.objectContaining({
+            range_start: '1000',
+            range_end: '1999',
+            reported_used_count: '0',
+          }),
+        }),
+      }),
+    );
   });
 
   it('enforces the configured active-block limit while holding the sequence lock', async () => {
@@ -78,7 +101,7 @@ describe('PattaNumberBlocksService', () => {
   });
 
   it('exhausts a full block and rejects usage reports that go backwards', async () => {
-    const { service, dataSource } = createService(async (sql) => {
+    const { service, dataSource, syncChangeRecorder } = createService(async (sql) => {
       if (sql.includes('FROM "patta_number_blocks"') && sql.includes('FOR UPDATE')) {
         return [{ ...blockRow, reported_used_count: '999' }];
       }
@@ -90,6 +113,17 @@ describe('PattaNumberBlocksService', () => {
 
     await expect(service.reportUsage(dataSource, actorId, deviceId, blockId, 1000n))
       .resolves.toMatchObject({ reported_used_count: '1000', status: 'EXHAUSTED' });
+    expect(syncChangeRecorder.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'patta_number_blocks',
+        entityId: blockId,
+        operation: 'UPSERT',
+        payload: expect.objectContaining({
+          data: expect.objectContaining({ reported_used_count: '1000', status: 'EXHAUSTED' }),
+        }),
+      }),
+    );
     await expect(service.reportUsage(dataSource, actorId, deviceId, blockId, 998n))
       .rejects.toMatchObject({ response: { code: 'PATTA_BLOCK_USAGE_DECREASED' } });
   });

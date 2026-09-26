@@ -6,6 +6,7 @@ import { TenantAuthGuard } from '../auth/tenant-auth.guard.js';
 import { TenantPermissionGuard } from '../auth/tenant-permission.guard.js';
 import { TenantConnectionModule } from '../tenant-connection/tenant-connection.module.js';
 import { TenantResolverModule } from '../tenant-resolver/tenant-resolver.module.js';
+import { TenantSyncCoreModule } from '../sync/sync-core.module.js';
 import { OperationsModule } from '../operations/operations.module.js';
 import { PattaConfigurationModule } from './patta.config.js';
 import { PattaController } from './patta.controller.js';
@@ -23,6 +24,7 @@ import { PattaTemplatesService } from './patta-templates.service.js';
     TenantResolverModule,
     OperationsModule,
     TenantAuditModule,
+    TenantSyncCoreModule,
     PattaConfigurationModule,
   ],
   controllers: [PattaController, PattaTemplatesController],
