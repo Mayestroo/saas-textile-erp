@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { getDataSourceToken } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
+import { PattaConfigurationModule } from '../../tenant/patta/patta.config.js';
 import { MASTER_DATA_SOURCE_NAME } from '../master/master-database.config.js';
 import {
   createTenantProvisionerCredentials,
@@ -8,8 +9,10 @@ import {
 } from './tenant-database.config.js';
 import { TenantDatabaseManager } from './tenant-database-manager.js';
 import { TenantMigrationRunner } from './tenant-migration-runner.js';
+import { PattaSequenceInitializer } from './patta-sequence.initializer.js';
 
 @Module({
+  imports: [PattaConfigurationModule],
   providers: [
     {
       provide: TenantDatabaseManager,
@@ -33,6 +36,7 @@ import { TenantMigrationRunner } from './tenant-migration-runner.js';
         });
       },
     },
+    PattaSequenceInitializer,
     TenantMigrationRunner,
   ],
   exports: [TenantDatabaseManager, TenantMigrationRunner],

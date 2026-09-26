@@ -145,8 +145,10 @@ export class TenantDatabaseManager implements OnModuleDestroy {
       await dataSource.query(
         `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
           "users", "roles", "permissions", "role_permissions", "auth_sessions", "login_rate_limits",
-          "models", "model_operations", "model_operation_prices", "audit_log",
-          "workers", "worker_badge_history"
+           "models", "model_operations", "model_operation_prices", "audit_log",
+           "workers", "worker_badge_history",
+           "patta_templates", "patta_number_sequence", "patta_number_blocks",
+           "patta_hisob", "patta_operation_snapshots"
          TO ${role}`,
       );
       await dataSource.query(`GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ${role}`);

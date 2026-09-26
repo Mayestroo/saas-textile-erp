@@ -111,8 +111,8 @@ to its device. Such checks never allocate or release numbers.
 model FK and `model_name_snapshot`, optional template FK, `konveyer_snapshot`,
 optional size/color, server-derived `ish_soni`, validated `created_device_id`,
 optional source block ID, actor, timestamps, and positive version. Normalize
-partiya by trimming/collapsing whitespace, reject empty values, and preserve
-case. The required business constraint is only
+partiya by trimming/collapsing whitespace, reject empty values, preserve case,
+and compare the display value case-sensitively. The required business constraint is only
 `UNIQUE(partiya_number, patta_number)`; do not add a standalone Patta-number
 unique constraint. BIGINT values serialize as decimal strings.
 
@@ -121,7 +121,9 @@ operation, immutable operation name, `NUMERIC(14,2)` price, order, and creation
 timestamp. Enforce unique `(patta_hisob_id, operation_id)`, nonnegative price,
 and nonnegative order. Trigger protection rejects snapshot update/delete,
 Patta deletion, block deletion, and template deletion. FK delete rules preserve
-referenced history.
+referenced history. The Patta FK is deferred within the transaction so the
+server can insert snapshots, count those persisted rows, and then insert
+`patta_hisob.ish_soni` from that exact count.
 
 The Patta row preserves model name, conveyor, size, and color as creation-time
 values. The optional template FK is lineage only; template deactivation or later
@@ -220,7 +222,9 @@ block ID, and BIGINT number; it verifies that the tenant-local block exists,
 belongs to that device, and contains the number. It permits historical
 membership in `EXHAUSTED` and `CANCELLED` ranges, without making those blocks
 available for new allocation or usage mutations. The Patta pair unique
-constraint protects later registration races.
+constraint protects later registration races; the validator also checks for an
+existing pair before a future registration attempt, while PostgreSQL remains
+the race-safe final authority.
 
 A structural snapshot-payload validator checks unique operation IDs, nonempty
 operation names, valid nonnegative decimal prices, nonnegative sort order, and
@@ -235,8 +239,9 @@ processed event storage in this stage.
 The additive migration's `down` checks for Patta/template/block business rows
 and Patta audit events before removing any schema. If identity or audit history
 would be lost, rollback raises a named error and leaves migration state/schema
-untouched. The initializer's untouched singleton sequence row alone does not
-block a test/empty-schema down; the migration may safely drop it. Reapply then
+untouched. The initializer's untouched singleton sequence row (version 1) alone
+does not block a test/empty-schema down; the migration may safely drop it. A
+sequence whose version advanced also blocks rollback. Reapply then
 creates the tables and the runner initializes the sequence from current
 validated configuration.
 

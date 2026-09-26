@@ -176,3 +176,91 @@ revert and reapply without changing old UUID values; non-UUID worker identities
 and worker/badge audit categories fail before DDL/data changes. Tenant runtime
 roles receive DML on both feature tables and the identity sequence through the
 existing `TenantDatabaseManager` grant flow.
+
+## Patta templates, number allocation, and historical accounting
+
+Additive tenant migration `20260926000500-AddPattaFoundation.js` creates
+`patta_templates`, `patta_number_sequence`, `patta_number_blocks`,
+`patta_hisob`, and `patta_operation_snapshots`. The migration does not seed a
+sequence row from an environment variable. After migrations succeed,
+`TenantMigrationRunner` invokes `PattaSequenceInitializer` with the validated
+`PATTA_NUMBER_START`; it inserts singleton `id = 1` only if absent. Concurrent
+initializers rely on the primary key and `ON CONFLICT DO NOTHING`. Existing
+`next_number` is never reset when the environment changes.
+
+Patta allocation settings are validated at startup:
+
+- `PATTA_NUMBER_START=1` (positive BIGINT; used only when first initializing a tenant);
+- `PATTA_NUMBER_BLOCK_SIZE=1000` (positive BIGINT block size);
+- `PATTA_MAX_ACTIVE_BLOCKS_PER_DEVICE=2` (positive safe integer);
+- `PATTA_MAX_BATCH_SIZE=100` (positive safe integer).
+
+The online server allocator and device block allocator share the same
+tenant-local sequence row. Both lock it `FOR UPDATE`, use exact `BigInt` range
+arithmetic, and commit the range/sequence movement atomically with their tenant
+transaction. API ranges and Patta numbers serialize as decimal strings. Online
+generation always stores `created_from_block_id = NULL`; that means its numbers
+came directly from the server allocator, not a device-reserved block. The
+client cannot set this field. No allocator path uses `MAX(patta_number) + 1`.
+
+`patta_number_blocks` stores inclusive BIGINT ranges. A GiST exclusion
+constraint prohibits overlaps across `ACTIVE`, `EXHAUSTED`, and `CANCELLED`
+rows. Cancellation and sequence rollback never release a range. Reports can
+only advance monotonically while ACTIVE; reporting the full range transitions
+to `EXHAUSTED`, and EXHAUSTED/CANCELLED are terminal for allocation and usage
+updates. The historical membership validator may still prove that a number
+belongs to an EXHAUSTED/CANCELLED block and its original device.
+
+The Master `DeviceAccessService` is the reusable device authorization boundary
+for block allocation, usage, cancellation, and online Patta generation. It
+looks up the supplied device ID in Master, compares its company to the
+authenticated tenant context, and requires `ACTIVE`. It distinguishes
+`DEVICE_NOT_FOUND`, `DEVICE_TENANT_MISMATCH`, and `DEVICE_NOT_ACTIVE`. A
+cross-database FK is intentionally absent; only the validated device UUID is
+written to tenant block/Patta rows and audit metadata. Client tenant/company IDs
+are rejected as unknown DTO fields.
+
+Templates require an ACTIVE model at creation, normalize business strings with
+the existing `canonicalize_business_name()` function, and have tenant-wide
+active-only normalized-name uniqueness. Template changes use positive BIGINT
+optimistic versions; deactivation is a status transition. DB triggers prohibit
+template hard-delete. Generation with a template reads conveyor/dimension
+defaults only from a locked template row; explicit optional dimension `null`
+clears that default. Model → ACTIVE operations ordered by `sort_order, id` →
+template row is the generation lock order.
+
+Each `patta_hisob` row preserves `model_name_snapshot`, `konveyer_snapshot`,
+size/color, and the required business key `UNIQUE(partiya_number,
+patta_number)`. Partiya whitespace is normalized while casing is preserved and
+compared case-sensitively. A standalone `patta_number` unique constraint is
+intentionally absent. Operation snapshots store canonical operation name, effective
+`NUMERIC(14,2)` price, and order. The deferred Patta FK permits inserting
+snapshot rows first so `ish_soni` is derived from
+`COUNT(patta_operation_snapshots)` before the Patta parent row is inserted.
+`patta_hisob` and snapshot update/delete triggers protect historical values.
+
+Online generation is all-or-nothing. One transaction timestamp is captured for
+the whole batch; model and ACTIVE operation rows are shared-locked, and every
+price is resolved with `OperationPriceService.resolvePrice(operation_id,
+transaction_timestamp, manager)`. `model_operations.price` is not an effective
+price source. Operation create/update/deactivate already takes model then
+operation locks; price changes take the operation lock, making the snapshot
+stable against concurrent mutations. A model with no ACTIVE operations returns
+`PATTA_MODEL_HAS_NO_OPERATIONS`. Each created Patta receives its own append-only
+`patta.create` audit record keyed by immutable Patta UUID.
+
+Template read/write permissions reuse `models.view` and `models.manage`;
+allocation, usage, cancellation, and generation use
+`patta.chiqarish.create`; lookup and paginated list use `patta.hisob.view`.
+Lookup/list read tenant PostgreSQL directly. Redis caching is deferred because
+the current Redis module is a stub; PostgreSQL remains the source of truth.
+Offline registration has only reusable number-membership and structural
+snapshot validators in this stage, plus an existing `(partiya_number,
+patta_number)` lookup check before a future registration attempt. PostgreSQL's
+unique constraint remains the race-safe final authority. No sync endpoint, event
+ID, queue, or offline Patta persistence is created.
+
+Migration rollback refuses to remove any Patta/template/block business row or
+Patta audit event. An untouched singleton sequence row alone does not prevent
+an empty-schema test down/up cycle; a sequence whose version advanced also
+prevents rollback.

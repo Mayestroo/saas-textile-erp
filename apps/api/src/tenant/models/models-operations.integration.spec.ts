@@ -9,6 +9,7 @@ import {
   type TenantDatabaseCredentials,
 } from '../../database/tenant/tenant-database.config.js';
 import { TenantDatabaseManager } from '../../database/tenant/tenant-database-manager.js';
+import { PattaSequenceInitializer } from '../../database/tenant/patta-sequence.initializer.js';
 import { TenantTestDatabaseCleanup } from '../../database/tenant/tenant-test-database-cleanup.js';
 import { AuditService } from '../audit/audit.service.js';
 import { OperationPriceService } from '../operations/operation-price.service.js';
@@ -43,6 +44,7 @@ const provisionerCredentials = configuredVariables.length === TEST_DATABASE_VARI
   : undefined;
 const MIGRATION_NAME = 'AddModelsOperationsAndPriceHistory20260926000300';
 const WORKERS_BADGES_MIGRATION_NAME = 'AddWorkersAndBadgeHistory20260926000400';
+const PATTA_MIGRATION_NAME = 'AddPattaFoundation20260926000500';
 
 interface ConstraintError {
   driverError?: {
@@ -206,7 +208,7 @@ integrationDescribe(
       const migrations: Array<{ name: string }> = await tenant.migrationDataSource.query(
         `SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"`,
       );
-      expect(migrations.at(-1)?.name).toBe(WORKERS_BADGES_MIGRATION_NAME);
+      expect(migrations.at(-1)?.name).toBe(PATTA_MIGRATION_NAME);
       expect(migrations.map(({ name }) => name)).toContain(MIGRATION_NAME);
 
       const tableRows: Array<{ table_name: string }> = await tenant.runtimeDataSource.query(
@@ -703,6 +705,7 @@ integrationDescribe(
 
       await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       const featureTables: Array<{ table_name: string }> = await tenant.migrationDataSource.query(
         `SELECT "table_name" FROM "information_schema"."tables"
          WHERE "table_schema" = 'public' AND "table_name" = ANY($1::varchar[])`,
@@ -720,7 +723,9 @@ integrationDescribe(
       expect(applied.map(({ name }) => name)).toEqual([
         MIGRATION_NAME,
         WORKERS_BADGES_MIGRATION_NAME,
+        PATTA_MIGRATION_NAME,
       ]);
+      await new PattaSequenceInitializer().initialize(tenant.migrationDataSource, 1n);
       const runtimeSecret = tenantDatabaseManager.createSecret(tenant.companyId);
       await tenantDatabaseManager.grantRuntimePrivileges(
         tenant.companyId,

@@ -184,3 +184,43 @@ npm run test:e2e --workspace=apps/api
 five test database variables are set and `TEST_MASTER_DB_NAME` ends in `_test`.
 Without test database variables, that specific application-graph test is
 skipped; unit, controller, and mocked Nest e2e tests still run.
+
+## Patta foundation tests
+
+Patta PostgreSQL integration uses the same five `TEST_MASTER_DB_*` settings,
+requires a dedicated database ending in `_test`, and creates/cleans only
+generated `tenant_test_<uuid>` databases and runtime roles. It also inserts
+temporary Master company/device fixtures in that `_test` database and removes
+them after the suite. Do not point these values at `textile_master`, another
+development database, or production. If any test database setting is missing,
+the PostgreSQL suite is blocked/skipped and does not count as a pass.
+
+Run focused checks from the repository root:
+
+```powershell
+npm run test --workspace=apps/api -- src/tenant/patta/patta.config.spec.ts src/database/tenant/patta-sequence.initializer.spec.ts src/master/devices/device-access.service.spec.ts src/tenant/patta/patta-templates.service.spec.ts src/tenant/patta/patta-number-blocks.service.spec.ts src/tenant/patta/patta.service.spec.ts src/tenant/patta/patta-offline-registration.validator.spec.ts
+npm run test:e2e --workspace=apps/api -- src/tenant/patta/patta.e2e-spec.ts
+npm run test:patta --workspace=apps/api
+```
+
+The Patta PostgreSQL suite applies/down/reapplies the additive migration,
+verifies DML grants and rollback guards, checks default and custom BIGINT
+sequence initialization (including concurrent init and no reset after a later
+config value), and exercises a custom start above JavaScript's safe-integer
+range. It races many device block requests, verifies GiST overlap protection,
+active-block limits, monotonic usage, terminal states, cancelled/exhausted
+historical membership, and Master device ownership/status errors. It tests
+template uniqueness/version/deactivation, Patta pair uniqueness under a real
+insert race, absence of standalone Patta-number uniqueness, transaction audit
+rollback, tenant isolation, batch snapshots, operation mutation races, future
+price schedules, lookup, and immutable historical snapshots.
+
+For a local Docker test run, use only the pre-created (or separately created)
+`textile_master_test` database and load the test password from a local secret
+store or the local PostgreSQL container environment without echoing it. Supply
+the five `TEST_MASTER_DB_*` values only to the test process. The tests generate
+tenant database/role names through `TenantTestDatabaseCleanup`; never manually
+replace those with development or production database names. A passing
+unit/e2e run does not substitute for the real PostgreSQL suite. The feature
+completion run also includes Master DB, tenant provisioning, models/operations,
+workers/badges regressions, API lint, typecheck, and build.

@@ -34,6 +34,7 @@ import {
 } from './tenant-database.config.js';
 import { TenantDatabaseManager, TenantRuntimeSecret } from './tenant-database-manager.js';
 import { TenantMigrationRunner } from './tenant-migration-runner.js';
+import { PattaSequenceInitializer } from './patta-sequence.initializer.js';
 import { TenantTestDatabaseCleanup } from './tenant-test-database-cleanup.js';
 import { AesGcmTenantConnectionSecretCipher } from '../../master/provisioning/aes-gcm-tenant-connection-secret-cipher.js';
 import { CompaniesService } from '../../master/companies/companies.service.js';
@@ -58,6 +59,7 @@ import { TenantConnectionManager } from '../../tenant/tenant-connection/tenant-c
 import { TenantRbacService } from '../../tenant/rbac/tenant-rbac.service.js';
 import { seedDefaultTenantAdmin } from '../../tenant/users/tenant-admin.seed.js';
 import { seedTenantPermissions, TENANT_PERMISSION_SEEDS } from '../../tenant/rbac/tenant-permission.seed.js';
+import { loadPattaConfiguration } from '../../tenant/patta/patta.config.js';
 
 class TenantPermissionIntegrationProbe {
   @TenantPermissions('workers.view')
@@ -148,6 +150,10 @@ function isTenantRuntimeSecret(value: unknown): value is TenantRuntimeSecret {
 class FailAfterMigrationOnceRunner extends TenantMigrationRunner {
   private shouldFail = true;
 
+  constructor() {
+    super(new PattaSequenceInitializer(), loadPattaConfiguration(process.env));
+  }
+
   override async run(credentials: TenantDatabaseCredentials): Promise<string | null> {
     const schemaVersion = await super.run(credentials);
     if (this.shouldFail) {
@@ -193,7 +199,10 @@ integrationDescribe(
         runtimePort: testProvisionerCredentials.port,
         mode: 'test',
       });
-      migrationRunner = new TenantMigrationRunner();
+      migrationRunner = new TenantMigrationRunner(
+        new PattaSequenceInitializer(),
+        loadPattaConfiguration(process.env),
+      );
       cipher = new AesGcmTenantConnectionSecretCipher(randomBytes(32));
       provisioningService = new ProvisioningService(
         masterDataSource,
@@ -320,7 +329,7 @@ integrationDescribe(
         provisioningStatus: 'ACTIVE',
         failureStep: null,
         failureReason: null,
-        schemaVersion: 'AddWorkersAndBadgeHistory20260926000400',
+        schemaVersion: 'AddPattaFoundation20260926000500',
       });
       expect(JSON.stringify(result)).not.toContain(admin.password);
       await expect(provisioningService.provision(result.companyId)).resolves.toMatchObject({
@@ -346,6 +355,11 @@ integrationDescribe(
           'model_operation_prices',
           'model_operations',
           'models',
+          'patta_hisob',
+          'patta_number_blocks',
+          'patta_number_sequence',
+          'patta_operation_snapshots',
+          'patta_templates',
           'permissions',
           'role_permissions',
           'roles',
@@ -355,6 +369,7 @@ integrationDescribe(
           'workers',
         ]);
 
+        await migrationDataSource.undoLastMigration({ transaction: 'all' });
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
         const tablesAfterRevert: Array<{ table_name: string }> = await migrationDataSource.query(
@@ -374,7 +389,12 @@ integrationDescribe(
         expect(reappliedMigrations.map(({ name }) => name)).toEqual([
           'AddModelsOperationsAndPriceHistory20260926000300',
           'AddWorkersAndBadgeHistory20260926000400',
+          'AddPattaFoundation20260926000500',
         ]);
+        await new PattaSequenceInitializer().initialize(
+          migrationDataSource,
+          loadPattaConfiguration(process.env).numberStart,
+        );
         await tenantDatabaseManager.grantRuntimePrivileges(
           result.companyId,
           databaseName,
@@ -586,6 +606,7 @@ integrationDescribe(
           'AddTenantAuthInfrastructure20260926000200',
           'AddModelsOperationsAndPriceHistory20260926000300',
           'AddWorkersAndBadgeHistory20260926000400',
+          'AddPattaFoundation20260926000500',
         ]);
         const userCount: Array<{ count: string }> = await migrationDataSource.query(
           'SELECT count(*) AS "count" FROM "users" WHERE "email" = $1',
@@ -624,6 +645,7 @@ integrationDescribe(
           'AddTenantAuthInfrastructure20260926000200',
           'AddModelsOperationsAndPriceHistory20260926000300',
           'AddWorkersAndBadgeHistory20260926000400',
+          'AddPattaFoundation20260926000500',
         ]);
       } finally {
         await migrationDataSource.destroy();
