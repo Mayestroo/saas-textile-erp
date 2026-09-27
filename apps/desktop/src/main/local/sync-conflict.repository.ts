@@ -95,6 +95,13 @@ export class SyncConflictRepository {
     }))
   }
 
+  countOpen(): number {
+    const row = this.database
+      .prepare(`SELECT COUNT(*) AS count FROM sync_conflicts WHERE resolution_state = 'OPEN'`)
+      .get() as { count: number }
+    return row.count
+  }
+
   resolve(eventId: string, resolvedAt: string): boolean {
     const result = this.database
       .prepare(

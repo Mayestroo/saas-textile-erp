@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type {
   OfflinePattaCreateEvent,
   SyncConflict,
+  SyncChange,
   SyncBootstrapPage,
   SyncBootstrapSession,
   SyncProjection
@@ -485,6 +486,60 @@ describe('local sync repositories', () => {
     ).toEqual({ resolution_state: 'RESOLVED' })
   })
 
+  it('retains non-synced queue outcomes while cleaning old synced events', () => {
+    const database = createDatabase()
+    const queueRepository = new SyncQueueRepository(database)
+    const syncedEvent = makePattaEvent()
+    const conflictEvent: OfflinePattaCreateEvent = {
+      ...syncedEvent,
+      event_id: 'event-conflict',
+      entity_id: 'patta-conflict',
+      payload: { ...syncedEvent.payload, patta_number: '101' }
+    }
+    const failedEvent: OfflinePattaCreateEvent = {
+      ...syncedEvent,
+      event_id: 'event-failed',
+      entity_id: 'patta-failed',
+      payload: { ...syncedEvent.payload, patta_number: '102' }
+    }
+    const unitOfWork = new LocalUnitOfWork(database)
+    unitOfWork.transaction(() => {
+      queueRepository.enqueue(syncedEvent)
+      queueRepository.enqueue(conflictEvent)
+      queueRepository.enqueue(failedEvent)
+      database
+        .prepare(
+          `
+        UPDATE sync_queue SET status = 'SYNCED', updated_at = '2025-01-01T00:00:00.000000Z'
+        WHERE event_id = ?
+      `
+        )
+        .run(syncedEvent.event_id)
+      database
+        .prepare(
+          `
+        UPDATE sync_queue SET status = 'CONFLICT' WHERE event_id = ?
+      `
+        )
+        .run(conflictEvent.event_id)
+      database
+        .prepare(
+          `
+        UPDATE sync_queue SET status = 'FAILED' WHERE event_id = ?
+      `
+        )
+        .run(failedEvent.event_id)
+    })
+
+    expect(queueRepository.cleanupSyncedOlderThan('2026-01-01T00:00:00.000000Z')).toBe(1)
+    expect(
+      database.prepare('SELECT event_id, status FROM sync_queue ORDER BY event_id').all()
+    ).toEqual([
+      { event_id: conflictEvent.event_id, status: 'CONFLICT' },
+      { event_id: failedEvent.event_id, status: 'FAILED' }
+    ])
+  })
+
   it('stages pages idempotently without changing the live mirror or cursor', () => {
     const database = createDatabase()
     const { stateRepository, stagingRepository } = repositories(database)
@@ -657,5 +712,135 @@ describe('local sync repositories', () => {
     expect(database.prepare('SELECT COUNT(*) AS count FROM bootstrap_items').get()).toEqual({
       count: 3
     })
+  })
+
+  it('applies ordered pull changes as tombstones and commits the cursor with mirror updates', () => {
+    const database = createDatabase()
+    const { stateRepository, mirrorRepository } = repositories(database)
+    stateRepository.setLastServerCursor('10', timestamp)
+    const model = makeProjections()[2]
+    if (!model || model.entity_type !== 'models') throw new Error('Expected a model projection')
+    const updatedModel: SyncProjection = {
+      ...model,
+      entity_version: '4',
+      data: { ...model.data, version: '4', name: 'Updated Model' }
+    }
+    const changes: readonly SyncChange[] = [
+      {
+        sequence_id: '11',
+        entity_type: 'models',
+        entity_id: model.entity_id,
+        operation: 'UPSERT',
+        entity_version: '4',
+        projection_version: 1,
+        payload: updatedModel,
+        changed_at: timestamp
+      },
+      {
+        sequence_id: '12',
+        entity_type: 'models',
+        entity_id: model.entity_id,
+        operation: 'DELETE',
+        entity_version: null,
+        projection_version: 1,
+        payload: null,
+        changed_at: timestamp
+      }
+    ]
+
+    expect(mirrorRepository.applyPullPage(changes, '12', timestamp)).toEqual({
+      appliedChanges: 2,
+      nextCursor: '12'
+    })
+    expect(database.prepare('SELECT name FROM models WHERE id = ?').get(model.entity_id)).toEqual({
+      name: 'Updated Model'
+    })
+    expect(
+      database
+        .prepare(
+          `
+      SELECT server_sequence FROM sync_tombstones
+      WHERE entity_type = 'models' AND entity_id = ?
+    `
+        )
+        .get(model.entity_id)
+    ).toEqual({ server_sequence: '12' })
+    expect(stateRepository.lastServerCursor()).toBe('12')
+
+    const restoredModel: SyncProjection = {
+      ...updatedModel,
+      entity_version: '5',
+      data: { ...updatedModel.data, version: '5', status: 'ACTIVE' }
+    }
+    mirrorRepository.applyPullPage(
+      [
+        {
+          sequence_id: '13',
+          entity_type: 'models',
+          entity_id: model.entity_id,
+          operation: 'UPSERT',
+          entity_version: '5',
+          projection_version: 1,
+          payload: restoredModel,
+          changed_at: timestamp
+        }
+      ],
+      '13',
+      timestamp
+    )
+    expect(
+      database
+        .prepare('SELECT entity_id FROM sync_tombstones WHERE entity_type = ? AND entity_id = ?')
+        .get('models', model.entity_id)
+    ).toBeUndefined()
+    expect(stateRepository.lastServerCursor()).toBe('13')
+  })
+
+  it('rolls back an entire pull page and cursor when projection application fails', () => {
+    const database = createDatabase()
+    const { stateRepository, mirrorRepository } = repositories(database)
+    stateRepository.setLastServerCursor('20', timestamp)
+    const badge = makeProjections()[1]
+    if (!badge || badge.entity_type !== 'worker_badge_history') {
+      throw new Error('Expected a badge projection')
+    }
+    const invalidBadge: SyncProjection = {
+      ...badge,
+      data: { ...badge.data, worker_id: 'missing-worker' }
+    }
+    const worker = makeProjections()[0]
+    if (!worker || worker.entity_type !== 'workers') throw new Error('Expected a worker projection')
+
+    expect(() =>
+      mirrorRepository.applyPullPage(
+        [
+          {
+            sequence_id: '21',
+            entity_type: 'workers',
+            entity_id: worker.entity_id,
+            operation: 'UPSERT',
+            entity_version: worker.entity_version,
+            projection_version: 1,
+            payload: worker,
+            changed_at: timestamp
+          },
+          {
+            sequence_id: '22',
+            entity_type: 'worker_badge_history',
+            entity_id: invalidBadge.entity_id,
+            operation: 'UPSERT',
+            entity_version: null,
+            projection_version: 1,
+            payload: invalidBadge,
+            changed_at: timestamp
+          }
+        ],
+        '22',
+        timestamp
+      )
+    ).toThrow()
+    expect(database.prepare('SELECT id FROM workers').all()).toEqual([])
+    expect(database.prepare('SELECT id FROM worker_badge_history').all()).toEqual([])
+    expect(stateRepository.lastServerCursor()).toBe('20')
   })
 })

@@ -120,6 +120,23 @@ export class BootstrapStagingRepository {
     })
   }
 
+  discardSession(sessionId: string): void {
+    this.unitOfWork.transaction((database) => {
+      const current = database
+        .prepare(
+          `
+        SELECT session_id FROM bootstrap_local_state WHERE id = 1
+      `
+        )
+        .get() as { session_id: string } | undefined
+      if (current?.session_id !== sessionId) return
+      database.prepare('DELETE FROM bootstrap_items WHERE session_id = ?').run(sessionId)
+      database
+        .prepare('DELETE FROM bootstrap_local_state WHERE id = 1 AND session_id = ?')
+        .run(sessionId)
+    })
+  }
+
   persistPage(page: SyncBootstrapPage, updatedAt: string): void {
     this.unitOfWork.transaction((database) => {
       const state = database
