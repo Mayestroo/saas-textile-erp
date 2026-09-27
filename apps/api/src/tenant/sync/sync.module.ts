@@ -7,6 +7,7 @@ import { PattaModule } from '../patta/patta.module.js';
 import { SYNC_CONFIGURATION, loadSyncConfiguration } from './sync.config.js';
 import { PattaSyncHandler } from './patta-sync-handler.js';
 import { SyncController } from './sync.controller.js';
+import { SyncBootstrapService } from './sync-bootstrap.service.js';
 import { SyncEventProcessor } from './sync-event-processor.js';
 import { SyncHandlerRegistry, SYNC_ENTITY_HANDLERS } from './sync-handler.registry.js';
 import { SyncService } from './sync.service.js';
@@ -33,6 +34,7 @@ import { SyncService } from './sync.service.js';
     SyncHandlerRegistry,
     SyncEventProcessor,
     SyncService,
+    SyncBootstrapService,
   ],
 })
 export class SyncModule {}

@@ -3,6 +3,8 @@ import {
   Controller,
   Get,
   HttpCode,
+  Param,
+  ParseUUIDPipe,
   Post,
   Query,
   Req,
@@ -16,6 +18,10 @@ import { TenantAuthGuard } from '../auth/tenant-auth.guard.js';
 import { TenantPermissionGuard } from '../auth/tenant-permission.guard.js';
 import { SyncPullQueryDto } from './dto/sync-pull-query.dto.js';
 import { SyncPushEnvelopeDto } from './dto/sync-push-envelope.dto.js';
+import { SyncBootstrapCompleteDto } from './dto/sync-bootstrap-complete.dto.js';
+import { SyncBootstrapPageQueryDto } from './dto/sync-bootstrap-page-query.dto.js';
+import { SyncBootstrapRequestDto } from './dto/sync-bootstrap-request.dto.js';
+import { SyncBootstrapService } from './sync-bootstrap.service.js';
 import { SyncService } from './sync.service.js';
 
 @Controller('api/v1/sync')
@@ -24,6 +30,7 @@ export class SyncController {
   constructor(
     private readonly deviceAccessService: DeviceAccessService,
     private readonly syncService: SyncService,
+    private readonly syncBootstrapService: SyncBootstrapService,
   ) {}
 
   @Post('push')
@@ -50,5 +57,61 @@ export class SyncController {
     const context = requireTenantContext(request);
     await this.deviceAccessService.assertActiveDevice(context.companyId, query.device_id);
     return this.syncService.pull(context.dataSource, query.cursor, query.limit);
+  }
+
+  @Post('bootstrap')
+  @HttpCode(201)
+  @TenantPermissions('sync.pull')
+  async createBootstrap(
+    @Req() request: TenantAuthenticatedRequest,
+    @Body() input: SyncBootstrapRequestDto,
+  ) {
+    const context = requireTenantContext(request);
+    const device = await this.deviceAccessService.assertActiveDevice(
+      context.companyId,
+      input.device_id,
+    );
+    return this.syncBootstrapService.create(context.dataSource, device.id);
+  }
+
+  @Get('bootstrap/:sessionId')
+  @TenantPermissions('sync.pull')
+  async bootstrapPage(
+    @Req() request: TenantAuthenticatedRequest,
+    @Param('sessionId', new ParseUUIDPipe()) sessionId: string,
+    @Query() query: SyncBootstrapPageQueryDto,
+  ) {
+    const context = requireTenantContext(request);
+    const device = await this.deviceAccessService.assertActiveDevice(
+      context.companyId,
+      query.device_id,
+    );
+    return this.syncBootstrapService.page(
+      context.dataSource,
+      device.id,
+      sessionId,
+      query.after ?? null,
+      query.limit,
+    );
+  }
+
+  @Post('bootstrap/:sessionId/complete')
+  @HttpCode(200)
+  @TenantPermissions('sync.pull')
+  async completeBootstrap(
+    @Req() request: TenantAuthenticatedRequest,
+    @Param('sessionId', new ParseUUIDPipe()) sessionId: string,
+    @Body() input: SyncBootstrapCompleteDto,
+  ) {
+    const context = requireTenantContext(request);
+    const device = await this.deviceAccessService.assertActiveDevice(
+      context.companyId,
+      input.device_id,
+    );
+    return this.syncBootstrapService.complete(
+      context.dataSource,
+      device.id,
+      sessionId,
+    );
   }
 }

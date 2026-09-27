@@ -9,6 +9,8 @@ import {
 } from '../../database/tenant/tenant-database.config.js';
 import { TenantDatabaseManager } from '../../database/tenant/tenant-database-manager.js';
 import { TenantTestDatabaseCleanup } from '../../database/tenant/tenant-test-database-cleanup.js';
+import { loadSyncConfiguration } from './sync.config.js';
+import { SyncBootstrapService } from './sync-bootstrap.service.js';
 
 const TEST_DATABASE_VARIABLES = [
   'TEST_MASTER_DB_HOST',
@@ -501,7 +503,7 @@ integrationDescribe(
         await tenant.runtimeDataSource.query(
           `INSERT INTO "server_change_log"
            ("entity_type", "entity_id", "operation", "entity_version", "projection_version", "payload_json")
-         VALUES ('patta', $1, 'UPSERT', '1', 1, jsonb_build_object('id', $1))
+         VALUES ('patta', $1::varchar, 'UPSERT', '1', 1, jsonb_build_object('id', $1::varchar))
          RETURNING "sequence_id"::text AS "sequence_id"`,
           [randomUUID()],
         );
@@ -544,6 +546,150 @@ integrationDescribe(
           [sessionId],
         );
       expect(stagingRows[0]?.count).toBe('0');
+    });
+
+    it('materializes all nine versioned reference projections and serves stable keyset pages', async () => {
+      const modelRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
+        `INSERT INTO "models" ("name") VALUES ('Bootstrap Atlas') RETURNING "id"::text AS "id"`,
+      );
+      const modelId = modelRows[0]?.id;
+      if (!modelId) throw new Error('Bootstrap model fixture was not created');
+      const operationRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
+        `INSERT INTO "model_operations" ("model_id", "name", "price", "sort_order")
+         VALUES ($1::uuid, 'Bootstrap stitch', 10.00, 0) RETURNING "id"::text AS "id"`,
+        [modelId],
+      );
+      const operationId = operationRows[0]?.id;
+      if (!operationId) throw new Error('Bootstrap operation fixture was not created');
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "model_operation_prices" ("operation_id", "price", "valid_from")
+         VALUES ($1::uuid, 10.00, transaction_timestamp() - interval '1 day')`,
+        [operationId],
+      );
+      const workerRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
+        `INSERT INTO "workers" ("full_name") VALUES ('Bootstrap Worker')
+         RETURNING "id"::text AS "id"`,
+      );
+      const workerId = workerRows[0]?.id;
+      if (!workerId) throw new Error('Bootstrap worker fixture was not created');
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "worker_badge_history" ("badge_number", "worker_id", "valid_from")
+         VALUES ('BOOT-18', $1::bigint, transaction_timestamp() - interval '1 day')`,
+        [workerId],
+      );
+      const templateRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_templates" ("name", "model_id", "konveyer")
+         VALUES ('Bootstrap template', $1::uuid, '1-konveyer')
+         RETURNING "id"::text AS "id"`,
+        [modelId],
+      );
+      const templateId = templateRows[0]?.id;
+      if (!templateId) throw new Error('Bootstrap template fixture was not created');
+      const blockId = randomUUID();
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_number_blocks" ("id", "device_id", "range_start", "range_end")
+         VALUES ($1::uuid, $2::uuid, 1000, 1999)`,
+        [blockId, randomUUID()],
+      );
+      const pattaId = randomUUID();
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_hisob"
+           ("id", "partiya_number", "patta_number", "model_id", "model_name_snapshot",
+            "template_id", "konveyer_snapshot", "ish_soni", "created_device_id")
+         VALUES ($1::uuid, 'BOOTSTRAP-1', 1000, $2::uuid, 'Bootstrap Atlas',
+                 $3::uuid, '1-konveyer', 1, $4::uuid)`,
+        [pattaId, modelId, templateId, randomUUID()],
+      );
+      const snapshotId = randomUUID();
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_operation_snapshots"
+           ("id", "patta_hisob_id", "operation_id", "operation_name_snapshot", "unit_price_snapshot", "sort_order")
+         VALUES ($1::uuid, $2::uuid, $3::uuid, 'Bootstrap stitch', 10.00, 0)`,
+        [snapshotId, pattaId, operationId],
+      );
+
+      const roleRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
+        `INSERT INTO "roles" ("name") VALUES ('Bootstrap private role') RETURNING "id"::text AS "id"`,
+      );
+      const roleId = roleRows[0]?.id;
+      if (!roleId) throw new Error('Bootstrap role fixture was not created');
+      const userRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
+        `INSERT INTO "users" ("role_id", "email", "full_name", "password_hash")
+         VALUES ($1::uuid, 'bootstrap-private@example.test', 'Bootstrap Private User', $2)
+         RETURNING "id"::text AS "id"`,
+        [roleId, 'test-only-password-hash-not-for-sync'],
+      );
+      const userId = userRows[0]?.id;
+      if (!userId) throw new Error('Bootstrap user fixture was not created');
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "auth_sessions" ("user_id", "refresh_token_hash", "expires_at")
+         VALUES ($1::uuid, repeat('a', 64), transaction_timestamp() + interval '1 day')`,
+        [userId],
+      );
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "audit_log"
+           ("actor_user_id", "entity_type", "entity_id", "entity_key", "action", "after_json")
+         VALUES ($1::uuid, 'model', $2::uuid, $2, 'model.create', '{"marker":"DO_NOT_SYNC"}'::jsonb)`,
+        [userId, randomUUID()],
+      );
+
+      const service = new SyncBootstrapService(
+        loadSyncConfiguration({ SYNC_BOOTSTRAP_PAGE_SIZE: '2' }),
+      );
+      const deviceId = randomUUID();
+      const watermarkRows: Array<{ watermark: string }> = await tenant.runtimeDataSource.query(
+        `SELECT COALESCE(MAX("sequence_id"), 0)::text AS "watermark" FROM "server_change_log"`,
+      );
+      const session = await service.create(tenant.runtimeDataSource, deviceId);
+      expect(session).toMatchObject({
+        device_id: deviceId,
+        watermark: watermarkRows[0]?.watermark,
+        status: 'ACTIVE',
+      });
+
+      const items: Array<{ order_key: string; projection: { entity_type: string; entity_id: string } }> = [];
+      let after: string | null = null;
+      let hasMore = true;
+      while (hasMore) {
+        const page = await service.page(tenant.runtimeDataSource, deviceId, session.id, after, 2);
+        items.push(...page.items);
+        after = page.next_order_key;
+        hasMore = page.has_more;
+      }
+
+      expect(items).toHaveLength(10);
+      expect(items.map(({ projection }) => projection.entity_type)).toEqual([
+        'workers',
+        'workers',
+        'worker_badge_history',
+        'models',
+        'model_operations',
+        'model_operation_prices',
+        'patta_templates',
+        'patta_hisob',
+        'patta_operation_snapshots',
+        'patta_number_blocks',
+      ]);
+      expect(items.map(({ order_key }) => order_key)).toEqual([
+        '1', '2', '3', '4', '5', '6', '7', '8', '9', '10',
+      ]);
+      expect(items.find(({ projection }) =>
+        projection.entity_type === 'workers' && projection.entity_id === workerId,
+      )?.projection.entity_id).toBe(workerId);
+      expect(items.find(({ projection }) => projection.entity_type === 'patta_hisob')?.projection.entity_id)
+        .toBe(pattaId);
+      expect(JSON.stringify(items)).not.toMatch(/password_hash|auth_sessions|audit_log|platform_users/i);
+
+      await expect(service.page(tenant.runtimeDataSource, randomUUID(), session.id, null, 2))
+        .rejects.toMatchObject({ response: { code: 'SYNC_BOOTSTRAP_DEVICE_MISMATCH' } });
+      await expect(service.complete(tenant.runtimeDataSource, deviceId, session.id)).resolves.toEqual({
+        session_id: session.id,
+        status: 'COMPLETED',
+      });
+      await expect(service.complete(tenant.runtimeDataSource, deviceId, session.id)).resolves.toEqual({
+        session_id: session.id,
+        status: 'COMPLETED',
+      });
     });
 
     it('refuses to revert processed events or change history before dropping sync schema', async () => {

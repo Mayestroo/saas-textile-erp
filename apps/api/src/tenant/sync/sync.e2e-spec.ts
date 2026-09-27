@@ -14,6 +14,7 @@ import { TenantResolverService } from '../tenant-resolver/tenant-resolver.servic
 import { TenantRbacService } from '../rbac/tenant-rbac.service.js';
 import { SYNC_CONFIGURATION, loadSyncConfiguration } from './sync.config.js';
 import { SyncController } from './sync.controller.js';
+import { SyncBootstrapService } from './sync-bootstrap.service.js';
 import { SyncService } from './sync.service.js';
 
 const authConfiguration = loadAuthConfiguration({
@@ -101,6 +102,26 @@ describe('Tenant sync API (e2e)', () => {
     push: vi.fn(async () => ({ results: [] })),
     pull: vi.fn(async () => ({ changes: [], next_cursor: '0', has_more: false })),
   };
+  const syncBootstrapService = {
+    create: vi.fn(async () => ({
+      id: '88888888-8888-4888-8888-888888888888',
+      device_id: deviceId,
+      watermark: '12840',
+      status: 'ACTIVE',
+      expires_at: '2026-09-26T10:30:00.000000Z',
+    })),
+    page: vi.fn(async () => ({
+      session_id: '88888888-8888-4888-8888-888888888888',
+      watermark: '12840',
+      items: [],
+      next_order_key: null,
+      has_more: false,
+    })),
+    complete: vi.fn(async () => ({
+      session_id: '88888888-8888-4888-8888-888888888888',
+      status: 'COMPLETED',
+    })),
+  };
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -123,6 +144,7 @@ describe('Tenant sync API (e2e)', () => {
       controllers: [SyncController],
       providers: [
         { provide: SyncService, useValue: syncService },
+        { provide: SyncBootstrapService, useValue: syncBootstrapService },
         { provide: DeviceAccessService, useValue: deviceAccess },
         { provide: TenantResolverService, useValue: resolver },
         { provide: TenantConnectionManager, useValue: connectionManager },
@@ -251,5 +273,48 @@ describe('Tenant sync API (e2e)', () => {
       .set('Authorization', `Bearer ${token}`)
       .expect(400);
     expect(syncService.push).not.toHaveBeenCalled();
+  });
+
+  it('creates, pages and completes only the validated device bootstrap session', async () => {
+    const token = await issueToken('tenant', viewUserId);
+    const host = 'atlas-textile.erp.example.test';
+    const sessionIdValue = '88888888-8888-4888-8888-888888888888';
+
+    const created = await request(app.getHttpServer())
+      .post('/api/v1/sync/bootstrap')
+      .set('Host', host)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ device_id: deviceId })
+      .expect(201);
+    expect(created.body).toMatchObject({ id: sessionIdValue, watermark: '12840' });
+    expect(syncBootstrapService.create).toHaveBeenCalledWith(tenantDataSource, deviceId);
+
+    const page = await request(app.getHttpServer())
+      .get(`/api/v1/sync/bootstrap/${sessionIdValue}`)
+      .query({ device_id: deviceId, after: '9007199254740992', limit: '10' })
+      .set('Host', host)
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(page.body).toMatchObject({ session_id: sessionIdValue, watermark: '12840' });
+    expect(syncBootstrapService.page).toHaveBeenCalledWith(
+      tenantDataSource,
+      deviceId,
+      sessionIdValue,
+      '9007199254740992',
+      10,
+    );
+
+    const completed = await request(app.getHttpServer())
+      .post(`/api/v1/sync/bootstrap/${sessionIdValue}/complete`)
+      .set('Host', host)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ device_id: deviceId })
+      .expect(200);
+    expect(completed.body).toEqual({ session_id: sessionIdValue, status: 'COMPLETED' });
+    expect(syncBootstrapService.complete).toHaveBeenCalledWith(
+      tenantDataSource,
+      deviceId,
+      sessionIdValue,
+    );
   });
 });

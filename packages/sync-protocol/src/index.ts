@@ -326,6 +326,11 @@ export interface SyncBootstrapCompleteRequest {
   session_id: string;
 }
 
+export interface SyncBootstrapCompleteResponse {
+  session_id: string;
+  status: 'COMPLETED';
+}
+
 export type SyncErrorCode =
   | 'VERSION_CONFLICT'
   | 'PATTA_ALREADY_EXISTS'
