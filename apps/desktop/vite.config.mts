@@ -19,7 +19,14 @@ export default defineConfig({
     electron({
       main: {
         entry: { main: resolve(projectRoot, 'src/main/index.ts') },
-        vite: { root: projectRoot }
+        vite: {
+          root: projectRoot,
+          build: {
+            rolldownOptions: {
+              external: ['better-sqlite3']
+            }
+          }
+        }
       },
       preload: {
         input: { preload: resolve(projectRoot, 'src/preload/index.ts') },

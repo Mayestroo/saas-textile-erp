@@ -2,6 +2,13 @@ import { app, shell, BrowserWindow, ipcMain } from 'electron'
 import { join } from 'node:path'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
 import { openSqliteDatabase } from './database/sqlite-database'
+import { PattaLocalRepository } from './local/patta-local.repository'
+import { SyncConflictRepository } from './local/sync-conflict.repository'
+import { SyncQueueRepository } from './local/sync-queue.repository'
+import { NetworkStatusService } from './sync/network-status.service'
+import { desktopSyncEngineRegistry } from './sync/sync-engine-registry'
+import { createMainProcessIpcServices, registerIpcHandlers } from './ipc/register-ipc-handlers'
+import type { IpcMainHandlerRegistrar } from './ipc/register-ipc-handlers'
 
 let localDatabase: ReturnType<typeof openSqliteDatabase> | undefined
 
@@ -65,8 +72,23 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
+  const queueRepository = new SyncQueueRepository(localDatabase)
+  const conflictRepository = new SyncConflictRepository(localDatabase)
+  const networkStatus = new NetworkStatusService(queueRepository, conflictRepository)
+  const ipcMainAdapter: IpcMainHandlerRegistrar = {
+    handle: (channel, listener) => {
+      ipcMain.handle(channel, (event, ...args) => listener(event, ...args))
+    }
+  }
+  registerIpcHandlers(
+    ipcMainAdapter,
+    createMainProcessIpcServices({
+      appVersion: () => app.getVersion(),
+      getSyncEngine: () => desktopSyncEngineRegistry.current(),
+      networkStatus,
+      pattaRepository: new PattaLocalRepository(localDatabase)
+    })
+  )
 
   createWindow()
 
@@ -87,6 +109,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  desktopSyncEngineRegistry.dispose()
   if (localDatabase?.open) {
     localDatabase.close()
     localDatabase = undefined
