@@ -1,6 +1,9 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
-import { join } from 'path'
+import { join } from 'node:path'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
+import { openSqliteDatabase } from './database/sqlite-database'
+
+let localDatabase: ReturnType<typeof openSqliteDatabase> | undefined
 
 function createWindow(): void {
   const iconPath = app.isPackaged
@@ -16,7 +19,9 @@ function createWindow(): void {
     ...(process.platform === 'linux' ? { icon: iconPath } : {}),
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
-      sandbox: false
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
     }
   })
 
@@ -42,6 +47,14 @@ function createWindow(): void {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
+  try {
+    localDatabase = openSqliteDatabase(join(app.getPath('userData'), 'textile-erp.sqlite'))
+  } catch (error) {
+    console.error('Failed to initialize the local SQLite database', error)
+    app.exit(1)
+    return
+  }
+
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
@@ -70,6 +83,13 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
+  }
+})
+
+app.on('before-quit', () => {
+  if (localDatabase?.open) {
+    localDatabase.close()
+    localDatabase = undefined
   }
 })
 
