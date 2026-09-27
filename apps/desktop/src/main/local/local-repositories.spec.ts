@@ -261,30 +261,52 @@ function makePage(
 }
 
 function seedExistingMirrors(database: ReturnType<typeof openSqliteDatabase>): void {
-  database.prepare(`
+  database
+    .prepare(
+      `
     INSERT INTO models (id, name, status, version, created_at, updated_at, server_sequence)
     VALUES ('model-server', 'Old Server Model', 'ACTIVE', '1', ?, ?, '8')
-  `).run(timestamp, timestamp)
-  database.prepare(`
+  `
+    )
+    .run(timestamp, timestamp)
+  database
+    .prepare(
+      `
     INSERT INTO models (id, name, status, version, created_at, updated_at, server_sequence)
     VALUES ('model-local', 'Local Historical Model', 'ACTIVE', '1', ?, ?, '8')
-  `).run(timestamp, timestamp)
-  database.prepare(`
+  `
+    )
+    .run(timestamp, timestamp)
+  database
+    .prepare(
+      `
     INSERT INTO models (id, name, status, version, created_at, updated_at, server_sequence)
     VALUES ('model-stale', 'Removed Model', 'ACTIVE', '1', ?, ?, '8')
-  `).run(timestamp, timestamp)
-  database.prepare(`
+  `
+    )
+    .run(timestamp, timestamp)
+  database
+    .prepare(
+      `
     INSERT INTO model_operations
       (id, model_id, name, sort_order, status, version, created_at, updated_at, server_sequence)
     VALUES ('operation-local', 'model-local', 'Local Operation', 0, 'ACTIVE', '1', ?, ?, '8')
-  `).run(timestamp, timestamp)
-  database.prepare(`
+  `
+    )
+    .run(timestamp, timestamp)
+  database
+    .prepare(
+      `
     INSERT INTO patta_number_blocks (
       id, device_id, range_start, range_end, reported_used_count, status, allocated_at,
       local_next_number, local_consumed_count, local_role, server_sequence
     ) VALUES ('block-existing', 'device-1', '100', '109', '1', 'ACTIVE', ?, '108', '8', 'CURRENT', '8')
-  `).run(timestamp)
-  database.prepare(`
+  `
+    )
+    .run(timestamp)
+  database
+    .prepare(
+      `
     INSERT INTO patta_hisob (
       id, partiya_number, patta_number, model_id, model_name_snapshot, template_id,
       konveyer_snapshot, razmer, rang, ish_soni, created_device_id, created_from_block_id,
@@ -294,7 +316,9 @@ function seedExistingMirrors(database: ReturnType<typeof openSqliteDatabase>): v
       'Line 1', NULL, NULL, 1, 'device-1', 'block-existing',
       ?, ?, ?, '1', 'SERVER_SYNCED', '8'
     )
-  `).run(timestamp, timestamp, timestamp)
+  `
+    )
+    .run(timestamp, timestamp, timestamp)
 
   const insertLocalPatta = database.prepare(`
     INSERT INTO patta_hisob (
@@ -315,7 +339,15 @@ function seedExistingMirrors(database: ReturnType<typeof openSqliteDatabase>): v
     ['patta-conflict', 'CONFLICT'],
     ['patta-failed', 'FAILED']
   ] as const) {
-    insertLocalPatta.run(id, `PARTIYA-${id}`, id === 'patta-pending' ? '401' : id === 'patta-conflict' ? '402' : '403', timestamp, timestamp, timestamp, state)
+    insertLocalPatta.run(
+      id,
+      `PARTIYA-${id}`,
+      id === 'patta-pending' ? '401' : id === 'patta-conflict' ? '402' : '403',
+      timestamp,
+      timestamp,
+      timestamp,
+      state
+    )
     insertLocalSnapshot.run(`snapshot-${id}`, id, timestamp, state)
   }
 }
@@ -344,17 +376,27 @@ describe('local sync repositories', () => {
     const queueRepository = new SyncQueueRepository(database)
     const event = makePattaEvent()
     const insertLocalPatta = (connection: Database.Database): void => {
-      connection.prepare(`
+      connection
+        .prepare(
+          `
         INSERT INTO models (id, name, status, version, created_at, updated_at)
         VALUES ('model-1', 'Model 1', 'ACTIVE', '1', ?, ?)
-      `).run(timestamp, timestamp)
-      connection.prepare(`
+      `
+        )
+        .run(timestamp, timestamp)
+      connection
+        .prepare(
+          `
         INSERT INTO patta_number_blocks (
           id, device_id, range_start, range_end, reported_used_count,
           status, allocated_at, local_next_number, local_consumed_count, local_role
         ) VALUES ('block-1', 'device-1', '100', '109', '0', 'ACTIVE', ?, '100', '0', 'CURRENT')
-      `).run(timestamp)
-      connection.prepare(`
+      `
+        )
+        .run(timestamp)
+      connection
+        .prepare(
+          `
         INSERT INTO patta_hisob (
           id, partiya_number, patta_number, model_id, model_name_snapshot, template_id,
           konveyer_snapshot, razmer, rang, ish_soni, created_device_id,
@@ -364,7 +406,9 @@ describe('local sync repositories', () => {
           ?, 'PARTIYA-1', '100', 'model-1', 'Model 1', NULL, 'Konveyer 1',
           NULL, NULL, 1, 'device-1', 'block-1', ?, ?, ?, '0', 'LOCAL_PENDING'
         )
-      `).run(event.entity_id, timestamp, timestamp, timestamp)
+      `
+        )
+        .run(event.entity_id, timestamp, timestamp, timestamp)
     }
 
     expect(() =>
@@ -385,9 +429,7 @@ describe('local sync repositories', () => {
       queueRepository.enqueue(event)
     })
     unitOfWork.transaction(() => queueRepository.enqueue(event))
-    expect(database.prepare('SELECT id FROM patta_hisob').all()).toEqual([
-      { id: event.entity_id }
-    ])
+    expect(database.prepare('SELECT id FROM patta_hisob').all()).toEqual([{ id: event.entity_id }])
     expect(database.prepare('SELECT event_id FROM sync_queue').all()).toEqual([
       { event_id: event.event_id }
     ])
@@ -437,7 +479,8 @@ describe('local sync repositories', () => {
     expect(conflictRepository.resolve(event.event_id, timestamp)).toBe(true)
     expect(conflictRepository.open()).toEqual([])
     expect(
-      database.prepare('SELECT resolution_state FROM sync_conflicts WHERE event_id = ?')
+      database
+        .prepare('SELECT resolution_state FROM sync_conflicts WHERE event_id = ?')
         .get(event.event_id)
     ).toEqual({ resolution_state: 'RESOLVED' })
   })
@@ -455,7 +498,9 @@ describe('local sync repositories', () => {
     stagingRepository.persistPage(page, timestamp)
     stagingRepository.persistPage(page, timestamp)
 
-    expect(database.prepare('SELECT COUNT(*) AS count FROM bootstrap_items').get()).toEqual({ count: 1 })
+    expect(database.prepare('SELECT COUNT(*) AS count FROM bootstrap_items').get()).toEqual({
+      count: 1
+    })
     expect(database.prepare('SELECT id FROM models').all()).toEqual([])
     expect(stateRepository.lastServerCursor()).toBe('8')
 
@@ -468,7 +513,9 @@ describe('local sync repositories', () => {
     expect(() => stagingRepository.persistPage(conflictingReplay, timestamp)).toThrow(
       'bootstrap order key is already staged with different data'
     )
-    expect(database.prepare('SELECT COUNT(*) AS count FROM bootstrap_items').get()).toEqual({ count: 1 })
+    expect(database.prepare('SELECT COUNT(*) AS count FROM bootstrap_items').get()).toEqual({
+      count: 1
+    })
     expect(stagingRepository.currentSession()?.next_order_key).toBe('1')
     expect(stateRepository.lastServerCursor()).toBe('8')
   })
@@ -542,12 +589,16 @@ describe('local sync repositories', () => {
 
     expect(
       database
-        .prepare('SELECT local_next_number, local_consumed_count, local_role FROM patta_number_blocks WHERE id = ?')
+        .prepare(
+          'SELECT local_next_number, local_consumed_count, local_role FROM patta_number_blocks WHERE id = ?'
+        )
         .get('block-existing')
     ).toEqual({ local_next_number: '108', local_consumed_count: '8', local_role: 'CURRENT' })
     expect(
       database
-        .prepare('SELECT local_next_number, local_consumed_count FROM patta_number_blocks WHERE id = ?')
+        .prepare(
+          'SELECT local_next_number, local_consumed_count FROM patta_number_blocks WHERE id = ?'
+        )
         .get('block-new')
     ).toEqual({ local_next_number: '203', local_consumed_count: '3' })
     expect(stateRepository.lastServerCursor()).toBe(session.watermark)
@@ -555,7 +606,9 @@ describe('local sync repositories', () => {
     expect(stagingRepository.currentSession()).toBeNull()
     expect(
       database
-        .prepare('SELECT entity_type, entity_id FROM sync_tombstones ORDER BY entity_type, entity_id')
+        .prepare(
+          'SELECT entity_type, entity_id FROM sync_tombstones ORDER BY entity_type, entity_id'
+        )
         .all()
     ).toEqual(
       expect.arrayContaining([
@@ -570,7 +623,9 @@ describe('local sync repositories', () => {
       status: 'COMPLETED',
       already_completed: true
     })
-    expect(database.prepare('SELECT COUNT(*) AS count FROM patta_hisob').get()).toEqual({ count: 5 })
+    expect(database.prepare('SELECT COUNT(*) AS count FROM patta_hisob').get()).toEqual({
+      count: 5
+    })
   })
 
   it('rolls back mirror reconciliation and cursor when a staged projection violates a schema constraint', () => {
@@ -582,17 +637,25 @@ describe('local sync repositories', () => {
     stateRepository.setLastServerCursor('8', timestamp)
     stagingRepository.beginSession(session, timestamp)
     stagingRepository.persistPage(page, timestamp)
-    database.prepare(`
+    database
+      .prepare(
+        `
       UPDATE bootstrap_items
       SET projection_json = replace(projection_json, '"status":"ACTIVE"', '"status":"INVALID"')
       WHERE entity_type = 'models'
-    `).run()
+    `
+      )
+      .run()
 
-    expect(() => mirrorRepository.finalizeBootstrap(session.id, session.watermark, timestamp)).toThrow()
+    expect(() =>
+      mirrorRepository.finalizeBootstrap(session.id, session.watermark, timestamp)
+    ).toThrow()
     expect(database.prepare('SELECT id FROM workers').all()).toEqual([])
     expect(database.prepare('SELECT id FROM models').all()).toEqual([])
     expect(stateRepository.lastServerCursor()).toBe('8')
     expect(stagingRepository.currentSession()?.status).toBe('READY_TO_APPLY')
-    expect(database.prepare('SELECT COUNT(*) AS count FROM bootstrap_items').get()).toEqual({ count: 3 })
+    expect(database.prepare('SELECT COUNT(*) AS count FROM bootstrap_items').get()).toEqual({
+      count: 3
+    })
   })
 })

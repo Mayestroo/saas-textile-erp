@@ -82,13 +82,18 @@ export class BootstrapStagingRepository {
   ) {}
 
   beginSession(session: SyncBootstrapSession, updatedAt: string): void {
-    if (session.status !== 'ACTIVE') throw new Error('Only an active server bootstrap can be staged')
+    if (session.status !== 'ACTIVE')
+      throw new Error('Only an active server bootstrap can be staged')
     parsePostgresBigint(session.watermark, 'Bootstrap watermark')
     this.unitOfWork.transaction((database) => {
-      const current = database.prepare(`
+      const current = database
+        .prepare(
+          `
         SELECT session_id, watermark, next_order_key, status, updated_at
         FROM bootstrap_local_state WHERE id = 1
-      `).get() as BootstrapStateRow | undefined
+      `
+        )
+        .get() as BootstrapStateRow | undefined
 
       if (current?.session_id === session.id) {
         if (current.watermark !== session.watermark) {
@@ -101,22 +106,30 @@ export class BootstrapStagingRepository {
         database.prepare('DELETE FROM bootstrap_items WHERE session_id = ?').run(current.session_id)
       }
       database.prepare('DELETE FROM bootstrap_items WHERE session_id = ?').run(session.id)
-      database.prepare(`
+      database
+        .prepare(
+          `
         INSERT INTO bootstrap_local_state (id, session_id, watermark, next_order_key, status, updated_at)
         VALUES (1, ?, ?, '0', 'ACTIVE', ?)
         ON CONFLICT(id) DO UPDATE SET session_id = excluded.session_id,
           watermark = excluded.watermark, next_order_key = excluded.next_order_key,
           status = excluded.status, updated_at = excluded.updated_at
-      `).run(session.id, session.watermark, updatedAt)
+      `
+        )
+        .run(session.id, session.watermark, updatedAt)
     })
   }
 
   persistPage(page: SyncBootstrapPage, updatedAt: string): void {
     this.unitOfWork.transaction((database) => {
-      const state = database.prepare(`
+      const state = database
+        .prepare(
+          `
         SELECT session_id, watermark, next_order_key, status, updated_at
         FROM bootstrap_local_state WHERE id = 1
-      `).get() as BootstrapStateRow | undefined
+      `
+        )
+        .get() as BootstrapStateRow | undefined
       if (!state || state.session_id !== page.session_id) {
         throw new Error('Bootstrap page does not match the active local session')
       }
@@ -154,8 +167,7 @@ export class BootstrapStagingRepository {
         const projection = projectionIdentity(item.projection)
         const projectionJson = serializeLocalJson(projection)
         const stagedByOrder = findByOrderKey.get(page.session_id, item.order_key) as
-          | BootstrapItemRow
-          | undefined
+          BootstrapItemRow | undefined
         const stagedByEntity = findByEntity.get(
           page.session_id,
           projection.entity_type,
@@ -163,7 +175,8 @@ export class BootstrapStagingRepository {
         ) as BootstrapItemRow | undefined
 
         if (stagedByOrder) {
-          const sameItem = stagedByOrder.entity_type === projection.entity_type &&
+          const sameItem =
+            stagedByOrder.entity_type === projection.entity_type &&
             stagedByOrder.entity_id === projection.entity_id &&
             stagedByOrder.projection_json === projectionJson
           if (!sameItem) {
@@ -201,23 +214,31 @@ export class BootstrapStagingRepository {
       }
       const finalStatus = page.has_more ? 'ACTIVE' : 'READY_TO_APPLY'
       const preserveReadyState = state.status === 'READY_TO_APPLY' && !insertedNewItem
-      database.prepare(`
+      database
+        .prepare(
+          `
         UPDATE bootstrap_local_state SET next_order_key = ?, status = ?, updated_at = ?
         WHERE id = 1 AND session_id = ?
-      `).run(
-        greatestOrder.toString(),
-        preserveReadyState ? 'READY_TO_APPLY' : finalStatus,
-        updatedAt,
-        page.session_id
-      )
+      `
+        )
+        .run(
+          greatestOrder.toString(),
+          preserveReadyState ? 'READY_TO_APPLY' : finalStatus,
+          updatedAt,
+          page.session_id
+        )
     })
   }
 
   currentSession(): LocalBootstrapState | null {
-    const row = this.database.prepare(`
+    const row = this.database
+      .prepare(
+        `
       SELECT session_id, watermark, next_order_key, status, updated_at
       FROM bootstrap_local_state WHERE id = 1
-    `).get() as BootstrapStateRow | undefined
+    `
+      )
+      .get() as BootstrapStateRow | undefined
     return row ?? null
   }
 
@@ -229,7 +250,9 @@ export class BootstrapStagingRepository {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 500) {
       throw new Error('Bootstrap finalization page limit must be between 1 and 500')
     }
-    const rows = this.database.prepare(`
+    const rows = this.database
+      .prepare(
+        `
       SELECT order_key, entity_type, entity_id, projection_json
       FROM bootstrap_items
       WHERE session_id = ? AND (
@@ -238,7 +261,9 @@ export class BootstrapStagingRepository {
       )
       ORDER BY length(order_key), order_key
       LIMIT ?
-    `).all(sessionId, afterOrderKey, afterOrderKey, afterOrderKey, limit) as BootstrapItemRow[]
+    `
+      )
+      .all(sessionId, afterOrderKey, afterOrderKey, afterOrderKey, limit) as BootstrapItemRow[]
     return rows.map((row) => {
       const projection = projectionIdentity(parseLocalJson(row.projection_json))
       if (projection.entity_type !== row.entity_type || projection.entity_id !== row.entity_id) {

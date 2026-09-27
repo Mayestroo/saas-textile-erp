@@ -1,0 +1,211 @@
+import type Database from 'better-sqlite3'
+import { parsePostgresBigint } from './decimal-string'
+import { LocalDomainError } from './local-errors'
+
+interface NumberBlockRow {
+  id: string
+  device_id: string
+  range_start: string
+  range_end: string
+  reported_used_count: string
+  status: 'ACTIVE' | 'EXHAUSTED' | 'CANCELLED'
+  local_next_number: string | null
+  local_consumed_count: string
+  local_role: 'CURRENT' | 'RESERVED' | 'AVAILABLE'
+}
+
+export interface LocalBlockConsumption {
+  blockId: string
+  pattaNumber: string
+  shouldPrefetch: boolean
+}
+
+interface NormalizedBlockProgress {
+  rangeStart: bigint
+  rangeEnd: bigint
+  nextNumber: bigint
+  consumedCount: bigint
+}
+
+export class PattaNumberBlockRepository {
+  constructor(
+    private readonly database: Database.Database,
+    private readonly deviceId: string
+  ) {}
+
+  consumeNext(): LocalBlockConsumption {
+    if (!this.database.inTransaction) {
+      throw new Error('Patta block number consumption requires a SQLite write transaction')
+    }
+
+    let current = this.currentBlock()
+    if (current) {
+      const progress = this.normalizeProgress(current)
+      if (progress.nextNumber <= progress.rangeEnd) {
+        return this.consume(current, progress)
+      }
+      this.database
+        .prepare(
+          `
+        UPDATE patta_number_blocks SET local_role = 'AVAILABLE'
+        WHERE id = ? AND local_role = 'CURRENT'
+      `
+        )
+        .run(current.id)
+      current = null
+    }
+
+    this.database
+      .prepare(
+        `
+      UPDATE patta_number_blocks SET local_role = 'AVAILABLE'
+      WHERE device_id = ? AND local_role = 'CURRENT' AND status <> 'ACTIVE'
+    `
+      )
+      .run(this.deviceId)
+
+    const candidates = this.database
+      .prepare(
+        `
+      SELECT block.id, block.device_id, block.range_start, block.range_end,
+        block.reported_used_count, block.status, block.local_next_number,
+        block.local_consumed_count, block.local_role
+      FROM patta_number_blocks AS block
+      WHERE block.device_id = ? AND block.status = 'ACTIVE'
+        AND block.local_role IN ('RESERVED', 'AVAILABLE')
+        AND NOT EXISTS (
+          SELECT 1 FROM sync_tombstones AS tombstone
+          WHERE tombstone.entity_type = 'patta_number_blocks' AND tombstone.entity_id = block.id
+        )
+      ORDER BY CASE block.local_role WHEN 'RESERVED' THEN 0 ELSE 1 END,
+        block.allocated_at, block.id
+    `
+      )
+      .all(this.deviceId) as NumberBlockRow[]
+
+    for (const candidate of candidates) {
+      const progress = this.normalizeProgress(candidate)
+      if (progress.nextNumber > progress.rangeEnd) continue
+      this.database
+        .prepare(
+          `
+        UPDATE patta_number_blocks SET local_role = 'CURRENT'
+        WHERE id = ? AND device_id = ? AND status = 'ACTIVE'
+      `
+        )
+        .run(candidate.id, this.deviceId)
+      return this.consume(candidate, progress)
+    }
+
+    throw new LocalDomainError(
+      'PATTA_NUMBER_BLOCKS_EXHAUSTED',
+      'Yangi Patta raqamlari tugadi. Internet ulanganda yangi blok oling.'
+    )
+  }
+
+  private currentBlock(): NumberBlockRow | null {
+    const currentBlocks = this.database
+      .prepare(
+        `
+      SELECT block.id, block.device_id, block.range_start, block.range_end,
+        block.reported_used_count, block.status, block.local_next_number,
+        block.local_consumed_count, block.local_role
+      FROM patta_number_blocks AS block
+      WHERE block.device_id = ? AND block.local_role = 'CURRENT' AND block.status = 'ACTIVE'
+        AND NOT EXISTS (
+          SELECT 1 FROM sync_tombstones AS tombstone
+          WHERE tombstone.entity_type = 'patta_number_blocks' AND tombstone.entity_id = block.id
+        )
+      ORDER BY block.allocated_at, block.id
+      LIMIT 1
+      `
+      )
+      .all(this.deviceId) as NumberBlockRow[]
+    const current = currentBlocks[0]
+    if (current) {
+      this.database
+        .prepare(
+          `
+          UPDATE patta_number_blocks SET local_role = 'AVAILABLE'
+          WHERE device_id = ? AND local_role = 'CURRENT' AND status = 'ACTIVE' AND id <> ?
+        `
+        )
+        .run(this.deviceId, current.id)
+    } else {
+      this.database
+        .prepare(
+          `
+          UPDATE patta_number_blocks SET local_role = 'AVAILABLE'
+          WHERE device_id = ? AND local_role = 'CURRENT'
+        `
+        )
+        .run(this.deviceId)
+    }
+    return current ?? null
+  }
+
+  private normalizeProgress(block: NumberBlockRow): NormalizedBlockProgress {
+    const rangeStart = parsePostgresBigint(block.range_start, 'Patta block range start')
+    const rangeEnd = parsePostgresBigint(block.range_end, 'Patta block range end')
+    const reportedUsedCount = parsePostgresBigint(
+      block.reported_used_count,
+      'Patta block server-reported usage'
+    )
+    const localConsumedCount = parsePostgresBigint(
+      block.local_consumed_count,
+      'Patta block local usage'
+    )
+    if (rangeStart < 1n || rangeEnd < rangeStart) {
+      throw new LocalDomainError('PATTA_NUMBER_BLOCK_INVALID', 'Patta raqamlar bloki yaroqsiz')
+    }
+    const capacity = rangeEnd - rangeStart + 1n
+    if (reportedUsedCount > capacity || localConsumedCount > capacity) {
+      throw new LocalDomainError(
+        'PATTA_NUMBER_BLOCK_INVALID',
+        'Patta raqamlar blokidagi foydalanish soni yaroqsiz'
+      )
+    }
+
+    const serverNextNumber = rangeStart + reportedUsedCount
+    const storedNextNumber =
+      block.local_next_number === null
+        ? serverNextNumber
+        : parsePostgresBigint(block.local_next_number, 'Patta block local next number')
+    if (storedNextNumber < rangeStart || storedNextNumber > rangeEnd + 1n) {
+      throw new LocalDomainError(
+        'PATTA_NUMBER_BLOCK_INVALID',
+        'Keyingi Patta raqami blok chegarasidan tashqarida'
+      )
+    }
+    const nextNumber = storedNextNumber > serverNextNumber ? storedNextNumber : serverNextNumber
+    const localProgress = nextNumber - rangeStart
+    const consumedCount = [localConsumedCount, reportedUsedCount, localProgress].reduce(
+      (greatest, value) => (value > greatest ? value : greatest),
+      0n
+    )
+    return { rangeStart, rangeEnd, nextNumber, consumedCount }
+  }
+
+  private consume(block: NumberBlockRow, progress: NormalizedBlockProgress): LocalBlockConsumption {
+    const pattaNumber = progress.nextNumber
+    const nextNumber = pattaNumber + 1n
+    const consumedByNextNumber = nextNumber - progress.rangeStart
+    const consumedCount =
+      progress.consumedCount > consumedByNextNumber ? progress.consumedCount : consumedByNextNumber
+    this.database
+      .prepare(
+        `
+      UPDATE patta_number_blocks SET local_next_number = ?, local_consumed_count = ?,
+        local_role = 'CURRENT'
+      WHERE id = ? AND device_id = ? AND status = 'ACTIVE'
+    `
+      )
+      .run(nextNumber.toString(), consumedCount.toString(), block.id, this.deviceId)
+    const capacity = progress.rangeEnd - progress.rangeStart + 1n
+    return {
+      blockId: block.id,
+      pattaNumber: pattaNumber.toString(),
+      shouldPrefetch: consumedCount * 100n >= capacity * 80n
+    }
+  }
+}

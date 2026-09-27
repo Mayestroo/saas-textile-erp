@@ -9,18 +9,21 @@ export class SyncStateRepository {
   constructor(private readonly database: Database.Database) {}
 
   get(key: string): string | null {
-    const row = this.database
-      .prepare('SELECT value FROM sync_state WHERE key = ?')
-      .get(key) as SyncStateRow | undefined
+    const row = this.database.prepare('SELECT value FROM sync_state WHERE key = ?').get(key) as
+      SyncStateRow | undefined
     return row?.value ?? null
   }
 
   set(key: string, value: string, updatedAt: string): void {
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       INSERT INTO sync_state (key, value, updated_at)
       VALUES (?, ?, ?)
       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
-    `).run(key, value, updatedAt)
+    `
+      )
+      .run(key, value, updatedAt)
   }
 
   lastServerCursor(): string | null {

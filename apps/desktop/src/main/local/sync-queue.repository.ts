@@ -98,7 +98,9 @@ function parsePattaPayload(json: string): SyncPattaCreatePayload {
     razmer: nullableString(value.razmer, 'size'),
     rang: nullableString(value.rang, 'color'),
     block_id: requiredString(value.block_id, 'number block id'),
-    ...(parsedTemplateOverrides === undefined ? {} : { template_overrides: parsedTemplateOverrides }),
+    ...(parsedTemplateOverrides === undefined
+      ? {}
+      : { template_overrides: parsedTemplateOverrides }),
     reference_versions: parseReferenceVersions(value.reference_versions),
     operations: value.operations.map(parseSnapshot)
   }
@@ -125,19 +127,28 @@ export class SyncQueueRepository {
   constructor(private readonly database: Database.Database) {}
 
   enqueue(event: OfflinePattaCreateEvent): void {
-    if (event.entity_type !== 'patta' || event.operation !== 'CREATE' || event.base_version !== '0') {
+    if (
+      event.entity_type !== 'patta' ||
+      event.operation !== 'CREATE' ||
+      event.base_version !== '0'
+    ) {
       throw new Error('Only offline Patta create events may enter the local sync queue')
     }
 
     const payloadJson = serializeLocalJson(event.payload)
-    const existing = this.database.prepare(`
+    const existing = this.database
+      .prepare(
+        `
       SELECT event_id, entity_id, base_version, client_created_at, occurred_at,
         reference_cursor, payload_json
       FROM sync_queue WHERE event_id = ?
-    `).get(event.event_id) as StoredQueueEvent | undefined
+    `
+      )
+      .get(event.event_id) as StoredQueueEvent | undefined
 
     if (existing) {
-      const sameEvent = existing.entity_id === event.entity_id &&
+      const sameEvent =
+        existing.entity_id === event.entity_id &&
         existing.base_version === event.base_version &&
         existing.client_created_at === event.client_created_at &&
         existing.occurred_at === event.occurred_at &&
@@ -147,51 +158,67 @@ export class SyncQueueRepository {
       return
     }
 
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       INSERT INTO sync_queue (
         event_id, entity_type, entity_id, operation, base_version, client_created_at,
         occurred_at, reference_cursor, payload_json, status, created_at, updated_at
       ) VALUES (?, 'patta', ?, 'CREATE', ?, ?, ?, ?, ?, 'PENDING', ?, ?)
-    `).run(
-      event.event_id,
-      event.entity_id,
-      event.base_version,
-      event.client_created_at,
-      event.occurred_at,
-      event.reference_cursor,
-      payloadJson,
-      event.client_created_at,
-      event.client_created_at
-    )
+    `
+      )
+      .run(
+        event.event_id,
+        event.entity_id,
+        event.base_version,
+        event.client_created_at,
+        event.occurred_at,
+        event.reference_cursor,
+        payloadJson,
+        event.client_created_at,
+        event.client_created_at
+      )
   }
 
   pendingBatch(limit: number, now: string): readonly OfflinePattaCreateEvent[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       throw new Error('Local sync queue batch limit must be between 1 and 100')
     }
-    const rows = this.database.prepare(`
+    const rows = this.database
+      .prepare(
+        `
       SELECT event_id, entity_id, base_version, client_created_at, occurred_at,
         reference_cursor, payload_json
       FROM sync_queue
       WHERE status = 'PENDING' AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
       ORDER BY created_at, event_id
       LIMIT ?
-    `).all(now, limit) as StoredQueueEvent[]
+    `
+      )
+      .all(now, limit) as StoredQueueEvent[]
     return rows.map(storedEvent)
   }
 
   markSyncing(eventIds: readonly string[], updatedAt: string): number {
     let updatedCount = 0
     for (const eventId of eventIds) {
-      const row = this.database.prepare(`
+      const row = this.database
+        .prepare(
+          `
         SELECT entity_id FROM sync_queue WHERE event_id = ? AND status = 'PENDING'
-      `).get(eventId) as QueueEntityRow | undefined
+      `
+        )
+        .get(eventId) as QueueEntityRow | undefined
       if (!row) continue
 
-      const result = this.database.prepare(`
+      const result = this.database
+        .prepare(
+          `
         UPDATE sync_queue SET status = 'SYNCING', updated_at = ?
         WHERE event_id = ? AND status = 'PENDING'
-      `).run(updatedAt, eventId)
+      `
+        )
+        .run(updatedAt, eventId)
       if (result.changes === 0) continue
       this.setPattaOwnership(row.entity_id, 'SYNCING')
       updatedCount += result.changes
@@ -201,20 +228,32 @@ export class SyncQueueRepository {
 
   recoverStaleSyncing(recoveredAt: string): number {
     const recover = this.database.transaction(() => {
-      const result = this.database.prepare(`
+      const result = this.database
+        .prepare(
+          `
         UPDATE sync_queue SET status = 'PENDING', updated_at = ?
         WHERE status = 'SYNCING'
-      `).run(recoveredAt)
-      this.database.prepare(`
+      `
+        )
+        .run(recoveredAt)
+      this.database
+        .prepare(
+          `
         UPDATE patta_hisob SET ownership_state = 'LOCAL_PENDING'
         WHERE ownership_state = 'SYNCING'
           AND id IN (SELECT entity_id FROM sync_queue WHERE status = 'PENDING' AND entity_type = 'patta')
-      `).run()
-      this.database.prepare(`
+      `
+        )
+        .run()
+      this.database
+        .prepare(
+          `
         UPDATE patta_operation_snapshots SET ownership_state = 'LOCAL_PENDING'
         WHERE ownership_state = 'SYNCING'
           AND patta_hisob_id IN (SELECT entity_id FROM sync_queue WHERE status = 'PENDING' AND entity_type = 'patta')
-      `).run()
+      `
+        )
+        .run()
       return result.changes
     })
     return recover.immediate()
@@ -227,51 +266,79 @@ export class SyncQueueRepository {
     errorMessage: string,
     updatedAt: string
   ): boolean {
-    const row = this.database.prepare(`
+    const row = this.database
+      .prepare(
+        `
       SELECT entity_id FROM sync_queue WHERE event_id = ? AND status = 'SYNCING'
-    `).get(eventId) as QueueEntityRow | undefined
+    `
+      )
+      .get(eventId) as QueueEntityRow | undefined
     if (!row) return false
-    const result = this.database.prepare(`
+    const result = this.database
+      .prepare(
+        `
       UPDATE sync_queue SET status = 'PENDING', attempt_count = attempt_count + 1,
         next_attempt_at = ?, last_error_code = ?, last_error_message = ?, updated_at = ?
       WHERE event_id = ? AND status = 'SYNCING'
-    `).run(nextAttemptAt, errorCode, errorMessage, updatedAt, eventId)
+    `
+      )
+      .run(nextAttemptAt, errorCode, errorMessage, updatedAt, eventId)
     if (result.changes > 0) this.setPattaOwnership(row.entity_id, 'LOCAL_PENDING')
     return result.changes > 0
   }
 
   markFailed(eventId: string, errorCode: string, errorMessage: string, updatedAt: string): boolean {
-    const row = this.database.prepare(`
+    const row = this.database
+      .prepare(
+        `
       SELECT entity_id FROM sync_queue
       WHERE event_id = ? AND status IN ('PENDING', 'SYNCING')
-    `).get(eventId) as QueueEntityRow | undefined
+    `
+      )
+      .get(eventId) as QueueEntityRow | undefined
     if (!row) return false
-    const result = this.database.prepare(`
+    const result = this.database
+      .prepare(
+        `
       UPDATE sync_queue SET status = 'FAILED', last_error_code = ?,
         last_error_message = ?, updated_at = ?
       WHERE event_id = ? AND status IN ('PENDING', 'SYNCING')
-    `).run(errorCode, errorMessage, updatedAt, eventId)
+    `
+      )
+      .run(errorCode, errorMessage, updatedAt, eventId)
     if (result.changes > 0) this.setPattaOwnership(row.entity_id, 'FAILED')
     return result.changes > 0
   }
 
   countByStatus(status: QueueStatus): number {
-    const row = this.database.prepare(`
+    const row = this.database
+      .prepare(
+        `
       SELECT COUNT(*) AS count FROM sync_queue WHERE status = ?
-    `).get(status) as { count: number }
+    `
+      )
+      .get(status) as { count: number }
     return row.count
   }
 
   private setPattaOwnership(entityId: string, state: 'SYNCING' | 'LOCAL_PENDING' | 'FAILED'): void {
     const pattaState = state === 'SYNCING' ? 'SYNCING' : state
     const snapshotState = state === 'SYNCING' ? 'SYNCING' : state
-    this.database.prepare(`
+    this.database
+      .prepare(
+        `
       UPDATE patta_hisob SET ownership_state = ?
       WHERE id = ? AND ownership_state IN ('LOCAL_PENDING', 'SYNCING')
-    `).run(pattaState, entityId)
-    this.database.prepare(`
+    `
+      )
+      .run(pattaState, entityId)
+    this.database
+      .prepare(
+        `
       UPDATE patta_operation_snapshots SET ownership_state = ?
       WHERE patta_hisob_id = ? AND ownership_state IN ('LOCAL_PENDING', 'SYNCING')
-    `).run(snapshotState, entityId)
+    `
+      )
+      .run(snapshotState, entityId)
   }
 }
