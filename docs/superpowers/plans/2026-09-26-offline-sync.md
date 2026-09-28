@@ -1283,8 +1283,8 @@ npm run test:patta --workspace=apps/api
 ```
 
 - [x] **Step 7: Review all changes with `git status`, `git diff --check`, `git diff`, and `git log --oneline -10`; verify only `feature/offline-sync`, no secret changes, no generated renderer artifacts, no migration edits to prior migrations, and no Electron version drift.**
-- [ ] **Step 8: Commit the documentation and regression closeout as `docs: complete offline sync documentation`; keep all previously committed implementation checkpoints and the design commit `b6bf289` intact.**
-- [ ] **Step 9: Push only `feature/offline-sync` with `git push -u origin feature/offline-sync`; record the actual result and commit hash.**
+- [x] **Step 8: Commit the documentation and regression closeout as `docs: complete offline sync documentation`; keep all previously committed implementation checkpoints and the design commit `b6bf289` intact.**
+- [x] **Step 9: Push only `feature/offline-sync` with `git push -u origin feature/offline-sync`; record the actual result and commit hash.**
 
 ## Completion criteria
 
