@@ -150,12 +150,13 @@ its staging and restarts the baseline.
 
 ## Offline desktop behavior
 
-Electron main owns SQLite, local repositories, transport and SyncEngine. The
-renderer sees only fixed `window.erp` APIs (`app.getVersion`, sync status/run,
-and a sanitized local Patta lookup). It receives no `ipcRenderer`, Node/process
-object, bearer/refresh token or database handle. Electron stays exactly pinned at
-`44.4.5`; `contextIsolation`, `sandbox`, and disabled `nodeIntegration` are
-explicit.
+Electron main owns auth, SQLite, local repositories, transport and SyncEngine.
+The renderer sees only fixed `window.erp` APIs for app version, login/logout/auth
+status/safe session metadata, sync status/run, and sanitized local Patta lookup.
+It receives no `ipcRenderer`, Node/process object, password hash,
+bearer/refresh token, device ID, filesystem access, or database handle. Electron
+stays exactly pinned at `44.4.5`; `contextIsolation`, `sandbox`, and disabled
+`nodeIntegration` are explicit.
 
 The single-flight cycle recovers stale `SYNCING` queue rows, pushes stable event
 IDs, persists per-event outcomes, pulls pages, applies each page and its cursor
@@ -166,13 +167,30 @@ stored, not retried as connectivity failures. Successful queue rows may be
 retained for 30 days; PENDING/SYNCING/CONFLICT/FAILED rows and unresolved
 conflicts are never silently cleaned.
 
-`AuthenticatedHttpClient` is the auth boundary: it obtains a short-lived access
-token from a main-process session provider, performs one provider-owned refresh
-after 401, and retries once. SyncEngine and SQLite never store access or refresh
-tokens. This repository currently has the transport/session-provider interface
-but no desktop login/session provider; until one is installed in the main
-process registry, the UI truthfully reports `Tizimga kirish kerak` and does not
-attempt authenticated sync.
+`DesktopAuthService` is the real main-process session provider.
+`AuthenticatedHttpClient` obtains the short-lived access token from it, shares
+one refresh operation across concurrent 401 responses, recognizes late 401s
+from older token generations, and retries a request once. The rotated refresh
+token is encrypted and atomically persisted before the new access token is
+activated. SyncEngine and SQLite never store access or refresh tokens. A
+signed-out session produces `AUTH_REQUIRED`; transient startup refresh failure
+produces `OFFLINE_SESSION_PENDING` and does not pretend that server auth
+succeeded.
+
+The pre-provisioned device ID is read by main-process `DeviceIdentityService`
+from `userData/device-config.json`. Missing/invalid config leaves login and the
+company-local DB available but blocks sync with `DEVICE_NOT_CONFIGURED`. A
+configured ID is not trusted as tenant identity: each API sync/block operation
+still validates device existence, company ownership, and ACTIVE status through
+Master `DeviceAccessService`. A device belonging to another tenant is reported
+as a safe Uzbek error.
+
+Logout is local-only because the current API has no revoke endpoint. Desktop
+clears access-token memory and encrypted refresh/session state immediately,
+stops new sync work, drains any current sync cycle before closing its SQLite
+handle, and does not require a remote logout request. The server session can
+remain valid until expiry/server invalidation; remote revoke is not queued for
+retry.
 
 Two-PC acceptance uses real PostgreSQL and HTTP: PC-1 creates locally with a
 server-owned block, loses the first successful push response, retries the same

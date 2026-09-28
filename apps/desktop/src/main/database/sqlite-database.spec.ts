@@ -28,10 +28,13 @@ describe('Electron SQLite startup', () => {
       expect(database.pragma('foreign_keys', { simple: true })).toBe(1)
       expect(database.pragma('journal_mode', { simple: true })).toBe('wal')
       expect(database.pragma('busy_timeout', { simple: true })).toBe(5_000)
-      expect(database.pragma('user_version', { simple: true })).toBe(1)
+      expect(database.pragma('user_version', { simple: true })).toBe(2)
       expect(
         database.prepare('SELECT version, name FROM schema_migrations ORDER BY version').all()
-      ).toEqual([{ version: 1, name: 'sync-foundation' }])
+      ).toEqual([
+        { version: 1, name: 'sync-foundation' },
+        { version: 2, name: 'tenant-ownership' }
+      ])
       expect(
         database.prepare(`SELECT value FROM sync_state WHERE key = 'last_server_cursor'`).get()
       ).toBeUndefined()
@@ -40,6 +43,13 @@ describe('Electron SQLite startup', () => {
           .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sync_queue'`)
           .get()
       ).toEqual({ name: 'sync_queue' })
+      expect(
+        database
+          .prepare(
+            `SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'tenant_database_identity'`
+          )
+          .get()
+      ).toEqual({ name: 'tenant_database_identity' })
     } finally {
       database.close()
     }

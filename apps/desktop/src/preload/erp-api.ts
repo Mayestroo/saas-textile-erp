@@ -1,13 +1,54 @@
-export type DesktopIpcChannel = 'app:get-version' | 'sync:status' | 'sync:run' | 'patta:lookup'
+export type DesktopIpcChannel =
+  | 'app:get-version'
+  | 'sync:status'
+  | 'sync:run'
+  | 'patta:lookup'
+  | 'auth:login'
+  | 'auth:logout'
+  | 'auth:status'
+  | 'auth:session'
 
-export type DesktopConnectivity = 'ONLINE' | 'OFFLINE' | 'AUTH_REQUIRED'
-export type DesktopSyncResult = 'COMPLETED' | 'OFFLINE' | 'AUTH_REQUIRED' | 'FAILED'
+export type DesktopAuthState =
+  | 'SIGNED_OUT'
+  | 'AUTHENTICATING'
+  | 'AUTHENTICATED'
+  | 'REFRESHING'
+  | 'OFFLINE_SESSION_PENDING'
+  | 'ERROR'
+
+export interface DesktopAuthStatus {
+  state: DesktopAuthState
+  errorCode: string | null
+  message: string | null
+}
+
+export interface DesktopSafeSession {
+  state: DesktopAuthState
+  user: { id: string; email: string; full_name: string } | null
+  company: { id: string; slug: string } | null
+  tenant_host: string | null
+}
+
+export interface DesktopLoginInput {
+  tenantUrl: string
+  email: string
+  password: string
+}
+
+export type DesktopConnectivity = 'ONLINE' | 'OFFLINE' | 'AUTH_REQUIRED' | 'DEVICE_NOT_CONFIGURED'
+export type DesktopSyncResult =
+  | 'COMPLETED'
+  | 'OFFLINE'
+  | 'AUTH_REQUIRED'
+  | 'DEVICE_NOT_CONFIGURED'
+  | 'FAILED'
 
 export interface DesktopSyncStatus {
   connectivity: DesktopConnectivity
   unsyncedCount: number
   conflictCount: number
   lastSuccessfulSyncAt: string | null
+  errorCode: string | null
 }
 
 export interface DesktopSyncRunResult {
@@ -15,6 +56,7 @@ export interface DesktopSyncRunResult {
   bootstrapped: boolean
   pushed: number
   pulled: number
+  errorCode?: string | null
 }
 
 export interface DesktopPattaLookup {
@@ -44,6 +86,12 @@ export interface ErpApi {
   patta: {
     lookup(partiyaNumber: string, pattaNumber: string): Promise<DesktopPattaLookup | null>
   }
+  auth: {
+    login(input: DesktopLoginInput): Promise<DesktopAuthStatus>
+    logout(): Promise<DesktopAuthStatus>
+    status(): Promise<DesktopAuthStatus>
+    session(): Promise<DesktopSafeSession>
+  }
 }
 
 export interface NarrowIpcInvoker {
@@ -69,18 +117,28 @@ function countValue(value: unknown, field: string): number {
 function parseSyncStatus(value: unknown): DesktopSyncStatus {
   if (!record(value)) throw new Error('Invalid sync status response')
   const connectivity = value.connectivity
-  if (connectivity !== 'ONLINE' && connectivity !== 'OFFLINE' && connectivity !== 'AUTH_REQUIRED') {
+  if (
+    connectivity !== 'ONLINE' &&
+    connectivity !== 'OFFLINE' &&
+    connectivity !== 'AUTH_REQUIRED' &&
+    connectivity !== 'DEVICE_NOT_CONFIGURED'
+  ) {
     throw new Error('Invalid sync connectivity response')
   }
   const lastSuccessfulSyncAt = value.lastSuccessfulSyncAt
   if (lastSuccessfulSyncAt !== null && typeof lastSuccessfulSyncAt !== 'string') {
     throw new Error('Invalid last sync timestamp response')
   }
+  const errorCode = value.errorCode
+  if (errorCode !== null && typeof errorCode !== 'string') {
+    throw new Error('Invalid sync error code response')
+  }
   return {
     connectivity,
     unsyncedCount: countValue(value.unsyncedCount, 'unsyncedCount'),
     conflictCount: countValue(value.conflictCount, 'conflictCount'),
-    lastSuccessfulSyncAt
+    lastSuccessfulSyncAt,
+    errorCode
   }
 }
 
@@ -91,6 +149,7 @@ function parseSyncRunResult(value: unknown): DesktopSyncRunResult {
     status !== 'COMPLETED' &&
     status !== 'OFFLINE' &&
     status !== 'AUTH_REQUIRED' &&
+    status !== 'DEVICE_NOT_CONFIGURED' &&
     status !== 'FAILED'
   ) {
     throw new Error('Invalid sync result status')
@@ -100,8 +159,100 @@ function parseSyncRunResult(value: unknown): DesktopSyncRunResult {
     status,
     bootstrapped: value.bootstrapped,
     pushed: countValue(value.pushed, 'pushed'),
-    pulled: countValue(value.pulled, 'pulled')
+    pulled: countValue(value.pulled, 'pulled'),
+    ...(value.errorCode === undefined
+      ? {}
+      : { errorCode: value.errorCode === null ? null : stringValue(value.errorCode, 'errorCode') })
   }
+}
+
+const AUTH_STATES: readonly DesktopAuthState[] = [
+  'SIGNED_OUT',
+  'AUTHENTICATING',
+  'AUTHENTICATED',
+  'REFRESHING',
+  'OFFLINE_SESSION_PENDING',
+  'ERROR'
+]
+
+function authState(value: unknown): DesktopAuthState {
+  if (typeof value !== 'string' || !AUTH_STATES.includes(value as DesktopAuthState)) {
+    throw new Error('Invalid authentication state response')
+  }
+  return value as DesktopAuthState
+}
+
+function parseAuthStatus(value: unknown): DesktopAuthStatus {
+  if (!record(value) || Object.keys(value).length !== 3) {
+    throw new Error('Invalid authentication status response')
+  }
+  const errorCode = value.errorCode
+  const message = value.message
+  if ((errorCode !== null && typeof errorCode !== 'string') || (message !== null && typeof message !== 'string')) {
+    throw new Error('Invalid authentication status fields')
+  }
+  return { state: authState(value.state), errorCode, message }
+}
+
+function parseSafeSession(value: unknown): DesktopSafeSession {
+  if (!record(value) || Object.keys(value).length !== 4) {
+    throw new Error('Invalid safe session response')
+  }
+  const userValue = value.user
+  const companyValue = value.company
+  const tenantHost = value.tenant_host
+  let user: DesktopSafeSession['user'] = null
+  let company: DesktopSafeSession['company'] = null
+  if (userValue !== null) {
+    if (!record(userValue) || Object.keys(userValue).length !== 3) {
+      throw new Error('Invalid safe session user')
+    }
+    user = {
+      id: stringValue(userValue.id, 'user.id'),
+      email: stringValue(userValue.email, 'user.email'),
+      full_name: stringValue(userValue.full_name, 'user.full_name')
+    }
+  }
+  if (companyValue !== null) {
+    if (!record(companyValue) || Object.keys(companyValue).length !== 2) {
+      throw new Error('Invalid safe session company')
+    }
+    company = {
+      id: stringValue(companyValue.id, 'company.id'),
+      slug: stringValue(companyValue.slug, 'company.slug')
+    }
+  }
+  if (tenantHost !== null && typeof tenantHost !== 'string') {
+    throw new Error('Invalid safe session tenant host')
+  }
+  return { state: authState(value.state), user, company, tenant_host: tenantHost }
+}
+
+function loginInput(value: unknown): DesktopLoginInput {
+  if (
+    !record(value) ||
+    Object.keys(value).length !== 3 ||
+    typeof value.tenantUrl !== 'string' ||
+    typeof value.email !== 'string' ||
+    typeof value.password !== 'string'
+  ) {
+    throw new Error('Kirish ma’lumotlari yaroqsiz')
+  }
+  const tenantUrl = value.tenantUrl.trim()
+  const email = value.email.trim()
+  const password = value.password
+  if (
+    tenantUrl.length === 0 ||
+    tenantUrl.length > 2_048 ||
+    email.length === 0 ||
+    email.length > 320 ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+    password.length === 0 ||
+    password.length > 1_024
+  ) {
+    throw new Error('Kirish ma’lumotlari yaroqsiz')
+  }
+  return { tenantUrl, email, password }
 }
 
 function parsePattaLookup(value: unknown): DesktopPattaLookup | null {
@@ -170,6 +321,20 @@ export function createErpApi(invoker: NarrowIpcInvoker): ErpApi {
             pattaNumber
           })
         )
+      }
+    },
+    auth: {
+      async login(input) {
+        return parseAuthStatus(await invoker.invoke('auth:login', loginInput(input)))
+      },
+      async logout() {
+        return parseAuthStatus(await invoker.invoke('auth:logout'))
+      },
+      async status() {
+        return parseAuthStatus(await invoker.invoke('auth:status'))
+      },
+      async session() {
+        return parseSafeSession(await invoker.invoke('auth:session'))
       }
     }
   }

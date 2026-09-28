@@ -16,6 +16,7 @@ import { AesGcmTenantConnectionSecretCipher } from '../../master/provisioning/ae
 import { StructuredApiExceptionFilter } from '../../common/errors/structured-api-exception.filter.js';
 import { JwtTokenService } from '../../common/auth/jwt-token.service.js';
 import { loadAuthConfiguration } from '../../common/auth/auth-configuration.js';
+import { PasswordPolicy } from '../../common/auth/password-policy.js';
 import type {
   OfflinePattaCreateEvent,
   SyncProjection,
@@ -155,7 +156,7 @@ integrationDescribe(
     let tenantDatabaseManager: TenantDatabaseManager;
     let cleanup: TenantTestDatabaseCleanup;
     let tenant: TenantFixture;
-    let createdCompanyId: string | undefined;
+    const createdCompanyIds: string[] = [];
     let nextTestBlockStart = 20_000_000n;
 
     async function createOfflineEventFixture(
@@ -392,7 +393,7 @@ integrationDescribe(
       );
 
       const companyId = randomUUID();
-      createdCompanyId = companyId;
+      createdCompanyIds.push(companyId);
       const databaseName = cleanup.trackCompany(companyId);
       await masterDataSource.query(
         `INSERT INTO "companies" ("id", "name", "slug", "status", "db_name")
@@ -453,10 +454,10 @@ integrationDescribe(
       await tenantDatabaseManager?.close();
       await cleanup?.cleanup();
       if (masterDataSource?.isInitialized) {
-        if (createdCompanyId) {
+        if (createdCompanyIds.length > 0) {
           await masterDataSource.query(
-            'DELETE FROM "companies" WHERE "id" = $1',
-            [createdCompanyId],
+            'DELETE FROM "companies" WHERE "id" = ANY($1::uuid[])',
+            [createdCompanyIds],
           );
         }
         await masterDataSource.destroy();
@@ -2107,12 +2108,18 @@ integrationDescribe(
       const localDataDirectory = mkdtempSync(
         join(tmpdir(), 'textile-erp-two-pc-'),
       );
+      let secondTenantFixture: TenantFixture | undefined;
+      let secondTenantCompanyId: string | undefined;
+      let secondTenantSlug: string | undefined;
+      let secondTenantDeviceId: string | undefined;
       try {
         const authSessionId = randomUUID();
         const authUserId = randomUUID();
+        const desktopAuthPassword = 'two-pc-auth-password';
         const devicePc1 = randomUUID();
         const devicePc2 = randomUUID();
-        createdDeviceIds.push(devicePc1, devicePc2);
+        const desktopAuthDeviceId = randomUUID();
+        createdDeviceIds.push(devicePc1, devicePc2, desktopAuthDeviceId);
         const tenantSlugRows: Array<{ slug: string }> =
           await masterDataSource.query(
             'SELECT "slug" FROM "companies" WHERE "id" = $1',
@@ -2149,6 +2156,18 @@ integrationDescribe(
             ],
           );
         }
+        await masterDataSource.query(
+          `INSERT INTO "devices"
+             ("id", "company_id", "installation_id", "hardware_fingerprint_hash",
+              "device_name", "status", "first_seen_at", "last_seen_at")
+           VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'Desktop auth acceptance PC', 'ACTIVE', now(), now())`,
+          [
+            desktopAuthDeviceId,
+            tenant.companyId,
+            randomUUID(),
+            `desktop-auth-fingerprint-${randomUUID()}`,
+          ],
+        );
 
         const roleRows: Array<{ id: string }> =
           await tenant.runtimeDataSource.query(
@@ -2158,10 +2177,13 @@ integrationDescribe(
         const roleId = roleRows[0]?.id;
         if (!roleId)
           throw new Error('Two-PC tenant administrator role is missing');
+        const desktopAuthPasswordHash = await new PasswordPolicy().hash(
+          desktopAuthPassword,
+        );
         await tenant.runtimeDataSource.query(
           `INSERT INTO "users" ("id", "role_id", "email", "full_name", "password_hash")
-           VALUES ($1::uuid, $2::uuid, $3, 'Two PC Sync Actor', 'test-only-password-hash')`,
-          [authUserId, roleId, `two-pc-${authUserId}@example.test`],
+           VALUES ($1::uuid, $2::uuid, $3, 'Two PC Sync Actor', $4)`,
+          [authUserId, roleId, `two-pc-${authUserId}@example.test`, desktopAuthPasswordHash],
         );
         await tenant.runtimeDataSource.query(
           `INSERT INTO "auth_sessions" ("id", "user_id", "refresh_token_hash", "expires_at")
@@ -2195,6 +2217,67 @@ integrationDescribe(
            VALUES (1, 1, 1) ON CONFLICT ("id") DO NOTHING`,
         );
 
+        secondTenantFixture = await createGeneratedTenantFixture();
+        secondTenantCompanyId = secondTenantFixture.companyId;
+        createdCompanyIds.push(secondTenantCompanyId);
+        secondTenantSlug = `two-pc-b-${randomUUID()}`;
+        await masterDataSource.query(
+          `INSERT INTO "companies" ("id", "name", "slug", "status", "db_name")
+           VALUES ($1::uuid, $2, $3, 'ACTIVE', $4)`,
+          [
+            secondTenantCompanyId,
+            `Two PC second tenant ${secondTenantCompanyId}`,
+            secondTenantSlug,
+            secondTenantFixture.databaseName,
+          ],
+        );
+        await masterDataSource.query(
+          'UPDATE "companies" SET "db_connection_ciphertext" = $1 WHERE "id" = $2::uuid',
+          [
+            await secretCipher.encrypt(JSON.stringify(secondTenantFixture.secret)),
+            secondTenantCompanyId,
+          ],
+        );
+        await seedTenantPermissions(secondTenantFixture.runtimeDataSource);
+        const secondRoleRows: Array<{ id: string }> =
+          await secondTenantFixture.runtimeDataSource.query(
+            `SELECT "id"::text AS "id" FROM "roles" WHERE "name" = $1`,
+            [TENANT_ADMIN_ROLE_NAME],
+          );
+        const secondRoleId = secondRoleRows[0]?.id;
+        if (!secondRoleId)
+          throw new Error('Two-PC second tenant administrator role is missing');
+        const secondTenantAuthUserId = randomUUID();
+        const secondTenantAuthPassword = 'two-pc-auth-password-b';
+        const secondTenantAuthPasswordHash = await new PasswordPolicy().hash(
+          secondTenantAuthPassword,
+        );
+        const secondTenantAuthEmail = `two-pc-${secondTenantAuthUserId}@example.test`;
+        await secondTenantFixture.runtimeDataSource.query(
+          `INSERT INTO "users" ("id", "role_id", "email", "full_name", "password_hash")
+           VALUES ($1::uuid, $2::uuid, $3, 'Two PC Second Actor', $4)`,
+          [
+            secondTenantAuthUserId,
+            secondRoleId,
+            secondTenantAuthEmail,
+            secondTenantAuthPasswordHash,
+          ],
+        );
+        secondTenantDeviceId = randomUUID();
+        createdDeviceIds.push(secondTenantDeviceId);
+        await masterDataSource.query(
+          `INSERT INTO "devices"
+             ("id", "company_id", "installation_id", "hardware_fingerprint_hash",
+              "device_name", "status", "first_seen_at", "last_seen_at")
+           VALUES ($1::uuid, $2::uuid, $3::uuid, $4, 'Second tenant sync PC', 'ACTIVE', now(), now())`,
+          [
+            secondTenantDeviceId,
+            secondTenantCompanyId,
+            randomUUID(),
+            `two-pc-second-fingerprint-${randomUUID()}`,
+          ],
+        );
+
         const authConfiguration = loadAuthConfiguration(process.env);
         const tenantToken = await new JwtTokenService().sign(
           {
@@ -2223,7 +2306,16 @@ integrationDescribe(
         apiApp = testingModule.createNestApplication();
         apiApp.use(
           (request: Request, _response: Response, next: NextFunction) => {
-            request.headers.host = `${tenantSlug}.factory.test`;
+            const requestedTestHost = request.headers['x-test-tenant-host'];
+            const allowedTestHosts = new Set([
+              `${tenantSlug}.factory.test`,
+              ...(secondTenantSlug ? [`${secondTenantSlug}.factory.test`] : []),
+            ]);
+            request.headers.host =
+              typeof requestedTestHost === 'string' &&
+              allowedTestHosts.has(requestedTestHost)
+                ? requestedTestHost
+                : `${tenantSlug}.factory.test`;
             next();
           },
         );
@@ -2244,6 +2336,9 @@ integrationDescribe(
           );
         }
         const apiBaseUrl = `http://127.0.0.1:${apiAddress.port}`;
+        if (!secondTenantSlug || !secondTenantDeviceId || !secondTenantCompanyId) {
+          throw new Error('Two-PC second tenant fixture is incomplete');
+        }
         await tenant.runtimeDataSource.query(
           `INSERT INTO "patta_number_sequence" ("id", "next_number", "version")
            VALUES (1, 80000000, 1) ON CONFLICT ("id") DO NOTHING`,
@@ -2287,6 +2382,7 @@ integrationDescribe(
             '--workspace=apps/desktop',
             '--',
             'src/main/sync/two-client-sync.integration.spec.ts',
+            'src/main/auth/desktop-auth-sync.integration.spec.ts',
           ],
           {
             cwd: repositoryRoot,
@@ -2303,6 +2399,18 @@ integrationDescribe(
               SYNC_TEST_DEVICE_PC2: devicePc2,
               SYNC_TEST_MODEL_ID: modelId,
               SYNC_TEST_LOCAL_DATA_DIR: localDataDirectory,
+              DESKTOP_AUTH_TEST_TENANT_URL:
+                `https://${tenantSlug}.factory.test`,
+              DESKTOP_AUTH_TEST_API_BASE_URL: apiBaseUrl,
+              DESKTOP_AUTH_TEST_EMAIL: `two-pc-${authUserId}@example.test`,
+              DESKTOP_AUTH_TEST_PASSWORD: desktopAuthPassword,
+              DESKTOP_AUTH_TEST_DEVICE_ID: desktopAuthDeviceId,
+              DESKTOP_AUTH_TEST_MODEL_ID: modelId,
+              DESKTOP_AUTH_TEST_TENANT_B_URL:
+                `https://${secondTenantSlug}.factory.test`,
+              DESKTOP_AUTH_TEST_EMAIL_B: secondTenantAuthEmail,
+              DESKTOP_AUTH_TEST_PASSWORD_B: secondTenantAuthPassword,
+              DESKTOP_AUTH_TEST_DEVICE_ID_B: secondTenantDeviceId,
             },
             stdio: 'inherit',
           },
@@ -2329,6 +2437,12 @@ integrationDescribe(
         expect(processedRows[0]?.count).toBe('1');
       } finally {
         if (apiApp) await apiApp.close();
+        if (secondTenantFixture?.runtimeDataSource.isInitialized) {
+          await secondTenantFixture.runtimeDataSource.destroy();
+        }
+        if (secondTenantFixture?.migrationDataSource.isInitialized) {
+          await secondTenantFixture.migrationDataSource.destroy();
+        }
         if (createdDeviceIds.length > 0) {
           await masterDataSource.query(
             'DELETE FROM "devices" WHERE "id" = ANY($1::uuid[])',

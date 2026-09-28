@@ -6,13 +6,10 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { openSqliteDatabase } from '../database/sqlite-database'
 import { LocalUnitOfWork } from '../local/local-unit-of-work'
 import { PattaLocalRepository } from '../local/patta-local.repository'
-import { SyncConflictRepository } from '../local/sync-conflict.repository'
-import { SyncQueueRepository } from '../local/sync-queue.repository'
-import { NetworkStatusService } from '../sync/network-status.service'
-import type { DesktopIpcChannel } from '../../preload/erp-api'
+import type { DesktopAuthStatus, DesktopIpcChannel, DesktopSafeSession } from '../../preload/erp-api'
 import { createErpApi } from '../../preload/erp-api'
 import { createMainProcessIpcServices, registerIpcHandlers } from './register-ipc-handlers'
-import type { IpcHandler } from './register-ipc-handlers'
+import type { IpcHandler, MainProcessIpcDependencies } from './register-ipc-handlers'
 
 const databases: Database.Database[] = []
 const directories: string[] = []
@@ -24,6 +21,70 @@ function createDatabase(): Database.Database {
   const database = openSqliteDatabase(join(directory, 'desktop.sqlite'))
   databases.push(database)
   return database
+}
+
+function createAuthService(
+  initialState: DesktopAuthStatus['state'] = 'SIGNED_OUT'
+): MainProcessIpcDependencies['authService'] {
+  let status: DesktopAuthStatus = { state: initialState, errorCode: null, message: null }
+  let session: DesktopSafeSession = {
+    state: initialState,
+    user: initialState === 'SIGNED_OUT' ? null : {
+      id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      email: 'operator@example.test',
+      full_name: 'Operator One'
+    },
+    company: initialState === 'SIGNED_OUT' ? null : {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      slug: 'atlas'
+    },
+    tenant_host: initialState === 'SIGNED_OUT' ? null : 'atlas.example.test'
+  }
+  return {
+    status: () => status,
+    currentSession: () => session,
+    login: async () => {
+      status = { state: 'AUTHENTICATED', errorCode: null, message: null }
+      session = {
+        state: 'AUTHENTICATED',
+        user: {
+          id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+          email: 'operator@example.test',
+          full_name: 'Operator One'
+        },
+        company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'atlas' },
+        tenant_host: 'atlas.example.test'
+      }
+      return status
+    },
+    logout: async () => {
+      status = { state: 'SIGNED_OUT', errorCode: null, message: null }
+      session = { state: 'SIGNED_OUT', user: null, company: null, tenant_host: null }
+      return status
+    },
+    refreshAccessToken: async () => false
+  }
+}
+
+function createTenantRuntime(
+  pattaRepository: PattaLocalRepository
+): MainProcessIpcDependencies['tenantRuntime'] {
+  return {
+    getSyncStatus: (state: DesktopAuthStatus['state']) => ({
+      connectivity: state === 'SIGNED_OUT' ? 'AUTH_REQUIRED' as const : 'OFFLINE' as const,
+      unsyncedCount: 0,
+      conflictCount: 0,
+      lastSuccessfulSyncAt: null,
+      errorCode: state === 'SIGNED_OUT' ? 'AUTH_REQUIRED' : 'NETWORK_ERROR'
+    }),
+    runSync: async (state: DesktopAuthStatus['state']) => ({
+      status: state === 'SIGNED_OUT' ? 'AUTH_REQUIRED' as const : 'OFFLINE' as const,
+      bootstrapped: false,
+      pushed: 0,
+      pulled: 0
+    }),
+    activePattaRepository: () => pattaRepository
+  }
 }
 
 afterEach(() => {
@@ -47,11 +108,30 @@ describe('narrow renderer IPC bridge', () => {
             connectivity: 'OFFLINE',
             unsyncedCount: 2,
             conflictCount: 1,
-            lastSuccessfulSyncAt: timestamp
+            lastSuccessfulSyncAt: timestamp,
+            errorCode: null
           }
         }
         if (channel === 'sync:run') {
           return { status: 'COMPLETED', bootstrapped: true, pushed: 2, pulled: 4 }
+        }
+        if (channel === 'auth:login' || channel === 'auth:logout' || channel === 'auth:status') {
+          if (channel === 'auth:logout') {
+            return { state: 'SIGNED_OUT', errorCode: null, message: null }
+          }
+          return { state: 'AUTHENTICATED', errorCode: null, message: null }
+        }
+        if (channel === 'auth:session') {
+          return {
+            state: 'AUTHENTICATED',
+            user: {
+              id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+              email: 'operator@example.test',
+              full_name: 'Operator One'
+            },
+            company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'atlas' },
+            tenant_host: 'atlas.example.test'
+          }
         }
         return {
           partiya_number: 'PARTIYA-1',
@@ -73,7 +153,7 @@ describe('narrow renderer IPC bridge', () => {
       }
     })
 
-    expect(Object.keys(api).sort()).toEqual(['app', 'patta', 'sync'])
+    expect(Object.keys(api).sort()).toEqual(['app', 'auth', 'patta', 'sync'])
     expect(await api.app.getVersion()).toBe('1.2.3')
     expect(await api.sync.status()).toMatchObject({ unsyncedCount: 2, conflictCount: 1 })
     expect(await api.sync.run()).toMatchObject({ status: 'COMPLETED', pulled: 4 })
@@ -82,13 +162,29 @@ describe('narrow renderer IPC bridge', () => {
       patta_number: '100',
       operations: [{ unit_price_snapshot: '12.50' }]
     })
+    expect(await api.auth.login({
+      tenantUrl: 'atlas.example.test',
+      email: 'operator@example.test',
+      password: 'password-value'
+    })).toEqual({ state: 'AUTHENTICATED', errorCode: null, message: null })
+    expect(await api.auth.status()).toMatchObject({ state: 'AUTHENTICATED' })
+    expect(await api.auth.session()).not.toHaveProperty('accessToken')
+    expect(await api.auth.logout()).toMatchObject({ state: 'SIGNED_OUT' })
     expect(calls.map(({ channel }) => channel)).toEqual([
       'app:get-version',
       'sync:status',
       'sync:run',
-      'patta:lookup'
+      'patta:lookup',
+      'auth:login',
+      'auth:status',
+      'auth:session',
+      'auth:logout'
     ])
-    expect(calls.at(-1)?.payload).toEqual({ partiyaNumber: 'PARTIYA-1', pattaNumber: '100' })
+    expect(calls.at(4)?.payload).toEqual({
+      tenantUrl: 'atlas.example.test',
+      email: 'operator@example.test',
+      password: 'password-value'
+    })
     expect(api).not.toHaveProperty('ipcRenderer')
     expect(api).not.toHaveProperty('process')
     expect(api).not.toHaveProperty('database')
@@ -102,7 +198,8 @@ describe('narrow renderer IPC bridge', () => {
             connectivity: 'ONLINE',
             unsyncedCount: -1,
             conflictCount: 0,
-            lastSuccessfulSyncAt: null
+            lastSuccessfulSyncAt: null,
+            errorCode: null
           }
         }
         if (channel === 'patta:lookup') return { malformed: true }
@@ -112,22 +209,40 @@ describe('narrow renderer IPC bridge', () => {
 
     await expect(api.sync.status()).rejects.toThrow('unsyncedCount')
     await expect(api.patta.lookup('PARTIYA-1', '100')).rejects.toThrow('Invalid local Patta')
+    const malformedLoginInput = {
+      tenantUrl: 'atlas.example.test',
+      email: 'operator@example.test',
+      password: 'password',
+      tenant_id: 'not-authority'
+    }
+    await expect(api.auth.login(malformedLoginInput as never)).rejects.toThrow(
+      'Kirish ma’lumotlari yaroqsiz'
+    )
+    await expect(api.auth.session()).rejects.toThrow('Invalid safe session response')
+
+    const tokenLeakingApi = createErpApi({
+      invoke: async () => ({
+        state: 'AUTHENTICATED',
+        user: null,
+        company: null,
+        tenant_host: null,
+        accessToken: 'must-never-cross-ipc'
+      })
+    })
+    await expect(tokenLeakingApi.auth.session()).rejects.toThrow('Invalid safe session response')
   })
 })
 
 describe('main-process IPC handlers', () => {
-  it('registers only version, sync status/run, and sanitized local Patta lookup handlers', async () => {
+  it('registers only the approved auth, version, sync, and sanitized local Patta handlers', async () => {
     const database = createDatabase()
-    const queueRepository = new SyncQueueRepository(database)
-    const conflictRepository = new SyncConflictRepository(database)
-    const networkStatus = new NetworkStatusService(queueRepository, conflictRepository)
     const pattaRepository = new PattaLocalRepository(database)
+    const authService = createAuthService()
     const handlers = new Map<DesktopIpcChannel, IpcHandler>()
     const services = createMainProcessIpcServices({
       appVersion: () => '1.2.3',
-      getSyncEngine: () => null,
-      networkStatus,
-      pattaRepository
+      authService,
+      tenantRuntime: createTenantRuntime(pattaRepository)
     })
     registerIpcHandlers(
       { handle: (channel, listener) => handlers.set(channel, listener) },
@@ -136,6 +251,10 @@ describe('main-process IPC handlers', () => {
 
     expect([...handlers.keys()].sort()).toEqual([
       'app:get-version',
+      'auth:login',
+      'auth:logout',
+      'auth:session',
+      'auth:status',
       'patta:lookup',
       'sync:run',
       'sync:status'
@@ -151,6 +270,29 @@ describe('main-process IPC handlers', () => {
       pushed: 0,
       pulled: 0
     })
+    expect(await handlers.get('auth:status')?.({})).toEqual({
+      state: 'SIGNED_OUT', errorCode: null, message: null
+    })
+    expect(await handlers.get('auth:session')?.({})).toEqual({
+      state: 'SIGNED_OUT', user: null, company: null, tenant_host: null
+    })
+    await expect(handlers.get('auth:login')?.({}, {
+      tenantUrl: 'https://atlas.example.test',
+      email: 'operator@example.test',
+      password: 'p',
+      company_id: 'must-not-be-authority'
+    })).rejects.toThrow('Kirish ma’lumotlari yaroqsiz')
+    await expect(handlers.get('auth:logout')?.({}, 'extra')).rejects.toThrow('Chiqish so‘rovi yaroqsiz')
+    await expect(handlers.get('auth:login')?.({}, {
+      tenantUrl: 'atlas.example.test',
+      email: 'operator@example.test',
+      password: 'one-time-password'
+    })).resolves.toMatchObject({ state: 'AUTHENTICATED' })
+    expect(await handlers.get('auth:session')?.({})).toMatchObject({
+      state: 'AUTHENTICATED',
+      company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'atlas' }
+    })
+    expect(await handlers.get('auth:logout')?.({})).toMatchObject({ state: 'SIGNED_OUT' })
     expect(
       await handlers.get('patta:lookup')?.(
         {},
@@ -220,12 +362,8 @@ describe('main-process IPC handlers', () => {
     })
     const services = createMainProcessIpcServices({
       appVersion: () => '1.2.3',
-      getSyncEngine: () => null,
-      networkStatus: new NetworkStatusService(
-        new SyncQueueRepository(database),
-        new SyncConflictRepository(database)
-      ),
-      pattaRepository: new PattaLocalRepository(database)
+      authService: createAuthService('AUTHENTICATED'),
+      tenantRuntime: createTenantRuntime(new PattaLocalRepository(database))
     })
 
     const record = services.lookupPatta({ partiyaNumber: 'PARTIYA-1', pattaNumber: '100' })
