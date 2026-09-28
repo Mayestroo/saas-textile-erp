@@ -110,7 +110,7 @@ function createHarness(handler: SyncEntityHandler) {
         status: String(parameters[1]),
         result: JSON.parse(String(parameters[2])) as SyncPushResult,
       };
-      return [{ event_id: parameters[0] }];
+      return [[{ event_id: parameters[0] }], 1];
     }
     return [];
   });

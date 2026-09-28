@@ -575,6 +575,71 @@ describe('local sync repositories', () => {
     expect(stateRepository.lastServerCursor()).toBe('8')
   })
 
+  it('resumes after a page-three crash without publishing partial mirrors or losing local Pattas', () => {
+    const database = createDatabase()
+    seedExistingMirrors(database)
+    const firstProcess = repositories(database)
+    const session = makeSession('12')
+    const projections = makeProjections()
+    firstProcess.stateRepository.setLastServerCursor('8', timestamp)
+    firstProcess.stagingRepository.beginSession(session, timestamp)
+    firstProcess.stagingRepository.persistPage(
+      makePage(session.id, session.watermark, projections.slice(0, 3), 1, true),
+      timestamp
+    )
+    firstProcess.stagingRepository.persistPage(
+      makePage(session.id, session.watermark, projections.slice(3, 6), 4, true),
+      timestamp
+    )
+    firstProcess.stagingRepository.persistPage(
+      makePage(session.id, session.watermark, projections.slice(6, 9), 7, true),
+      timestamp
+    )
+
+    expect(database.prepare('SELECT COUNT(*) AS count FROM bootstrap_items').get()).toEqual({
+      count: 9
+    })
+    expect(database.prepare('SELECT name FROM models WHERE id = ?').get('model-server')).toEqual({
+      name: 'Old Server Model'
+    })
+    expect(firstProcess.stateRepository.lastServerCursor()).toBe('8')
+
+    const restartedProcess = repositories(database)
+    expect(restartedProcess.stagingRepository.currentSession()).toMatchObject({
+      session_id: session.id,
+      watermark: '12',
+      next_order_key: '9',
+      status: 'ACTIVE'
+    })
+    restartedProcess.stagingRepository.persistPage(
+      makePage(session.id, session.watermark, projections.slice(9), 10, false),
+      timestamp
+    )
+    restartedProcess.mirrorRepository.finalizeBootstrap(session.id, session.watermark, timestamp)
+
+    expect(restartedProcess.stateRepository.lastServerCursor()).toBe('12')
+    expect(database.prepare('SELECT COUNT(*) AS count FROM bootstrap_items').get()).toEqual({
+      count: 0
+    })
+    expect(
+      database
+        .prepare(
+          `
+      SELECT id, ownership_state FROM patta_hisob
+      WHERE id IN ('patta-pending', 'patta-conflict', 'patta-failed') ORDER BY id
+    `
+        )
+        .all()
+    ).toEqual([
+      { id: 'patta-conflict', ownership_state: 'CONFLICT' },
+      { id: 'patta-failed', ownership_state: 'FAILED' },
+      { id: 'patta-pending', ownership_state: 'LOCAL_PENDING' }
+    ])
+    expect(database.prepare('SELECT id FROM patta_hisob WHERE id = ?').get('patta-server')).toEqual(
+      { id: 'patta-server' }
+    )
+  })
+
   it('finalizes all nine mirror types atomically and preserves local ownership and block progress', () => {
     const database = createDatabase()
     seedExistingMirrors(database)

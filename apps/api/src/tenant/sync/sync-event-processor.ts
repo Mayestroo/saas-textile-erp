@@ -465,14 +465,14 @@ export class SyncEventProcessor {
     eventId: string,
     result: SyncPushResult,
   ): Promise<void> {
-    const resultRows: UpdatedEventRow[] = await manager.query(
+    const updateResult: [UpdatedEventRow[], number] = await manager.query(
       `UPDATE "processed_sync_events"
        SET "result_status" = $2, "result_json" = $3::jsonb
        WHERE "event_id" = $1::uuid AND "result_status" = 'PROCESSING'
        RETURNING "event_id"::text AS "event_id"`,
       [eventId, result.status, JSON.stringify(result)],
     );
-    if (resultRows.length !== 1) {
+    if (updateResult[0].length !== 1 || updateResult[1] !== 1) {
       throw new Error('Sync event terminal result was not stored');
     }
   }
