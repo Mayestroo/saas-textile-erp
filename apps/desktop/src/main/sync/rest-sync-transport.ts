@@ -38,7 +38,8 @@ export class RestSyncTransport implements AuthenticatedSyncTransport {
     const parsedBaseUrl = new URL(apiBaseUrl)
     const isLoopbackHttp =
       parsedBaseUrl.protocol === 'http:' &&
-      ['localhost', '127.0.0.1', '[::1]'].includes(parsedBaseUrl.hostname)
+      (['localhost', '127.0.0.1', '[::1]'].includes(parsedBaseUrl.hostname) ||
+        parsedBaseUrl.hostname.endsWith('.localhost'))
     if (parsedBaseUrl.protocol !== 'https:' && !isLoopbackHttp) {
       throw new Error('Tenant API base URL must use HTTPS outside loopback testing')
     }

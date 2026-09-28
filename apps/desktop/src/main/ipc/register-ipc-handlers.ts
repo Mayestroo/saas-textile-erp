@@ -1,7 +1,7 @@
-import type { SyncEngine } from '../sync/sync-engine'
-import type { PattaLocalRepository } from '../local/patta-local.repository'
 import type { PersistedLocalPatta } from '../local/local-patta.types'
-import type { NetworkStatusService } from '../sync/network-status.service'
+import type { DesktopAuthService } from '../auth/desktop-auth.service'
+import type { DesktopTenantRuntime } from '../auth/desktop-tenant-runtime'
+import { normalizeTenantOrigin } from '../auth/tenant-auth-api-client'
 import type {
   DesktopPattaLookup,
   DesktopSyncRunResult,
@@ -21,6 +21,10 @@ export interface IpcMainHandlerRegistrar {
 
 export interface MainProcessIpcServices {
   getAppVersion(): string
+  login(input: unknown): Promise<ReturnType<DesktopAuthService['status']>>
+  logout(): Promise<ReturnType<DesktopAuthService['status']>>
+  authStatus(): ReturnType<DesktopAuthService['status']>
+  authSession(): ReturnType<DesktopAuthService['currentSession']>
   getSyncStatus(): DesktopSyncStatus
   runSync(): Promise<DesktopSyncRunResult>
   lookupPatta(input: unknown): DesktopPattaLookup | null
@@ -28,9 +32,14 @@ export interface MainProcessIpcServices {
 
 export interface MainProcessIpcDependencies {
   appVersion: () => string
-  getSyncEngine: () => Pick<SyncEngine, 'runOnce'> | null
-  networkStatus: Pick<NetworkStatusService, 'snapshot'>
-  pattaRepository: Pick<PattaLocalRepository, 'findByBusinessKey'>
+  authService: Pick<
+    DesktopAuthService,
+    'login' | 'logout' | 'status' | 'currentSession' | 'refreshAccessToken'
+  >
+  tenantRuntime: Pick<
+    DesktopTenantRuntime,
+    'getSyncStatus' | 'runSync' | 'activePattaRepository'
+  >
 }
 
 interface PattaLookupInput {
@@ -62,6 +71,33 @@ function lookupInput(value: unknown): PattaLookupInput {
   return { partiyaNumber, pattaNumber: pattaNumber.toString() }
 }
 
+function loginInput(value: unknown): { tenantUrl: string; email: string; password: string } {
+  if (
+    !isRecord(value) ||
+    Object.keys(value).length !== 3 ||
+    typeof value.tenantUrl !== 'string' ||
+    typeof value.email !== 'string' ||
+    typeof value.password !== 'string'
+  ) {
+    throw new Error('Kirish ma’lumotlari yaroqsiz')
+  }
+  const tenantUrl = value.tenantUrl.trim()
+  const email = value.email.trim()
+  if (
+    tenantUrl.length === 0 ||
+    tenantUrl.length > 2_048 ||
+    email.length === 0 ||
+    email.length > 320 ||
+    !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
+    value.password.length === 0 ||
+    value.password.length > 1_024
+  ) {
+    throw new Error('Kirish ma’lumotlari yaroqsiz')
+  }
+  normalizeTenantOrigin(tenantUrl)
+  return { tenantUrl, email, password: value.password }
+}
+
 function publicPatta(patta: PersistedLocalPatta): DesktopPattaLookup {
   return {
     partiya_number: patta.partiya_number,
@@ -85,29 +121,30 @@ export function createMainProcessIpcServices(
 ): MainProcessIpcServices {
   return {
     getAppVersion: dependencies.appVersion,
-    getSyncStatus: () => {
-      const status = dependencies.networkStatus.snapshot()
-      return {
-        connectivity: dependencies.getSyncEngine() ? status.connectivity : 'AUTH_REQUIRED',
-        unsyncedCount: status.unsyncedCount,
-        conflictCount: status.conflictCount,
-        lastSuccessfulSyncAt: status.lastSuccessfulSyncAt
-      }
-    },
+    login: (input) => dependencies.authService.login(loginInput(input)),
+    logout: () => dependencies.authService.logout(),
+    authStatus: () => dependencies.authService.status(),
+    authSession: () => dependencies.authService.currentSession(),
+    getSyncStatus: () => dependencies.tenantRuntime.getSyncStatus(dependencies.authService.status().state),
     runSync: async () => {
-      const syncEngine = dependencies.getSyncEngine()
-      if (!syncEngine) {
-        return { status: 'AUTH_REQUIRED', bootstrapped: false, pushed: 0, pulled: 0 }
+      let authStatus = dependencies.authService.status()
+      if (authStatus.state === 'OFFLINE_SESSION_PENDING') {
+        try {
+          await dependencies.authService.refreshAccessToken()
+        } catch {
+          // A transient refresh failure remains offline; local operations stay available.
+        }
+        authStatus = dependencies.authService.status()
       }
-      try {
-        return await syncEngine.runOnce()
-      } catch {
-        return { status: 'FAILED', bootstrapped: false, pushed: 0, pulled: 0 }
-      }
+      return dependencies.tenantRuntime.runSync(authStatus.state)
     },
     lookupPatta: (input) => {
       const { partiyaNumber, pattaNumber } = lookupInput(input)
-      const patta = dependencies.pattaRepository.findByBusinessKey(partiyaNumber, pattaNumber)
+      const authState = dependencies.authService.status().state
+      if (authState !== 'AUTHENTICATED' && authState !== 'OFFLINE_SESSION_PENDING') return null
+      const repository = dependencies.tenantRuntime.activePattaRepository()
+      if (!repository) return null
+      const patta = repository.findByBusinessKey(partiyaNumber, pattaNumber)
       return patta ? publicPatta(patta) : null
     }
   }
@@ -118,7 +155,32 @@ export function registerIpcHandlers(
   services: MainProcessIpcServices
 ): void {
   ipcMain.handle('app:get-version', () => services.getAppVersion())
-  ipcMain.handle('sync:status', () => services.getSyncStatus())
-  ipcMain.handle('sync:run', () => services.runSync())
-  ipcMain.handle('patta:lookup', async (_event, input) => services.lookupPatta(input))
+  ipcMain.handle('auth:login', async (_event, ...args) => {
+    if (args.length !== 1) throw new Error('Kirish ma’lumotlari yaroqsiz')
+    return services.login(args[0])
+  })
+  ipcMain.handle('auth:logout', async (_event, ...args) => {
+    if (args.length > 0) throw new Error('Chiqish so‘rovi yaroqsiz')
+    return services.logout()
+  })
+  ipcMain.handle('auth:status', async (_event, ...args) => {
+    if (args.length > 0) throw new Error('Sessiya holati so‘rovi yaroqsiz')
+    return services.authStatus()
+  })
+  ipcMain.handle('auth:session', async (_event, ...args) => {
+    if (args.length > 0) throw new Error('Sessiya ma’lumoti so‘rovi yaroqsiz')
+    return services.authSession()
+  })
+  ipcMain.handle('sync:status', async (_event, ...args) => {
+    if (args.length > 0) throw new Error('Sinxronlash holati so‘rovi yaroqsiz')
+    return services.getSyncStatus()
+  })
+  ipcMain.handle('sync:run', async (_event, ...args) => {
+    if (args.length > 0) throw new Error('Sinxronlash so‘rovi yaroqsiz')
+    return services.runSync()
+  })
+  ipcMain.handle('patta:lookup', async (_event, ...args) => {
+    if (args.length !== 1) throw new Error('Patta qidiruv ma’lumoti yaroqsiz')
+    return services.lookupPatta(args[0])
+  })
 }

@@ -1,98 +1,304 @@
 import { useEffect, useState } from 'react'
-import type { DesktopSyncRunResult, DesktopSyncStatus } from '../../preload/erp-api'
-import Versions from './components/Versions'
+import type {
+  DesktopAuthStatus,
+  DesktopSafeSession,
+  DesktopSyncRunResult,
+  DesktopSyncStatus
+} from '../../preload/erp-api'
+
+const EMPTY_AUTH_STATUS: DesktopAuthStatus = {
+  state: 'REFRESHING',
+  errorCode: null,
+  message: null
+}
 
 function connectivityLabel(connectivity: DesktopSyncStatus['connectivity']): string {
   if (connectivity === 'ONLINE') return 'Onlayn'
   if (connectivity === 'AUTH_REQUIRED') return 'Tizimga kirish kerak'
+  if (connectivity === 'DEVICE_NOT_CONFIGURED') return 'Qurilma ro‘yxatdan o‘tkazilmagan'
   return 'Oflayn'
+}
+
+function syncErrorMessage(code: string | null): string | null {
+  if (code === 'DEVICE_NOT_CONFIGURED') return 'Qurilma ro‘yxatdan o‘tkazilmagan'
+  if (code === 'DEVICE_TENANT_MISMATCH') return 'Qurilma bu korxonaga tegishli emas'
+  if (code === 'DEVICE_NOT_ACTIVE' || code === 'DEVICE_NOT_FOUND') {
+    return 'Qurilma ro‘yxatdan o‘tkazilmagan'
+  }
+  if (code === 'SESSION_EXPIRED' || code === 'AUTH_REQUIRED' || code === 'INVALID_ACCESS_TOKEN') {
+    return 'Sessiya muddati tugagan'
+  }
+  if (code === 'NETWORK_ERROR' || code === 'SYNC_NETWORK_ERROR') return 'Internet bilan aloqa yo‘q'
+  return null
 }
 
 function runResultMessage(result: DesktopSyncRunResult): string {
   if (result.status === 'COMPLETED') return 'Sinxronlash yakunlandi'
-  if (result.status === 'AUTH_REQUIRED') return 'Sinxronlash uchun tizimga kiring'
-  if (result.status === 'OFFLINE') return 'Ulanish yo‘q. Mahalliy ishlar davom etadi.'
-  return 'Sinxronlashni yakunlab bo‘lmadi'
+  if (result.status === 'DEVICE_NOT_CONFIGURED') return 'Qurilma ro‘yxatdan o‘tkazilmagan'
+  if (result.status === 'AUTH_REQUIRED') return 'Sessiya muddati tugagan'
+  if (result.status === 'OFFLINE') return 'Internet bilan aloqa yo‘q. Mahalliy ma’lumotlar saqlanadi.'
+  return syncErrorMessage(result.errorCode ?? null) ?? 'Sinxronlashni yakunlab bo‘lmadi'
+}
+
+function hasLocalSession(session: DesktopSafeSession | null, state: DesktopAuthStatus['state']): boolean {
+  return (
+    session !== null &&
+    session.company !== null &&
+    (state === 'AUTHENTICATED' ||
+      state === 'OFFLINE_SESSION_PENDING' ||
+      state === 'REFRESHING')
+  )
 }
 
 function App(): React.JSX.Element {
+  const [authStatus, setAuthStatus] = useState(EMPTY_AUTH_STATUS)
+  const [session, setSession] = useState<DesktopSafeSession | null>(null)
   const [syncStatus, setSyncStatus] = useState<DesktopSyncStatus | null>(null)
-  const [runMessage, setRunMessage] = useState<string | null>(null)
-  const [isRunning, setIsRunning] = useState(false)
+  const [tenantUrl, setTenantUrl] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isSyncing, setIsSyncing] = useState(false)
+  const [syncMessage, setSyncMessage] = useState<string | null>(null)
+  const [appVersion, setAppVersion] = useState<string | null>(null)
 
   useEffect(() => {
     let isMounted = true
-    void window.erp.sync
-      .status()
-      .then((status) => {
-        if (isMounted) setSyncStatus(status)
+    const refreshScreen = async (): Promise<void> => {
+      try {
+        const [nextAuthStatus, nextSession] = await Promise.all([
+          window.erp.auth.status(),
+          window.erp.auth.session()
+        ])
+        if (!isMounted) return
+        setAuthStatus(nextAuthStatus)
+        setSession(nextSession)
+        if (
+          nextAuthStatus.state === 'AUTHENTICATED' ||
+          nextAuthStatus.state === 'OFFLINE_SESSION_PENDING' ||
+          nextAuthStatus.state === 'REFRESHING'
+        ) {
+          setSyncStatus(await window.erp.sync.status())
+        } else {
+          setSyncStatus(null)
+        }
+      } catch {
+        if (isMounted) {
+          setAuthStatus({ state: 'ERROR', errorCode: 'AUTH_OPERATION_FAILED', message: 'Holatni olib bo‘lmadi' })
+        }
+      }
+    }
+
+    void refreshScreen()
+    const timer = setInterval(() => void refreshScreen(), 2_000)
+    void window.erp.app
+      .getVersion()
+      .then((version) => {
+        if (isMounted) setAppVersion(version)
       })
-      .catch(() => {
-        if (isMounted) setRunMessage('Sinxronlash holatini olishda xatolik')
-      })
+      .catch(() => undefined)
+
     return () => {
       isMounted = false
+      clearInterval(timer)
     }
   }, [])
 
-  const runSync = async (): Promise<void> => {
-    setIsRunning(true)
-    setRunMessage(null)
+  const submitLogin = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+    event.preventDefault()
+    if (isSubmitting) return
+    setIsSubmitting(true)
+    setSyncMessage(null)
+    setPassword('')
+    setAuthStatus({ state: 'AUTHENTICATING', errorCode: null, message: null })
     try {
-      const result = await window.erp.sync.run()
-      setRunMessage(runResultMessage(result))
-      setSyncStatus(await window.erp.sync.status())
+      const result = await window.erp.auth.login({ tenantUrl, email, password })
+      setAuthStatus(result)
+      setSession(await window.erp.auth.session())
+      if (result.state === 'AUTHENTICATED') setSyncStatus(await window.erp.sync.status())
     } catch {
-      setRunMessage('Sinxronlashda xatolik yuz berdi')
+      setAuthStatus({
+        state: 'ERROR',
+        errorCode: 'AUTH_OPERATION_FAILED',
+        message: 'Kirishni bajarib bo‘lmadi'
+      })
     } finally {
-      setIsRunning(false)
+      setPassword('')
+      setIsSubmitting(false)
     }
   }
+
+  const runSync = async (): Promise<void> => {
+    setIsSyncing(true)
+    setSyncMessage(null)
+    try {
+      const result = await window.erp.sync.run()
+      setSyncMessage(runResultMessage(result))
+      setSyncStatus(await window.erp.sync.status())
+      const currentAuth = await window.erp.auth.status()
+      setAuthStatus(currentAuth)
+      setSession(await window.erp.auth.session())
+    } catch {
+      setSyncMessage('Sinxronlashni yakunlab bo‘lmadi')
+    } finally {
+      setIsSyncing(false)
+    }
+  }
+
+  const logout = async (): Promise<void> => {
+    setPassword('')
+    setSyncMessage(null)
+    try {
+      const result = await window.erp.auth.logout()
+      setAuthStatus(result)
+      setSession(await window.erp.auth.session())
+      setSyncStatus(null)
+    } catch {
+      setAuthStatus({
+        state: 'ERROR',
+        errorCode: 'AUTH_OPERATION_FAILED',
+        message: 'Tizimdan chiqib bo‘lmadi'
+      })
+    }
+  }
+
+  const sessionIsAvailable = hasLocalSession(session, authStatus.state)
+  const deviceMessage = syncErrorMessage(syncStatus?.errorCode ?? null)
 
   return (
     <main className="erp-shell">
       <header className="erp-header">
         <p className="erp-eyebrow">To‘qimachilik korxonasi</p>
         <h1>Textile ERP</h1>
-        <p className="erp-subtitle">Mahalliy ishlar internet bo‘lmaganda ham saqlanadi</p>
+        <p className="erp-subtitle">Mahalliy ma’lumotlar internet bo‘lmaganda ham saqlanadi</p>
       </header>
 
-      <section className="sync-card" aria-labelledby="sync-heading">
-        <div className="sync-card-heading">
-          <div>
-            <h2 id="sync-heading">Sinxronlash</h2>
-            <p className="sync-connectivity" aria-live="polite">
-              {syncStatus ? connectivityLabel(syncStatus.connectivity) : 'Holat aniqlanmoqda'}
-            </p>
-          </div>
-          <span
-            className={`sync-indicator ${syncStatus?.connectivity.toLowerCase() ?? 'unknown'}`}
-            aria-hidden="true"
-          />
-        </div>
+      {sessionIsAvailable && session ? (
+        <>
+          <section className="session-card" aria-labelledby="session-heading">
+            <div className="session-heading">
+              <div>
+                <p className="session-eyebrow">Korxona</p>
+                <h2 id="session-heading">{session.company?.slug}</h2>
+                <p className="session-user">{session.user?.full_name}</p>
+              </div>
+              <button className="logout-button" type="button" onClick={() => void logout()}>
+                Chiqish
+              </button>
+            </div>
+            {authStatus.state === 'OFFLINE_SESSION_PENDING' ? (
+              <p className="state-message offline-message" role="status">
+                Internet bilan aloqa yo‘q. Mahalliy ma’lumotlar saqlanadi.
+              </p>
+            ) : authStatus.state === 'REFRESHING' ? (
+              <p className="state-message" role="status">Sessiya tekshirilmoqda…</p>
+            ) : null}
+          </section>
 
-        <dl className="sync-counts">
-          <div>
-            <dt>Sinxronlanmagan</dt>
-            <dd>{syncStatus?.unsyncedCount ?? '—'}</dd>
-          </div>
-          <div>
-            <dt>Ochiq ziddiyatlar</dt>
-            <dd>{syncStatus?.conflictCount ?? '—'}</dd>
-          </div>
-        </dl>
+          <section className="sync-card" aria-labelledby="sync-heading">
+            <div className="sync-card-heading">
+              <div>
+                <h2 id="sync-heading">Sinxronlash</h2>
+                <p className="sync-connectivity" aria-live="polite">
+                  {syncStatus ? connectivityLabel(syncStatus.connectivity) : 'Holat aniqlanmoqda'}
+                </p>
+              </div>
+              <span
+                className={`sync-indicator ${syncStatus?.connectivity.toLowerCase() ?? 'unknown'}`}
+                aria-hidden="true"
+              />
+            </div>
 
-        {runMessage ? (
-          <p className="sync-message" role="status">
-            {runMessage}
-          </p>
-        ) : null}
-        <button className="sync-button" type="button" disabled={isRunning} onClick={runSync}>
-          {isRunning ? 'Sinxronlanmoqda…' : 'Hozir sinxronlash'}
-        </button>
-      </section>
+            <dl className="sync-counts">
+              <div>
+                <dt>Sinxronlanmagan</dt>
+                <dd>{syncStatus?.unsyncedCount ?? '—'}</dd>
+              </div>
+              <div>
+                <dt>Ochiq ziddiyatlar</dt>
+                <dd>{syncStatus?.conflictCount ?? '—'}</dd>
+              </div>
+            </dl>
 
-      <Versions />
+            {deviceMessage ? <p className="sync-message error-message" role="status">{deviceMessage}</p> : null}
+            {syncMessage ? <p className="sync-message" role="status">{syncMessage}</p> : null}
+            <button
+              className="sync-button"
+              type="button"
+              disabled={isSyncing || syncStatus?.connectivity === 'DEVICE_NOT_CONFIGURED'}
+              onClick={() => void runSync()}
+            >
+              {isSyncing ? 'Sinxronlanmoqda…' : 'Hozir sinxronlash'}
+            </button>
+          </section>
+        </>
+      ) : authStatus.state === 'REFRESHING' || authStatus.state === 'AUTHENTICATING' ? (
+        <section className="auth-card loading-card" aria-live="polite">
+          <span className="loading-mark" aria-hidden="true" />
+          <p>Sessiya tekshirilmoqda…</p>
+        </section>
+      ) : (
+        <form className="auth-card" onSubmit={(event) => void submitLogin(event)}>
+          <div className="auth-card-heading">
+            <h2>Kirish</h2>
+            <p>Korxona hisobiga kiring</p>
+          </div>
+
+          <label className="form-field">
+            <span>Korxona manzili</span>
+            <input
+              autoComplete="url"
+              autoCapitalize="none"
+              spellCheck={false}
+              type="text"
+              inputMode="url"
+              value={tenantUrl}
+              onChange={(event) => setTenantUrl(event.target.value)}
+              placeholder="korxona.example.uz"
+              maxLength={2_048}
+              required
+              disabled={isSubmitting}
+            />
+          </label>
+
+          <label className="form-field">
+            <span>Email</span>
+            <input
+              autoComplete="username"
+              autoCapitalize="none"
+              spellCheck={false}
+              type="email"
+              value={email}
+              onChange={(event) => setEmail(event.target.value)}
+              maxLength={320}
+              required
+              disabled={isSubmitting}
+            />
+          </label>
+
+          <label className="form-field">
+            <span>Parol</span>
+            <input
+              autoComplete="current-password"
+              type="password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              maxLength={1_024}
+              required
+              disabled={isSubmitting}
+            />
+          </label>
+
+          {authStatus.message ? (
+            <p className="auth-message error-message" role="alert">{authStatus.message}</p>
+          ) : null}
+          <button className="login-button" type="submit" disabled={isSubmitting}>
+            {isSubmitting ? 'Tekshirilmoqda…' : 'Kirish'}
+          </button>
+        </form>
+      )}
+
+      {appVersion ? <p className="app-version">Dastur versiyasi {appVersion}</p> : null}
     </main>
   )
 }

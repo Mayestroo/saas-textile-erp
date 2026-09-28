@@ -71,7 +71,10 @@ API response bodies are never passed through as user-facing text. Safe errors
 are mapped to Uzbek Latin messages. Current combined backend errors remain
 combined to preserve account/tenant privacy; known additive codes such as
 `USER_BLOCKED`, `TENANT_NOT_FOUND`, and `TENANT_INACTIVE` may be mapped if the
-server introduces them later. No API change is planned for this feature.
+server introduces them later. No production API behavior or authentication
+contract change is planned. The existing API sync integration harness is
+extended only to seed a real test password/device fixture and launch the
+desktop auth acceptance with its ephemeral API listener.
 
 Passwords exist only for the login call, are never logged or persisted, and the
 renderer clears its password field when the attempt completes.
@@ -235,10 +238,10 @@ Desktop unit tests cover:
   transport push/pull behavior.
 
 An environment-gated desktop/API acceptance test uses real tenant login and a
-pre-provisioned ACTIVE device to run authenticated bootstrap/push/pull. Existing
-two-PC sync acceptance remains intact and uses independent tenant SQLite files.
-API auth/provisioning/sync contracts are regressed; no API source modification
-is expected.
+pre-provisioned ACTIVE device to run authenticated bootstrap/push/pull. The
+existing API sync integration harness launches this alongside the unchanged
+two-PC acceptance; both use isolated tenant databases and temporary desktop
+SQLite files. Production API auth/provisioning/sync behavior remains unchanged.
 
 Required desktop verification:
 

@@ -263,14 +263,55 @@ two concurrent duplicate deliveries, fingerprint reuse, stored-conflict replay,
 reservation rollback/retry, partial `SYNCED/CONFLICT/SYNCED` outcomes, ordered
 pull pagination, two-tenant overlapping identities, and a writer committing
 while bootstrap projection materialization is barrier-blocked. It also starts a
-real authenticated Nest API on loopback and asynchronously spawns the Electron
-runtime two-client test. PC-1 loses a successful push response and retries the
-same event ID; PC-2 pulls the same Patta UUID into a separate SQLite file and
-finds it after network loss. Tokens/device IDs are passed only through the
+real authenticated Nest API on loopback and asynchronously spawns both the
+Electron two-client sync test and real desktop tenant login/authenticated-sync
+acceptance. PC-1 loses a successful push response and retries the same event ID;
+PC-2 pulls the same Patta UUID into a separate SQLite file and finds it after
+network loss. Test credentials/tokens/device IDs are passed only through the
 child's process environment and are never logged or persisted.
 
 If any `TEST_MASTER_DB_*` setting is absent, `test:sync` reports the database
-suite as skipped/blocked; that is not a pass. The desktop auth/session provider
-is not included in this sync milestone. The transport accepts a main-process
-session provider; without one, the current IPC reports `AUTH_REQUIRED` rather
-than attempting unauthenticated requests.
+suite as skipped/blocked; that is not a pass. The existing desktop two-client
+acceptance continues to use its test-only `SYNC_TEST_TENANT_TOKEN` provider.
+
+### Desktop tenant auth/session acceptance
+
+The desktop suite also contains a gated real API acceptance in
+`apps/desktop/src/main/auth/desktop-auth-sync.integration.spec.ts`. It uses the
+production tenant login client, `DesktopAuthService`, company-owned SQLite
+manager, pre-provisioned device config, authenticated HTTP client, and
+SyncEngine. The one-tenant case logs in, bootstraps/pulls, allocates a real
+server device block, creates an offline Patta, and verifies authenticated push
+and pull. The two-tenant case switches from tenant A to B, proves B cannot read
+A local rows, verifies B sync with B's registered device, and then verifies the
+API rejects A's registered device under B with `DEVICE_TENANT_MISMATCH`.
+
+Configure these values only in the local test process/secret store; never echo
+passwords or tokens:
+
+```text
+DESKTOP_AUTH_TEST_TENANT_URL
+DESKTOP_AUTH_TEST_API_BASE_URL
+DESKTOP_AUTH_TEST_EMAIL
+DESKTOP_AUTH_TEST_PASSWORD
+DESKTOP_AUTH_TEST_DEVICE_ID
+DESKTOP_AUTH_TEST_MODEL_ID
+DESKTOP_AUTH_TEST_TENANT_B_URL
+DESKTOP_AUTH_TEST_EMAIL_B
+DESKTOP_AUTH_TEST_PASSWORD_B
+DESKTOP_AUTH_TEST_DEVICE_ID_B
+```
+
+The API must be running against dedicated test tenants with active users, a
+model with active operations/prices, an ACTIVE Master device for tenant A, and
+the necessary sync/Patta permissions. When the one-tenant settings are absent,
+the real-auth acceptance is skipped (not counted as a pass). The second-tenant
+case is independently skipped if its four settings are absent. It creates
+only temporary local SQLite files and never drops a server database.
+
+Desktop unit/integration coverage additionally checks secure-storage
+unavailability/corruption/atomic replacement, refresh rotation and single
+flight, delayed old-token 401 handling, IPC token isolation, device-config
+validation, logout, and two-file SQLite ownership. A passing unit suite does
+not substitute for the gated real tenant API or PostgreSQL `test:sync`
+acceptance.

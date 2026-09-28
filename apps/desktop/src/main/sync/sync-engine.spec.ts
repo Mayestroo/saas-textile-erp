@@ -364,6 +364,25 @@ function makeEngine(
 }
 
 describe('SyncEngine', () => {
+  it('preserves the server device/company mismatch code for safe UI mapping', async () => {
+    const database = createDatabase()
+    const transport = new FakeTransport()
+    transport.createBootstrap = async () => {
+      throw {
+        status: 403,
+        body: { code: 'DEVICE_TENANT_MISMATCH', message: 'private server text', details: {} }
+      }
+    }
+    const { engine, networkStatus } = makeEngine(database, transport)
+
+    await expect(engine.runOnce()).resolves.toMatchObject({ status: 'FAILED' })
+    expect(networkStatus.snapshot()).toMatchObject({
+      connectivity: 'ONLINE',
+      errorCode: 'DEVICE_TENANT_MISMATCH'
+    })
+    engine.dispose()
+  })
+
   it('bootstraps before push, stores outcomes, then pulls and commits the cursor', async () => {
     const database = createDatabase()
     seedLocalPendingPatta(database)
@@ -494,10 +513,18 @@ describe('SyncEngine', () => {
 
     const firstRun = engine.runOnce()
     await pushStarted
+    let hasSettled = false
+    const idle = engine.waitUntilIdle().then(() => {
+      hasSettled = true
+    })
+    await Promise.resolve()
+    expect(hasSettled).toBe(false)
     const secondRun = engine.runOnce()
     expect(secondRun).toBe(firstRun)
     releasePush?.()
     await Promise.all([firstRun, secondRun])
+    await idle
+    expect(hasSettled).toBe(true)
     expect(transport.calls.filter((call) => call.startsWith('push:'))).toHaveLength(1)
     engine.dispose()
   })

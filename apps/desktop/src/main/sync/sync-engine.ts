@@ -144,6 +144,15 @@ export class SyncEngine {
     this.pollTimer = null
   }
 
+  async waitUntilIdle(): Promise<void> {
+    const activeRun = this.activeRun
+    if (!activeRun) return
+    await activeRun.then(
+      () => undefined,
+      () => undefined
+    )
+  }
+
   start(pollIntervalMilliseconds = 60_000): void {
     if (this.disposed) throw new Error('SyncEngine has been disposed')
     if (!Number.isSafeInteger(pollIntervalMilliseconds) || pollIntervalMilliseconds < 1_000) {
@@ -489,6 +498,7 @@ export class SyncEngine {
       return { ...current, status: 'COMPLETED' }
     }
     if (info.status !== null) this.dependencies.networkStatus.reportOnline(now)
+    this.dependencies.networkStatus.reportFailure(failureCode(error, info))
     return { ...current, status: 'FAILED' }
   }
 

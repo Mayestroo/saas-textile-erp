@@ -5,7 +5,7 @@ import type {
 
 export interface AuthenticatedSessionProvider {
   accessToken(): Promise<string | null>
-  refreshAfterUnauthorized(): Promise<boolean>
+  refreshAfterUnauthorized(rejectedAccessToken?: string): Promise<boolean>
 }
 
 export class AuthenticatedHttpError extends Error {
@@ -47,7 +47,9 @@ export class FetchAuthenticatedHttpClient implements AuthenticatedHttpClient {
   ) {
     const parsed = new URL(allowedApiBaseUrl)
     const isLoopbackHttp =
-      parsed.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname)
+      parsed.protocol === 'http:' &&
+      (['localhost', '127.0.0.1', '[::1]'].includes(parsed.hostname) ||
+        parsed.hostname.endsWith('.localhost'))
     if (parsed.protocol !== 'https:' && !isLoopbackHttp) {
       throw new Error('Authenticated API URL must use HTTPS outside loopback testing')
     }
@@ -72,12 +74,7 @@ export class FetchAuthenticatedHttpClient implements AuthenticatedHttpClient {
     let response = await this.send(request, token)
     if (response.status === 401) {
       const firstBody = await responseBody(response)
-      let refreshed = false
-      try {
-        refreshed = await this.session.refreshAfterUnauthorized()
-      } catch {
-        refreshed = false
-      }
+      const refreshed = await this.session.refreshAfterUnauthorized(token)
       if (!refreshed) {
         throw new AuthenticatedHttpError(401, firstBody, responseMessage(firstBody))
       }
@@ -106,7 +103,8 @@ export class FetchAuthenticatedHttpClient implements AuthenticatedHttpClient {
       ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
       cache: 'no-store',
       credentials: 'omit',
-      redirect: 'error'
+      redirect: 'error',
+      signal: AbortSignal.timeout(15_000)
     })
   }
 }

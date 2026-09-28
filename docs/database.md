@@ -312,12 +312,25 @@ cursor remains pullable.
 
 ## Desktop SQLite persistence
 
-Each Electron workstation opens `textile-erp.sqlite` under Electron's
-`userData` directory in the main process. `better-sqlite3` is kept out of the
-renderer and remains externalized/rebuilt for pinned Electron `44.4.5`. SQLite
-uses `schema_migrations`, exclusive per-migration transactions, foreign keys,
-WAL and a bounded busy timeout. A failed migration rolls back its DDL and leaves
-the existing database intact; it is never deleted/recreated as recovery.
+Each Electron workstation keeps each company's local mirror in
+`<userData>/tenants/tenant-<authenticated-company-uuid>.sqlite`. The UUID comes
+only from the server login response or the validated encrypted secure-session
+envelope during offline startup; a host, email, IPC payload, or device config
+never determines the DB filename. Additive SQLite migration version 2 stores a
+singleton `tenant_database_identity` row with `application_id`, `company_id`,
+and `schema_version`. On open, the path company UUID and in-file identity must
+match. An unowned populated database or mismatch is rejected without data
+overwrite/reassignment. Only one tenant DB handle/runtime is active at a time.
+
+The old shared `textile-erp.sqlite` is left untouched: it is not opened,
+migrated, or auto-bound to the first tenant. Existing tenant files are retained
+on logout so offline work remains durable.
+
+`better-sqlite3` stays in Electron main and remains externalized/rebuilt for
+pinned Electron `44.4.5`. SQLite uses `schema_migrations`, exclusive
+per-migration transactions, foreign keys, WAL and a bounded busy timeout. A
+failed migration rolls back its DDL and leaves the existing database intact;
+it is never deleted/recreated as recovery.
 
 The versioned mirror includes workers/badges, models/operations/effective price
 history, templates, Patta/block/snapshot data, queue/state/conflicts, bootstrap
@@ -334,3 +347,13 @@ At `consumed * 100 >= capacity * 80`, online sync can request a reserved block.
 Server usage reports are monotonic and never move a locally advanced next number
 backward. Pull projection changes and `last_server_cursor` commit in one local
 transaction; failures leave both unchanged.
+
+Desktop auth credentials are separate from the operational SQLite mirrors.
+Electron `safeStorage` encrypts a versioned session payload, including the
+refresh token, before an atomic temp-file sync/close/replace in `userData`.
+Windows uses DPAPI. If encryption is unavailable, login persistence fails
+closed; no refresh token is written as plaintext or into SQLite. The access
+token remains in main-process memory only. `userData/device-config.json` is a
+separate non-secret provisioning file containing only `{ "version": 1,
+"device_id": "<registered Master UUID>" }`; it contains no company or session
+identity.
