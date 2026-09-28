@@ -1,6 +1,7 @@
 import type { EntityManager, DataSource } from 'typeorm';
 import { describe, expect, it, vi } from 'vitest';
 import { AuditService } from '../audit/audit.service.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { PattaTemplatesService } from './patta-templates.service.js';
 
 const modelId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -18,11 +19,18 @@ function createService(
       callback(manager)),
   } as unknown as DataSource;
   const auditService = { append: vi.fn(async () => undefined) };
+  const syncChangeRecorder = {
+    record: vi.fn(async () => ({ sequenceId: '1' })),
+  };
   return {
-    service: new PattaTemplatesService(auditService as unknown as AuditService),
+    service: new PattaTemplatesService(
+      auditService as unknown as AuditService,
+      syncChangeRecorder as unknown as SyncChangeRecorder,
+    ),
     dataSource,
     query,
     auditService,
+    syncChangeRecorder,
   };
 }
 
@@ -42,7 +50,7 @@ const templateRow = {
 
 describe('PattaTemplatesService', () => {
   it('normalizes required and optional fields and appends create audit atomically', async () => {
-    const { service, dataSource, query, auditService } = createService(async (sql) => {
+    const { service, dataSource, query, auditService, syncChangeRecorder } = createService(async (sql) => {
       if (sql.includes('FROM "models"')) {
         return [{ id: modelId, status: 'ACTIVE' }];
       }
@@ -68,6 +76,20 @@ describe('PattaTemplatesService', () => {
       entityId: templateId,
       action: 'patta_template.create',
     }));
+    expect(syncChangeRecorder.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'patta_templates',
+        entityId: templateId,
+        entityVersion: '1',
+        operation: 'UPSERT',
+        payload: expect.objectContaining({
+          entity_type: 'patta_templates',
+          entity_id: templateId,
+          entity_version: '1',
+        }),
+      }),
+    );
     expect(dataSource.transaction).toHaveBeenCalledOnce();
   });
 
@@ -99,7 +121,7 @@ describe('PattaTemplatesService', () => {
 
   it('uses expected_version for optimistic template updates and records deactivation', async () => {
     let returned = { ...templateRow };
-    const { service, dataSource, auditService } = createService(async (sql) => {
+    const { service, dataSource, auditService, syncChangeRecorder } = createService(async (sql) => {
       if (sql.includes('FROM "patta_templates"') && !sql.includes('FOR UPDATE')) {
         return [{ model_id: modelId, status: 'ACTIVE', version: '2' }];
       }
@@ -129,5 +151,15 @@ describe('PattaTemplatesService', () => {
     expect(auditService.append).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: 'patta_template.deactivate',
     }));
+    expect(syncChangeRecorder.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'patta_templates',
+        entityId: templateId,
+        entityVersion: '3',
+        operation: 'UPSERT',
+        payload: expect.objectContaining({ entity_version: '3' }),
+      }),
+    );
   });
 });

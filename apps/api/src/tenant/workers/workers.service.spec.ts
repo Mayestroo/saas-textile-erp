@@ -3,6 +3,7 @@ import type { DataSource, EntityManager } from 'typeorm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuditService } from '../audit/audit.service.js';
 import type { BadgeHistoryService } from '../badges/badge-history.service.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { canonicalizeWorkerName } from './worker-name.js';
 import { WorkersService } from './workers.service.js';
 
@@ -40,6 +41,9 @@ function createHarness() {
   const badgeHistoryService = {
     closeOpenAssignmentsForWorker: vi.fn(async () => []),
   };
+  const syncChangeRecorder = {
+    record: vi.fn(async () => ({ sequenceId: '1' })),
+  };
   return {
     manager,
     dataSource: dataSource as unknown as DataSource,
@@ -47,9 +51,11 @@ function createHarness() {
     transaction: dataSource.transaction,
     auditService,
     badgeHistoryService,
+    syncChangeRecorder,
     service: new WorkersService(
       auditService as unknown as AuditService,
       badgeHistoryService as unknown as BadgeHistoryService,
+      syncChangeRecorder as unknown as SyncChangeRecorder,
     ),
   };
 }
@@ -108,6 +114,21 @@ describe('WorkersService', () => {
         before: null,
       }),
     );
+    expect(harness.syncChangeRecorder.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'workers',
+        entityId: created.id,
+        operation: 'UPSERT',
+        entityVersion: created.version,
+        payload: expect.objectContaining({
+          entity_type: 'workers',
+          entity_id: created.id,
+          entity_version: created.version,
+          data: created,
+        }),
+      }),
+    );
   });
 
   it('rejects a blank name before starting a transaction', async () => {
@@ -136,6 +157,16 @@ describe('WorkersService', () => {
     expect(harness.auditService.append).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'worker.update', before, after }),
+    );
+    expect(harness.syncChangeRecorder.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'workers',
+        entityId: after.id,
+        operation: 'UPSERT',
+        entityVersion: after.version,
+        payload: expect.objectContaining({ entity_version: '2', data: after }),
+      }),
     );
   });
 
@@ -173,6 +204,15 @@ describe('WorkersService', () => {
     expect(harness.auditService.append).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: 'worker.deactivate', before, after }),
+    );
+    expect(harness.syncChangeRecorder.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'workers',
+        entityId: after.id,
+        entityVersion: '2',
+        payload: expect.objectContaining({ entity_version: '2', data: after }),
+      }),
     );
   });
 

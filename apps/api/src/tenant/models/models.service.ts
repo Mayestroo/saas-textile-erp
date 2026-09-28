@@ -2,6 +2,8 @@ import { BadRequestException, ConflictException, Injectable } from '@nestjs/comm
 import type { DataSource } from 'typeorm';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuditAction } from '../audit/audit.service.js';
+import { createSyncProjection } from '../sync/sync-projections.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import {
   duplicateModelName,
   modelNotFound,
@@ -64,7 +66,10 @@ function mapModelWriteError(error: unknown): never {
 
 @Injectable()
 export class ModelsService {
-  constructor(private readonly auditService: AuditService) {}
+  constructor(
+    private readonly auditService: AuditService,
+    private readonly syncChangeRecorder: SyncChangeRecorder,
+  ) {}
 
   async list(dataSource: DataSource, status: ModelStatus = 'ACTIVE'): Promise<ModelRecord[]> {
     const rows: ModelRow[] = await dataSource.query(
@@ -123,6 +128,18 @@ export class ModelsService {
           action: 'model.create',
           before: null,
           after: result,
+        });
+        await this.syncChangeRecorder.record(manager, {
+          entityType: 'models',
+          entityId: result.id,
+          operation: 'UPSERT',
+          entityVersion: result.version,
+          projectionVersion: 1,
+          payload: createSyncProjection({
+            entityType: 'models',
+            data: result,
+            entityVersion: result.version,
+          }),
         });
         return result;
       });
@@ -206,6 +223,18 @@ export class ModelsService {
           action,
           before,
           after,
+        });
+        await this.syncChangeRecorder.record(manager, {
+          entityType: 'models',
+          entityId: after.id,
+          operation: 'UPSERT',
+          entityVersion: after.version,
+          projectionVersion: 1,
+          payload: createSyncProjection({
+            entityType: 'models',
+            data: after,
+            entityVersion: after.version,
+          }),
         });
         return after;
       });

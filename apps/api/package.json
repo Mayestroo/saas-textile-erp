@@ -29,6 +29,7 @@
     "test:models-operations": "vitest run src/tenant/models/models-operations.integration.spec.ts",
     "test:workers-badges": "vitest run src/tenant/workers/workers-badges.integration.spec.ts",
     "test:patta": "vitest run src/tenant/patta/patta.integration.spec.ts",
+    "test:sync": "vitest run src/tenant/sync/sync.integration.spec.ts",
     "watch:compile": "swc src --out-dir dist --config-file .swcrc --ignore \"**/*.spec.ts\" --strip-leading-paths --watch",
     "typecheck": "tsc --noEmit -p tsconfig.build.json"
   },
@@ -42,6 +43,7 @@
     "@nestjs/terminus": "^12.1.0",
     "@nestjs/typeorm": "^12.0.1",
     "@noble/ed25519": "^3.2.0",
+    "@textile/sync-protocol": "0.1.0",
     "argon2": "^0.45.1",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",

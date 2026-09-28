@@ -32,7 +32,10 @@ import {
   createTestTenantProvisionerCredentials,
   TenantDatabaseCredentials,
 } from './tenant-database.config.js';
-import { TenantDatabaseManager, TenantRuntimeSecret } from './tenant-database-manager.js';
+import {
+  TenantDatabaseManager,
+  TenantRuntimeSecret,
+} from './tenant-database-manager.js';
 import { TenantMigrationRunner } from './tenant-migration-runner.js';
 import { PattaSequenceInitializer } from './patta-sequence.initializer.js';
 import { TenantTestDatabaseCleanup } from './tenant-test-database-cleanup.js';
@@ -40,7 +43,10 @@ import { AesGcmTenantConnectionSecretCipher } from '../../master/provisioning/ae
 import { CompaniesService } from '../../master/companies/companies.service.js';
 import { CompaniesController } from '../../master/companies/companies.controller.js';
 import { CompanyEntity } from '../../master/companies/company.entity.js';
-import { ProvisioningService, ProvisioningSnapshot } from '../../master/provisioning/provisioning.service.js';
+import {
+  ProvisioningService,
+  ProvisioningSnapshot,
+} from '../../master/provisioning/provisioning.service.js';
 import { PlatformAuthController } from '../../master/platform-auth/platform-auth.controller.js';
 import { PlatformAuthGuard } from '../../master/platform-auth/platform-auth.guard.js';
 import { PlatformAuthService } from '../../master/platform-auth/platform-auth.service.js';
@@ -58,7 +64,10 @@ import { TenantResolverService } from '../../tenant/tenant-resolver/tenant-resol
 import { TenantConnectionManager } from '../../tenant/tenant-connection/tenant-connection.manager.js';
 import { TenantRbacService } from '../../tenant/rbac/tenant-rbac.service.js';
 import { seedDefaultTenantAdmin } from '../../tenant/users/tenant-admin.seed.js';
-import { seedTenantPermissions, TENANT_PERMISSION_SEEDS } from '../../tenant/rbac/tenant-permission.seed.js';
+import {
+  seedTenantPermissions,
+  TENANT_PERMISSION_SEEDS,
+} from '../../tenant/rbac/tenant-permission.seed.js';
 import { loadPattaConfiguration } from '../../tenant/patta/patta.config.js';
 
 class TenantPermissionIntegrationProbe {
@@ -89,21 +98,33 @@ const TEST_DATABASE_VARIABLES = [
   'TEST_MASTER_DB_PASSWORD',
 ] as const;
 
-const configuredTestVariables = TEST_DATABASE_VARIABLES.filter((key) => Boolean(process.env[key]?.trim()));
-if (configuredTestVariables.length > 0 && configuredTestVariables.length !== TEST_DATABASE_VARIABLES.length) {
-  const missing = TEST_DATABASE_VARIABLES.filter((key) => !process.env[key]?.trim());
-  throw new Error(`Tenant provisioning integration test configuration is incomplete: ${missing.join(', ')}`);
+const configuredTestVariables = TEST_DATABASE_VARIABLES.filter((key) =>
+  Boolean(process.env[key]?.trim()),
+);
+if (
+  configuredTestVariables.length > 0 &&
+  configuredTestVariables.length !== TEST_DATABASE_VARIABLES.length
+) {
+  const missing = TEST_DATABASE_VARIABLES.filter(
+    (key) => !process.env[key]?.trim(),
+  );
+  throw new Error(
+    `Tenant provisioning integration test configuration is incomplete: ${missing.join(', ')}`,
+  );
 }
 
-const integrationDescribe = configuredTestVariables.length === TEST_DATABASE_VARIABLES.length
-  ? describe
-  : describe.skip;
-const testDataSourceOptions = configuredTestVariables.length === TEST_DATABASE_VARIABLES.length
-  ? createTestMasterDataSourceOptions(process.env)
-  : undefined;
-const testProvisionerCredentials = configuredTestVariables.length === TEST_DATABASE_VARIABLES.length
-  ? createTestTenantProvisionerCredentials(process.env)
-  : undefined;
+const integrationDescribe =
+  configuredTestVariables.length === TEST_DATABASE_VARIABLES.length
+    ? describe
+    : describe.skip;
+const testDataSourceOptions =
+  configuredTestVariables.length === TEST_DATABASE_VARIABLES.length
+    ? createTestMasterDataSourceOptions(process.env)
+    : undefined;
+const testProvisionerCredentials =
+  configuredTestVariables.length === TEST_DATABASE_VARIABLES.length
+    ? createTestTenantProvisionerCredentials(process.env)
+    : undefined;
 const testAuthConfiguration = loadAuthConfiguration({
   PLATFORM_JWT_ACCESS_SECRET: 'platform-access-secret-that-is-long-enough-001',
   PLATFORM_JWT_REFRESH_SECRET: 'platform-refresh-secret-that-is-long-enough-02',
@@ -154,7 +175,9 @@ class FailAfterMigrationOnceRunner extends TenantMigrationRunner {
     super(new PattaSequenceInitializer(), loadPattaConfiguration(process.env));
   }
 
-  override async run(credentials: TenantDatabaseCredentials): Promise<string | null> {
+  override async run(
+    credentials: TenantDatabaseCredentials,
+  ): Promise<string | null> {
     const schemaVersion = await super.run(credentials);
     if (this.shouldFail) {
       this.shouldFail = false;
@@ -260,10 +283,16 @@ integrationDescribe(
         await operation;
         throw new Error(unexpectedSuccessMessage);
       } catch (error) {
-        if (error instanceof Error && error.message === unexpectedSuccessMessage) {
+        if (
+          error instanceof Error &&
+          error.message === unexpectedSuccessMessage
+        ) {
           throw error;
         }
-        const driverError = error instanceof Error ? Reflect.get(error, 'driverError') : undefined;
+        const driverError =
+          error instanceof Error
+            ? Reflect.get(error, 'driverError')
+            : undefined;
         const actualConstraint =
           typeof driverError === 'object' && driverError !== null
             ? Reflect.get(driverError, 'constraint')
@@ -303,16 +332,24 @@ integrationDescribe(
       );
       const company = rows[0];
       if (!company?.db_connection_ciphertext) {
-        throw new Error('Provisioned company is missing encrypted tenant runtime credentials');
+        throw new Error(
+          'Provisioned company is missing encrypted tenant runtime credentials',
+        );
       }
       const plaintext = await cipher.decrypt(company.db_connection_ciphertext);
       const parsed: unknown = JSON.parse(plaintext);
       if (!isTenantRuntimeSecret(parsed)) {
-        throw new Error('Tenant runtime credentials have an invalid test representation');
+        throw new Error(
+          'Tenant runtime credentials have an invalid test representation',
+        );
       }
       return {
         databaseName: company.db_name,
-        credentials: tenantDatabaseManager.runtimeCredentials(companyId, company.db_name, parsed),
+        credentials: tenantDatabaseManager.runtimeCredentials(
+          companyId,
+          company.db_name,
+          parsed,
+        ),
       };
     }
 
@@ -329,28 +366,37 @@ integrationDescribe(
         provisioningStatus: 'ACTIVE',
         failureStep: null,
         failureReason: null,
-        schemaVersion: 'AddPattaFoundation20260926000500',
+        schemaVersion: 'AddOfflineSyncInfrastructure20260926000600',
       });
       expect(JSON.stringify(result)).not.toContain(admin.password);
-      await expect(provisioningService.provision(result.companyId)).resolves.toMatchObject({
+      await expect(
+        provisioningService.provision(result.companyId),
+      ).resolves.toMatchObject({
         status: 'ACTIVE',
         provisioningStatus: 'ACTIVE',
       });
 
-      const { databaseName, credentials } = await companyConnection(result.companyId);
+      const { databaseName, credentials } = await companyConnection(
+        result.companyId,
+      );
       expect(databaseName).toMatch(/^tenant_test_[0-9a-f]{32}$/);
       const migrationDataSource = new DataSource(
-        createTenantMigrationDataSourceOptions(tenantDatabaseManager.migrationCredentials(databaseName)),
+        createTenantMigrationDataSourceOptions(
+          tenantDatabaseManager.migrationCredentials(databaseName),
+        ),
       );
       await migrationDataSource.initialize();
       try {
-        const tableRows: Array<{ table_name: string }> = await migrationDataSource.query(
-          `SELECT "table_name" FROM "information_schema"."tables"
+        const tableRows: Array<{ table_name: string }> =
+          await migrationDataSource.query(
+            `SELECT "table_name" FROM "information_schema"."tables"
            WHERE "table_schema" = 'public' ORDER BY "table_name"`,
-        );
+          );
         expect(tableRows.map(({ table_name }) => table_name)).toEqual([
           'audit_log',
           'auth_sessions',
+          'bootstrap_items',
+          'bootstrap_sessions',
           'login_rate_limits',
           'model_operation_prices',
           'model_operations',
@@ -361,8 +407,10 @@ integrationDescribe(
           'patta_operation_snapshots',
           'patta_templates',
           'permissions',
+          'processed_sync_events',
           'role_permissions',
           'roles',
+          'server_change_log',
           'tenant_typeorm_migrations',
           'users',
           'worker_badge_history',
@@ -372,24 +420,30 @@ integrationDescribe(
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
-        const tablesAfterRevert: Array<{ table_name: string }> = await migrationDataSource.query(
-          `SELECT "table_name" FROM "information_schema"."tables"
+        await migrationDataSource.undoLastMigration({ transaction: 'all' });
+        const tablesAfterRevert: Array<{ table_name: string }> =
+          await migrationDataSource.query(
+            `SELECT "table_name" FROM "information_schema"."tables"
            WHERE "table_schema" = 'public' AND "table_name" IN
              ('models', 'model_operations', 'model_operation_prices', 'audit_log')`,
-        );
+          );
         expect(tablesAfterRevert).toHaveLength(0);
 
-        const committedAuthTables: Array<{ table_name: string }> = await migrationDataSource.query(
-          `SELECT "table_name" FROM "information_schema"."tables"
+        const committedAuthTables: Array<{ table_name: string }> =
+          await migrationDataSource.query(
+            `SELECT "table_name" FROM "information_schema"."tables"
            WHERE "table_schema" = 'public' AND "table_name" IN ('auth_sessions', 'login_rate_limits')`,
-        );
+          );
         expect(committedAuthTables).toHaveLength(2);
 
-        const reappliedMigrations = await migrationDataSource.runMigrations({ transaction: 'all' });
+        const reappliedMigrations = await migrationDataSource.runMigrations({
+          transaction: 'all',
+        });
         expect(reappliedMigrations.map(({ name }) => name)).toEqual([
           'AddModelsOperationsAndPriceHistory20260926000300',
           'AddWorkersAndBadgeHistory20260926000400',
           'AddPattaFoundation20260926000500',
+          'AddOfflineSyncInfrastructure20260926000600',
         ]);
         await new PattaSequenceInitializer().initialize(
           migrationDataSource,
@@ -404,11 +458,15 @@ integrationDescribe(
         await migrationDataSource.destroy();
       }
 
-      const runtimeDataSource = new DataSource(createTenantRuntimeDataSourceOptions(credentials));
+      const runtimeDataSource = new DataSource(
+        createTenantRuntimeDataSourceOptions(credentials),
+      );
       await runtimeDataSource.initialize();
       try {
         await expect(
-          runtimeDataSource.query('SELECT "name" FROM "tenant_typeorm_migrations"'),
+          runtimeDataSource.query(
+            'SELECT "name" FROM "tenant_typeorm_migrations"',
+          ),
         ).rejects.toThrow(/permission denied/i);
 
         await seedTenantPermissions(runtimeDataSource);
@@ -416,40 +474,56 @@ integrationDescribe(
         await seedDefaultTenantAdmin(runtimeDataSource, admin);
         await seedDefaultTenantAdmin(runtimeDataSource, admin);
 
-        const permissions: Array<{ count: string }> = await runtimeDataSource.query(
-          'SELECT count(*) AS "count" FROM "permissions"',
-        );
-        const permissionCodes: Array<{ code: string }> = await runtimeDataSource.query(
-          'SELECT "code" FROM "permissions" ORDER BY "code"',
-        );
-        const rolePermissions: Array<{ count: string }> = await runtimeDataSource.query(
-          'SELECT count(*) AS "count" FROM "role_permissions"',
-        );
-        const administratorRole: Array<{ is_system: boolean; permission_count: string }> =
+        const permissions: Array<{ count: string }> =
           await runtimeDataSource.query(
-            `SELECT role."is_system", count(assignment."permission_id") AS "permission_count"
+            'SELECT count(*) AS "count" FROM "permissions"',
+          );
+        const permissionCodes: Array<{ code: string }> =
+          await runtimeDataSource.query(
+            'SELECT "code" FROM "permissions" ORDER BY "code"',
+          );
+        const rolePermissions: Array<{ count: string }> =
+          await runtimeDataSource.query(
+            'SELECT count(*) AS "count" FROM "role_permissions"',
+          );
+        const administratorRole: Array<{
+          is_system: boolean;
+          permission_count: string;
+        }> = await runtimeDataSource.query(
+          `SELECT role."is_system", count(assignment."permission_id") AS "permission_count"
              FROM "roles" AS role
              LEFT JOIN "role_permissions" AS assignment ON assignment."role_id" = role."id"
              WHERE role."name" = 'Korxona administratori'
              GROUP BY role."id"`,
-          );
+        );
         const users: RuntimeUserRow[] = await runtimeDataSource.query(
           `SELECT "id", "role_id", "password_hash" FROM "users" WHERE "email" = $1`,
           [admin.email.toLowerCase()],
         );
-        expect(Number(permissions[0]?.count)).toBe(TENANT_PERMISSION_SEEDS.length);
+        expect(Number(permissions[0]?.count)).toBe(
+          TENANT_PERMISSION_SEEDS.length,
+        );
         expect(permissionCodes.map(({ code }) => code)).toEqual(
           TENANT_PERMISSION_SEEDS.map(({ code }) => code).sort(),
         );
-        expect(Number(rolePermissions[0]?.count)).toBe(TENANT_PERMISSION_SEEDS.length);
+        expect(Number(rolePermissions[0]?.count)).toBe(
+          TENANT_PERMISSION_SEEDS.length,
+        );
         expect(administratorRole).toEqual([
-          { is_system: true, permission_count: String(TENANT_PERMISSION_SEEDS.length) },
+          {
+            is_system: true,
+            permission_count: String(TENANT_PERMISSION_SEEDS.length),
+          },
         ]);
         expect(users).toHaveLength(1);
         expect(users[0]?.password_hash).not.toContain(admin.password);
-        expect(await verify(users[0]?.password_hash ?? '', admin.password)).toBe(true);
+        expect(
+          await verify(users[0]?.password_hash ?? '', admin.password),
+        ).toBe(true);
 
-        const refreshHash = createHash('sha256').update(randomUUID()).digest('hex');
+        const refreshHash = createHash('sha256')
+          .update(randomUUID())
+          .digest('hex');
         const sessionExpiry = new Date(Date.now() + 60_000);
         await runtimeDataSource.query(
           `INSERT INTO "auth_sessions" ("user_id", "refresh_token_hash", "expires_at")
@@ -468,7 +542,11 @@ integrationDescribe(
           runtimeDataSource.query(
             `INSERT INTO "auth_sessions" ("user_id", "refresh_token_hash", "expires_at")
              VALUES ($1, $2, $3)`,
-            [randomUUID(), createHash('sha256').update(randomUUID()).digest('hex'), sessionExpiry],
+            [
+              randomUUID(),
+              createHash('sha256').update(randomUUID()).digest('hex'),
+              sessionExpiry,
+            ],
           ),
           'fk_auth_sessions_user_id',
         );
@@ -505,30 +583,47 @@ integrationDescribe(
         const accountBucketHash = createHmac(
           'sha256',
           testAuthConfiguration.loginRateLimit.hashSecret,
-        ).update(`tenant\0${result.companyId}\0account\0${admin.email.toLowerCase()}`)
+        )
+          .update(
+            `tenant\0${result.companyId}\0account\0${admin.email.toLowerCase()}`,
+          )
           .digest('hex');
         const ipBucketHash = createHmac(
           'sha256',
           testAuthConfiguration.loginRateLimit.hashSecret,
-        ).update(`tenant\0${result.companyId}\0ip\0${ipAddress}`).digest('hex');
+        )
+          .update(`tenant\0${result.companyId}\0ip\0${ipAddress}`)
+          .digest('hex');
         const limitRows: Array<{ bucket_hash: string; attempt_count: number }> =
           await runtimeDataSource.query(
             `SELECT "bucket_hash", "attempt_count" FROM "login_rate_limits"
              WHERE "bucket_hash" = ANY($1::varchar[]) ORDER BY "bucket_hash"`,
             [[accountBucketHash, ipBucketHash]],
           );
-        expect(rateLimitResults.filter((value) => value === 'allowed')).toHaveLength(5);
-        expect(rateLimitResults.filter((value) => value === 'limited')).toHaveLength(7);
+        expect(
+          rateLimitResults.filter((value) => value === 'allowed'),
+        ).toHaveLength(5);
+        expect(
+          rateLimitResults.filter((value) => value === 'limited'),
+        ).toHaveLength(7);
         expect(limitRows).toHaveLength(2);
-        expect(limitRows.map(({ attempt_count }) => attempt_count)).toEqual([12, 12]);
+        expect(limitRows.map(({ attempt_count }) => attempt_count)).toEqual([
+          12, 12,
+        ]);
 
-        const restartedLimiter = new PostgresLoginRateLimiter(testAuthConfiguration);
-        await expect(restartedLimiter.consume(runtimeDataSource, {
-          scope: 'tenant',
-          companyId: result.companyId,
-          identifier: admin.email,
-          ipAddress,
-        })).rejects.toMatchObject({ response: { code: 'TOO_MANY_LOGIN_ATTEMPTS' } });
+        const restartedLimiter = new PostgresLoginRateLimiter(
+          testAuthConfiguration,
+        );
+        await expect(
+          restartedLimiter.consume(runtimeDataSource, {
+            scope: 'tenant',
+            companyId: result.companyId,
+            identifier: admin.email,
+            ipAddress,
+          }),
+        ).rejects.toMatchObject({
+          response: { code: 'TOO_MANY_LOGIN_ATTEMPTS' },
+        });
         await runtimeDataSource.query(
           `UPDATE "login_rate_limits" SET "expires_at" = now()
            WHERE "bucket_hash" = ANY($1::varchar[])`,
@@ -540,12 +635,15 @@ integrationDescribe(
           identifier: admin.email,
           ipAddress,
         });
-        const resetRows: Array<{ attempt_count: number }> = await runtimeDataSource.query(
-          `SELECT "attempt_count" FROM "login_rate_limits"
+        const resetRows: Array<{ attempt_count: number }> =
+          await runtimeDataSource.query(
+            `SELECT "attempt_count" FROM "login_rate_limits"
            WHERE "bucket_hash" = ANY($1::varchar[]) ORDER BY "bucket_hash"`,
-          [[accountBucketHash, ipBucketHash]],
-        );
-        expect(resetRows.map(({ attempt_count }) => attempt_count)).toEqual([1, 1]);
+            [[accountBucketHash, ipBucketHash]],
+          );
+        expect(resetRows.map(({ attempt_count }) => attempt_count)).toEqual([
+          1, 1,
+        ]);
       } finally {
         await runtimeDataSource.destroy();
       }
@@ -572,9 +670,13 @@ integrationDescribe(
       expect(first.status).toBe('FAILED');
       expect(first.provisioningStatus).toBe('FAILED');
       expect(first.failureStep).toBe('RUNNING_MIGRATIONS');
-      expect(first.failureReason).toContain('Injected migration completion interruption');
+      expect(first.failureReason).toContain(
+        'Injected migration completion interruption',
+      );
       expect(JSON.stringify(first)).not.toContain(retryAdmin.password);
-      await expect(failingService.provision(first.companyId)).rejects.toMatchObject({
+      await expect(
+        failingService.provision(first.companyId),
+      ).rejects.toMatchObject({
         response: { code: 'DEFAULT_ADMIN_INPUT_REQUIRED' },
       });
 
@@ -583,7 +685,10 @@ integrationDescribe(
         [tenantDatabaseManager.expectedDatabaseName(first.companyId)],
       );
       expect(beforeRetry).toHaveLength(1);
-      const retried = await failingService.provision(first.companyId, retryAdmin);
+      const retried = await failingService.provision(
+        first.companyId,
+        retryAdmin,
+      );
       expect(retried.status).toBe('ACTIVE');
       expect(retried.failureStep).toBeNull();
 
@@ -594,24 +699,29 @@ integrationDescribe(
       expect(afterRetry[0]?.oid).toBe(beforeRetry[0]?.oid);
       const { credentials } = await companyConnection(first.companyId);
       const migrationDataSource = new DataSource(
-        createTenantRuntimeDataSourceOptions(tenantDatabaseManager.migrationCredentials(credentials.database)),
+        createTenantRuntimeDataSourceOptions(
+          tenantDatabaseManager.migrationCredentials(credentials.database),
+        ),
       );
       await migrationDataSource.initialize();
       try {
-        const migrations: Array<{ name: string }> = await migrationDataSource.query(
-          'SELECT "name" FROM "tenant_typeorm_migrations"',
-        );
+        const migrations: Array<{ name: string }> =
+          await migrationDataSource.query(
+            'SELECT "name" FROM "tenant_typeorm_migrations"',
+          );
         expect(migrations.map(({ name }) => name)).toEqual([
           'InitialTenantFoundation20260926000000',
           'AddTenantAuthInfrastructure20260926000200',
           'AddModelsOperationsAndPriceHistory20260926000300',
           'AddWorkersAndBadgeHistory20260926000400',
           'AddPattaFoundation20260926000500',
+          'AddOfflineSyncInfrastructure20260926000600',
         ]);
-        const userCount: Array<{ count: string }> = await migrationDataSource.query(
-          'SELECT count(*) AS "count" FROM "users" WHERE "email" = $1',
-          [retryAdmin.email.toLowerCase()],
-        );
+        const userCount: Array<{ count: string }> =
+          await migrationDataSource.query(
+            'SELECT count(*) AS "count" FROM "users" WHERE "email" = $1',
+            [retryAdmin.email.toLowerCase()],
+          );
         expect(Number(userCount[0]?.count)).toBe(1);
       } finally {
         await migrationDataSource.destroy();
@@ -633,19 +743,23 @@ integrationDescribe(
       expect(databaseRows).toHaveLength(1);
       const { credentials } = await companyConnection(companyId);
       const migrationDataSource = new DataSource(
-        createTenantRuntimeDataSourceOptions(tenantDatabaseManager.migrationCredentials(credentials.database)),
+        createTenantRuntimeDataSourceOptions(
+          tenantDatabaseManager.migrationCredentials(credentials.database),
+        ),
       );
       await migrationDataSource.initialize();
       try {
-        const migrations: Array<{ name: string }> = await migrationDataSource.query(
-          'SELECT "name" FROM "tenant_typeorm_migrations"',
-        );
+        const migrations: Array<{ name: string }> =
+          await migrationDataSource.query(
+            'SELECT "name" FROM "tenant_typeorm_migrations"',
+          );
         expect(migrations.map(({ name }) => name)).toEqual([
           'InitialTenantFoundation20260926000000',
           'AddTenantAuthInfrastructure20260926000200',
           'AddModelsOperationsAndPriceHistory20260926000300',
           'AddWorkersAndBadgeHistory20260926000400',
           'AddPattaFoundation20260926000500',
+          'AddOfflineSyncInfrastructure20260926000600',
         ]);
       } finally {
         await migrationDataSource.destroy();
@@ -666,7 +780,9 @@ integrationDescribe(
       const connectionA = await companyConnection(companyA.companyId);
       const connectionB = await companyConnection(companyB.companyId);
       expect(connectionA.databaseName).not.toBe(connectionB.databaseName);
-      const runtimeA = new DataSource(createTenantRuntimeDataSourceOptions(connectionA.credentials));
+      const runtimeA = new DataSource(
+        createTenantRuntimeDataSourceOptions(connectionA.credentials),
+      );
       await runtimeA.initialize();
       try {
         const userRows: Array<{ count: string }> = await runtimeA.query(
@@ -683,7 +799,12 @@ integrationDescribe(
         [connectionA.credentials.username],
       );
       expect(roleRows).toEqual([
-        { rolsuper: false, rolcreatedb: false, rolcreaterole: false, rolreplication: false },
+        {
+          rolsuper: false,
+          rolcreatedb: false,
+          rolcreaterole: false,
+          rolreplication: false,
+        },
       ]);
 
       const roleCount: Array<{ count: string }> = await catalogDataSource.query(
@@ -692,10 +813,22 @@ integrationDescribe(
       );
       expect(Number(roleCount[0]?.count)).toBe(1);
 
-      await expectConnectionDenied({ ...connectionA.credentials, database: connectionB.databaseName });
-      await expectConnectionDenied({ ...connectionA.credentials, database: process.env.TEST_MASTER_DB_NAME ?? '' });
-      await expectConnectionDenied({ ...connectionA.credentials, database: 'postgres' });
-      await expectConnectionDenied({ ...connectionA.credentials, database: 'template1' });
+      await expectConnectionDenied({
+        ...connectionA.credentials,
+        database: connectionB.databaseName,
+      });
+      await expectConnectionDenied({
+        ...connectionA.credentials,
+        database: process.env.TEST_MASTER_DB_NAME ?? '',
+      });
+      await expectConnectionDenied({
+        ...connectionA.credentials,
+        database: 'postgres',
+      });
+      await expectConnectionDenied({
+        ...connectionA.credentials,
+        database: 'template1',
+      });
     }, 30_000);
 
     it('reuses healthy cached connections and cleans up failed initialization before retry', async () => {
@@ -718,9 +851,15 @@ integrationDescribe(
         username: company.credentials.username,
         password: 'A'.repeat(64),
       };
-      await masterDataSource.manager.update(CompanyEntity, { id: result.companyId }, {
-        dbConnectionCiphertext: await cipher.encrypt(JSON.stringify(badSecret)),
-      });
+      await masterDataSource.manager.update(
+        CompanyEntity,
+        { id: result.companyId },
+        {
+          dbConnectionCiphertext: await cipher.encrypt(
+            JSON.stringify(badSecret),
+          ),
+        },
+      );
 
       const manager = new TenantConnectionManager(
         new MasterTenantLookupService(masterDataSource),
@@ -729,9 +868,13 @@ integrationDescribe(
       );
       await expect(manager.getDataSource(result.companyId)).rejects.toThrow();
 
-      await masterDataSource.manager.update(CompanyEntity, { id: result.companyId }, {
-        dbConnectionCiphertext: ciphertext,
-      });
+      await masterDataSource.manager.update(
+        CompanyEntity,
+        { id: result.companyId },
+        {
+          dbConnectionCiphertext: ciphertext,
+        },
+      );
       const [first, second] = await Promise.all([
         manager.getDataSource(result.companyId),
         manager.getDataSource(result.companyId),
@@ -746,14 +889,20 @@ integrationDescribe(
       await seedPlatformPermissions(masterDataSource);
       const passwordPolicy = new PasswordPolicy();
       const jwtTokens = new JwtTokenService();
-      const loginRateLimiter = new PostgresLoginRateLimiter(testAuthConfiguration);
+      const loginRateLimiter = new PostgresLoginRateLimiter(
+        testAuthConfiguration,
+      );
       const superadminId = randomUUID();
       const superadminEmail = `superadmin-${randomUUID()}@example.test`;
       const superadminPassword = 'platform-integration-strong-password';
       await masterDataSource.query(
         `INSERT INTO "platform_users" ("id", "email", "password_hash", "status")
          VALUES ($1, $2, $3, 'ACTIVE')`,
-        [superadminId, superadminEmail, await passwordPolicy.hash(superadminPassword)],
+        [
+          superadminId,
+          superadminEmail,
+          await passwordPolicy.hash(superadminPassword),
+        ],
       );
       await masterDataSource.query(
         `INSERT INTO "platform_user_roles" ("user_id", "role_id")
@@ -775,7 +924,9 @@ integrationDescribe(
       );
 
       const jwtTokensConfiguration = testAuthConfiguration;
-      const tenantResolver = new TenantResolverService(new MasterTenantLookupService(masterDataSource));
+      const tenantResolver = new TenantResolverService(
+        new MasterTenantLookupService(masterDataSource),
+      );
       const tenantSessionRepository = new TenantSessionRepository();
       const platformAuthService = new PlatformAuthService(
         masterDataSource,
@@ -797,13 +948,23 @@ integrationDescribe(
       const platformRbacService = new PlatformRbacService(masterDataSource);
       const tenantRbacService = new TenantRbacService();
       const moduleFixture = await Test.createTestingModule({
-        controllers: [PlatformAuthController, TenantAuthController, CompaniesController],
+        controllers: [
+          PlatformAuthController,
+          TenantAuthController,
+          CompaniesController,
+        ],
         providers: [
-          { provide: getDataSourceToken(MASTER_DATA_SOURCE_NAME), useValue: masterDataSource },
+          {
+            provide: getDataSourceToken(MASTER_DATA_SOURCE_NAME),
+            useValue: masterDataSource,
+          },
           { provide: AUTH_CONFIGURATION, useValue: jwtTokensConfiguration },
           { provide: JwtTokenService, useValue: jwtTokens },
           { provide: TenantResolverService, useValue: tenantResolver },
-          { provide: TenantConnectionManager, useValue: tenantConnectionManager },
+          {
+            provide: TenantConnectionManager,
+            useValue: tenantConnectionManager,
+          },
           { provide: PlatformAuthService, useValue: platformAuthService },
           { provide: TenantAuthService, useValue: tenantAuthService },
           { provide: CompaniesService, useValue: companiesService },
@@ -817,12 +978,14 @@ integrationDescribe(
         ],
       }).compile();
       const app: INestApplication = moduleFixture.createNestApplication();
-      app.useGlobalPipes(new ValidationPipe({
-        whitelist: true,
-        forbidNonWhitelisted: true,
-        forbidUnknownValues: true,
-        transform: true,
-      }));
+      app.useGlobalPipes(
+        new ValidationPipe({
+          whitelist: true,
+          forbidNonWhitelisted: true,
+          forbidUnknownValues: true,
+          transform: true,
+        }),
+      );
       app.useGlobalFilters(new StructuredApiExceptionFilter());
       await app.init();
 
@@ -855,7 +1018,9 @@ integrationDescribe(
         const companyA = companyAResponse.body as ProvisioningSnapshot;
         cleanup.trackCompany(companyA.companyId);
         expect(companyA.status).toBe('ACTIVE');
-        expect(JSON.stringify(companyAResponse.body)).not.toContain(tenantAdminPassword);
+        expect(JSON.stringify(companyAResponse.body)).not.toContain(
+          tenantAdminPassword,
+        );
 
         const tenantLogin = await request(app.getHttpServer())
           .post('/api/v1/auth/login')
@@ -868,37 +1033,57 @@ integrationDescribe(
           user: { id: string };
           company: { id: string; slug: string };
         };
-        expect(tenantTokens.company).toEqual({ id: companyA.companyId, slug: companyASlug });
-        expect(JSON.stringify(tenantLogin.body)).not.toContain(tenantAdminPassword);
-
-        const tenantDataSource = await tenantConnectionManager.getDataSource(companyA.companyId);
-        const adminRows: Array<{ id: string; role_id: string }> = await tenantDataSource.query(
-          'SELECT "id", "role_id" FROM "users" WHERE lower("email") = $1',
-          [tenantAdminEmail.toLowerCase()],
+        expect(tenantTokens.company).toEqual({
+          id: companyA.companyId,
+          slug: companyASlug,
+        });
+        expect(JSON.stringify(tenantLogin.body)).not.toContain(
+          tenantAdminPassword,
         );
+
+        const tenantDataSource = await tenantConnectionManager.getDataSource(
+          companyA.companyId,
+        );
+        const adminRows: Array<{ id: string; role_id: string }> =
+          await tenantDataSource.query(
+            'SELECT "id", "role_id" FROM "users" WHERE lower("email") = $1',
+            [tenantAdminEmail.toLowerCase()],
+          );
         expect(adminRows).toHaveLength(1);
-        expect(await tenantRbacService.hasAllPermissions(
-          tenantDataSource,
-          tenantTokens.user.id,
-          ['workers.view'],
-        )).toBe(true);
+        expect(
+          await tenantRbacService.hasAllPermissions(
+            tenantDataSource,
+            tenantTokens.user.id,
+            ['workers.view'],
+          ),
+        ).toBe(true);
 
         await tenantDataSource.query(
           `INSERT INTO "permissions" ("code", "description")
            VALUES ('companies.create', 'test-only invalid tenant permission')
            ON CONFLICT ("code") DO NOTHING`,
         );
-        await expect(tenantRbacService.grantRolePermissions(
-          tenantDataSource,
-          adminRows[0]?.role_id ?? '',
-          ['companies.create'],
-        )).rejects.toMatchObject({ response: { code: 'TENANT_PERMISSION_NOT_ALLOWED' } });
-        expect(await tenantRbacService.hasAllPermissions(
-          tenantDataSource,
-          tenantTokens.user.id,
-          ['companies.create'],
-        )).toBe(false);
-        expect(await platformRbacService.hasAllPermissions(superadminId, ['workers.view'])).toBe(false);
+        await expect(
+          tenantRbacService.grantRolePermissions(
+            tenantDataSource,
+            adminRows[0]?.role_id ?? '',
+            ['companies.create'],
+          ),
+        ).rejects.toMatchObject({
+          response: { code: 'TENANT_PERMISSION_NOT_ALLOWED' },
+        });
+        expect(
+          await tenantRbacService.hasAllPermissions(
+            tenantDataSource,
+            tenantTokens.user.id,
+            ['companies.create'],
+          ),
+        ).toBe(false);
+        expect(
+          await platformRbacService.hasAllPermissions(superadminId, [
+            'workers.view',
+          ]),
+        ).toBe(false);
 
         const tenantRequest = {
           hostname: `${companyASlug}.erp.example.test`,
@@ -908,20 +1093,30 @@ integrationDescribe(
         const requestContext = {
           switchToHttp: () => ({ getRequest: () => tenantRequest }),
         } as unknown as ExecutionContext;
-        await expect(tenantAuthGuard.canActivate(requestContext)).resolves.toBe(true);
+        await expect(tenantAuthGuard.canActivate(requestContext)).resolves.toBe(
+          true,
+        );
 
         const probe = new TenantPermissionIntegrationProbe();
         const permissionGuard = moduleFixture.get(TenantPermissionGuard);
-        await expect(permissionGuard.canActivate(tenantExecutionContext(
-          tenantRequest,
-          probe.workersView,
-          TenantPermissionIntegrationProbe,
-        ))).resolves.toBe(true);
-        await expect(permissionGuard.canActivate(tenantExecutionContext(
-          tenantRequest,
-          probe.platformPermission,
-          TenantPermissionIntegrationProbe,
-        ))).rejects.toBeInstanceOf(ForbiddenException);
+        await expect(
+          permissionGuard.canActivate(
+            tenantExecutionContext(
+              tenantRequest,
+              probe.workersView,
+              TenantPermissionIntegrationProbe,
+            ),
+          ),
+        ).resolves.toBe(true);
+        await expect(
+          permissionGuard.canActivate(
+            tenantExecutionContext(
+              tenantRequest,
+              probe.platformPermission,
+              TenantPermissionIntegrationProbe,
+            ),
+          ),
+        ).rejects.toBeInstanceOf(ForbiddenException);
 
         const companyBSlug = `other-${randomUUID().slice(0, 8)}`;
         const companyBResponse = await request(app.getHttpServer())
@@ -945,9 +1140,11 @@ integrationDescribe(
           hostname: `${companyBSlug}.erp.example.test`,
           headers: { authorization: `Bearer ${tenantTokens.access_token}` },
         } as unknown as TenantAuthenticatedRequest;
-        await expect(tenantAuthGuard.canActivate({
-          switchToHttp: () => ({ getRequest: () => crossTenantRequest }),
-        } as unknown as ExecutionContext)).rejects.toMatchObject({
+        await expect(
+          tenantAuthGuard.canActivate({
+            switchToHttp: () => ({ getRequest: () => crossTenantRequest }),
+          } as unknown as ExecutionContext),
+        ).rejects.toMatchObject({
           response: { code: 'TENANT_CONTEXT_MISMATCH' },
         });
         await request(app.getHttpServer())
@@ -966,7 +1163,9 @@ integrationDescribe(
           .set('Host', `${companyASlug}.erp.example.test`)
           .send({ refresh_token: tenantTokens.refresh_token })
           .expect(200);
-        expect(tenantRotation.body.refresh_token).not.toBe(tenantTokens.refresh_token);
+        expect(tenantRotation.body.refresh_token).not.toBe(
+          tenantTokens.refresh_token,
+        );
         await request(app.getHttpServer())
           .post('/api/v1/auth/refresh')
           .set('Host', `${companyASlug}.erp.example.test`)
@@ -975,19 +1174,27 @@ integrationDescribe(
 
         const unprivilegedLogin = await request(app.getHttpServer())
           .post('/api/v1/platform/auth/login')
-          .send({ email: unprivilegedPlatformEmail, password: unprivilegedPlatformPassword })
+          .send({
+            email: unprivilegedPlatformEmail,
+            password: unprivilegedPlatformPassword,
+          })
           .expect(200);
         await request(app.getHttpServer())
           .post('/api/v1/platform/companies')
           .set('Authorization', `Bearer ${unprivilegedLogin.body.access_token}`)
-          .send({ name: 'Forbidden Platform Company', slug: `forbidden-${randomUUID().slice(0, 8)}` })
+          .send({
+            name: 'Forbidden Platform Company',
+            slug: `forbidden-${randomUUID().slice(0, 8)}`,
+          })
           .expect(403);
 
         const platformRotation = await request(app.getHttpServer())
           .post('/api/v1/platform/auth/refresh')
           .send({ refresh_token: platformTokens.refresh_token })
           .expect(200);
-        expect(platformRotation.body.refresh_token).not.toBe(platformTokens.refresh_token);
+        expect(platformRotation.body.refresh_token).not.toBe(
+          platformTokens.refresh_token,
+        );
         await request(app.getHttpServer())
           .post('/api/v1/platform/auth/refresh')
           .send({ refresh_token: platformTokens.refresh_token })
@@ -995,12 +1202,18 @@ integrationDescribe(
         await request(app.getHttpServer())
           .post('/api/v1/platform/companies')
           .set('Authorization', `Bearer ${platformRotation.body.access_token}`)
-          .send({ name: 'Revoked Platform Session', slug: `revoked-${randomUUID().slice(0, 8)}` })
+          .send({
+            name: 'Revoked Platform Session',
+            slug: `revoked-${randomUUID().slice(0, 8)}`,
+          })
           .expect(401);
         await request(app.getHttpServer())
           .post('/api/v1/platform/companies')
           .set('Authorization', `Bearer ${tenantTokens.access_token}`)
-          .send({ name: 'Tenant Cannot Create Platform Company', slug: `tenant-${randomUUID().slice(0, 8)}` })
+          .send({
+            name: 'Tenant Cannot Create Platform Company',
+            slug: `tenant-${randomUUID().slice(0, 8)}`,
+          })
           .expect(401);
       } finally {
         await app.close();
@@ -1010,14 +1223,23 @@ integrationDescribe(
     it('refuses test cleanup configuration without the required test suffix', () => {
       expect(
         () =>
-          new TenantTestDatabaseCleanup('textile_master', testProvisionerCredentials),
+          new TenantTestDatabaseCleanup(
+            'textile_master',
+            testProvisionerCredentials,
+          ),
       ).toThrow('TEST_MASTER_DB_NAME must end with _test');
     });
 
-    async function expectConnectionDenied(credentials: TenantDatabaseCredentials): Promise<void> {
-      const dataSource = new DataSource(createTenantRuntimeDataSourceOptions(credentials));
+    async function expectConnectionDenied(
+      credentials: TenantDatabaseCredentials,
+    ): Promise<void> {
+      const dataSource = new DataSource(
+        createTenantRuntimeDataSourceOptions(credentials),
+      );
       try {
-        await expect(dataSource.initialize()).rejects.toThrow(/permission denied for database/i);
+        await expect(dataSource.initialize()).rejects.toThrow(
+          /permission denied for database/i,
+        );
       } finally {
         if (dataSource.isInitialized) {
           await dataSource.destroy();

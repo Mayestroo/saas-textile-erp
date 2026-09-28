@@ -4,7 +4,7 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  overflow: hidden;
+  overflow: auto;
   background-image: url('./wavy-lines.svg');
   background-size: cover;
   user-select: none;
@@ -31,7 +31,134 @@ code {
   align-items: center;
   justify-content: center;
   flex-direction: column;
-  margin-bottom: 80px;
+  width: 100%;
+  min-height: 100vh;
+  padding: 32px 20px 72px;
+}
+
+.erp-shell {
+  width: min(100%, 620px);
+}
+
+.erp-header {
+  margin-bottom: 28px;
+}
+
+.erp-eyebrow {
+  color: var(--ev-c-text-2);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.erp-header h1 {
+  margin-top: 6px;
+  color: var(--ev-c-text-1);
+  font-size: 32px;
+  font-weight: 700;
+}
+
+.erp-subtitle {
+  margin-top: 6px;
+  color: var(--ev-c-text-2);
+}
+
+.sync-card {
+  border: 1px solid var(--ev-c-gray-2);
+  border-radius: 16px;
+  background: var(--color-background-soft);
+  padding: 24px;
+}
+
+.sync-card-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.sync-card h2 {
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.sync-connectivity {
+  margin-top: 4px;
+  color: var(--ev-c-text-2);
+}
+
+.sync-indicator {
+  width: 10px;
+  height: 10px;
+  margin-top: 8px;
+  border-radius: 50%;
+  background: #9298a1;
+}
+
+.sync-indicator.online {
+  background: #39b980;
+}
+
+.sync-indicator.offline,
+.sync-indicator.auth_required {
+  background: #d69e3c;
+}
+
+.sync-counts {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin: 24px 0;
+}
+
+.sync-counts div {
+  padding: 14px;
+  border-radius: 10px;
+  background: var(--color-background-mute);
+}
+
+.sync-counts dt {
+  color: var(--ev-c-text-2);
+  font-size: 13px;
+}
+
+.sync-counts dd {
+  margin-top: 4px;
+  font-size: 24px;
+  font-weight: 650;
+}
+
+.sync-message {
+  margin-bottom: 16px;
+  color: var(--ev-c-text-2);
+}
+
+.sync-button {
+  width: 100%;
+  min-height: 44px;
+  border: 1px solid var(--ev-button-alt-border);
+  border-radius: 10px;
+  background: var(--ev-button-alt-bg);
+  color: var(--ev-button-alt-text);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+.sync-button:hover:not(:disabled) {
+  background: var(--ev-button-alt-hover-bg);
+}
+
+.sync-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.app-version {
+  margin-top: 18px;
+  color: var(--ev-c-text-3);
+  font-size: 12px;
+  text-align: center;
 }
 
 .logo {

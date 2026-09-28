@@ -105,6 +105,22 @@ export function pattaAlreadyExists(): ConflictException {
   return pattaConflict('PATTA_ALREADY_EXISTS', 'Bu partiya va Patta raqami bilan yozuv mavjud');
 }
 
+export function pattaReferenceDataStale(details: object = {}): ConflictException {
+  return pattaConflict(
+    'REFERENCE_DATA_STALE',
+    'Patta yaratilganidan beri ma’lumotnoma o‘zgargan; qo‘lda tekshirish kerak',
+    details,
+  );
+}
+
+export function pattaSnapshotMismatch(details: object = {}): ConflictException {
+  return pattaConflict(
+    'PATTA_SNAPSHOT_MISMATCH',
+    'Oflayn Patta snapshoti server ma’lumotnomalariga mos emas',
+    details,
+  );
+}
+
 export function pattaRecordNotFound(): NotFoundException {
   return pattaNotFound('PATTA_NOT_FOUND', 'Patta hisob yozuvi topilmadi');
 }

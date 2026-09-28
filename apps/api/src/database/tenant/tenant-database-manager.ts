@@ -40,18 +40,28 @@ function quoteIdentifier(identifier: string): string {
   return `"${identifier.replaceAll('"', '""')}"`;
 }
 
-export function createTenantRuntimeSecret(companyId: string): TenantRuntimeSecret {
+export function createTenantRuntimeSecret(
+  companyId: string,
+): TenantRuntimeSecret {
   return {
     username: createTenantRuntimeRoleName(companyId),
     password: randomBytes(48).toString('base64url'),
   };
 }
 
-function validateRuntimeSecret(companyId: string, secret: TenantRuntimeSecret): void {
+function validateRuntimeSecret(
+  companyId: string,
+  secret: TenantRuntimeSecret,
+): void {
   const expectedUsername = createTenantRuntimeRoleName(companyId);
   assertTenantRuntimeRoleName(secret.username);
-  if (secret.username !== expectedUsername || !RUNTIME_PASSWORD_PATTERN.test(secret.password)) {
-    throw new Error('Tenant runtime credential does not match the generated company identity');
+  if (
+    secret.username !== expectedUsername ||
+    !RUNTIME_PASSWORD_PATTERN.test(secret.password)
+  ) {
+    throw new Error(
+      'Tenant runtime credential does not match the generated company identity',
+    );
   }
 }
 
@@ -63,10 +73,19 @@ export class TenantDatabaseManager implements OnModuleDestroy {
   constructor(private readonly options: TenantDatabaseManagerOptions) {
     this.mode = options.mode ?? 'production';
     const masterOptions = options.masterDataSource.options;
-    if (masterOptions.type !== 'postgres' || masterOptions.database === options.provisioner.database) {
-      throw new Error('Master and tenant provisioner connections must use separate PostgreSQL databases');
+    if (
+      masterOptions.type !== 'postgres' ||
+      masterOptions.database === options.provisioner.database
+    ) {
+      throw new Error(
+        'Master and tenant provisioner connections must use separate PostgreSQL databases',
+      );
     }
-    if (!Number.isInteger(options.runtimePort) || options.runtimePort < 1 || options.runtimePort > 65_535) {
+    if (
+      !Number.isInteger(options.runtimePort) ||
+      options.runtimePort < 1 ||
+      options.runtimePort > 65_535
+    ) {
       throw new Error('TENANT_DB_PORT must be an integer between 1 and 65535');
     }
   }
@@ -90,7 +109,9 @@ export class TenantDatabaseManager implements OnModuleDestroy {
   ): TenantDatabaseCredentials {
     assertTenantDatabaseName(databaseName, this.mode);
     if (databaseName !== this.expectedDatabaseName(companyId)) {
-      throw new Error('Tenant database name does not match the authenticated company');
+      throw new Error(
+        'Tenant database name does not match the authenticated company',
+      );
     }
     validateRuntimeSecret(companyId, secret);
     return {
@@ -110,7 +131,9 @@ export class TenantDatabaseManager implements OnModuleDestroy {
     const expectedDatabaseName = this.expectedDatabaseName(companyId);
     assertTenantDatabaseName(databaseName, this.mode);
     if (databaseName !== expectedDatabaseName) {
-      throw new Error('Company tenant database name does not match its generated identity');
+      throw new Error(
+        'Company tenant database name does not match its generated identity',
+      );
     }
     validateRuntimeSecret(companyId, secret);
 
@@ -118,7 +141,11 @@ export class TenantDatabaseManager implements OnModuleDestroy {
     await this.applyProvisionerDatabaseAccessPolicy(admin);
     await this.ensureRole(admin, secret);
     await this.ensureDatabaseExists(admin, databaseName);
-    await this.applyTenantDatabaseAccessPolicy(admin, databaseName, secret.username);
+    await this.applyTenantDatabaseAccessPolicy(
+      admin,
+      databaseName,
+      secret.username,
+    );
   }
 
   migrationCredentials(databaseName: string): TenantDatabaseCredentials {
@@ -136,7 +163,9 @@ export class TenantDatabaseManager implements OnModuleDestroy {
     validateRuntimeSecret(companyId, secret);
 
     const dataSource = new DataSource(
-      createTenantRuntimeDataSourceOptions(this.migrationCredentials(databaseName)),
+      createTenantRuntimeDataSourceOptions(
+        this.migrationCredentials(databaseName),
+      ),
     );
     try {
       await dataSource.initialize();
@@ -146,12 +175,16 @@ export class TenantDatabaseManager implements OnModuleDestroy {
         `GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE
           "users", "roles", "permissions", "role_permissions", "auth_sessions", "login_rate_limits",
            "models", "model_operations", "model_operation_prices", "audit_log",
-           "workers", "worker_badge_history",
-           "patta_templates", "patta_number_sequence", "patta_number_blocks",
-           "patta_hisob", "patta_operation_snapshots"
-         TO ${role}`,
+            "workers", "worker_badge_history",
+            "patta_templates", "patta_number_sequence", "patta_number_blocks",
+            "patta_hisob", "patta_operation_snapshots",
+            "processed_sync_events", "server_change_log",
+            "bootstrap_sessions", "bootstrap_items"
+          TO ${role}`,
       );
-      await dataSource.query(`GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ${role}`);
+      await dataSource.query(
+        `GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO ${role}`,
+      );
       await dataSource.query(
         `ALTER DEFAULT PRIVILEGES FOR ROLE ${quoteIdentifier(this.options.provisioner.username)} IN SCHEMA public
          GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO ${role}`,
@@ -167,18 +200,25 @@ export class TenantDatabaseManager implements OnModuleDestroy {
     }
   }
 
-  async testRuntimeConnection(credentials: TenantDatabaseCredentials): Promise<void> {
-    const dataSource = new DataSource(createTenantRuntimeDataSourceOptions(credentials));
+  async testRuntimeConnection(
+    credentials: TenantDatabaseCredentials,
+  ): Promise<void> {
+    const dataSource = new DataSource(
+      createTenantRuntimeDataSourceOptions(credentials),
+    );
     try {
       await dataSource.initialize();
-      const result: Array<{ database_name: string; role_name: string }> = await dataSource.query(
-        'SELECT current_database() AS database_name, current_user AS role_name',
-      );
+      const result: Array<{ database_name: string; role_name: string }> =
+        await dataSource.query(
+          'SELECT current_database() AS database_name, current_user AS role_name',
+        );
       if (
         result[0]?.database_name !== credentials.database ||
         result[0]?.role_name !== credentials.username
       ) {
-        throw new Error('Tenant runtime connection identity did not match the requested tenant');
+        throw new Error(
+          'Tenant runtime connection identity did not match the requested tenant',
+        );
       }
     } finally {
       if (dataSource.isInitialized) {
@@ -208,7 +248,9 @@ export class TenantDatabaseManager implements OnModuleDestroy {
       throw new Error('Tenant database manager is closed');
     }
     if (!this.provisionerDataSourcePromise) {
-      const dataSource = new DataSource(createTenantRuntimeDataSourceOptions(this.options.provisioner));
+      const dataSource = new DataSource(
+        createTenantRuntimeDataSourceOptions(this.options.provisioner),
+      );
       this.provisionerDataSourcePromise = dataSource.initialize().then(
         () => dataSource,
         (error: unknown) => {
@@ -221,27 +263,36 @@ export class TenantDatabaseManager implements OnModuleDestroy {
     return this.provisionerDataSourcePromise;
   }
 
-  private async applyProvisionerDatabaseAccessPolicy(dataSource: DataSource): Promise<void> {
-    const provisionerDatabase = quoteIdentifier(this.options.provisioner.database);
+  private async applyProvisionerDatabaseAccessPolicy(
+    dataSource: DataSource,
+  ): Promise<void> {
+    const provisionerDatabase = quoteIdentifier(
+      this.options.provisioner.database,
+    );
     const provisionerRole = quoteIdentifier(this.options.provisioner.username);
     const masterDatabase = this.options.masterDataSource.options.database;
     if (typeof masterDatabase !== 'string') {
       throw new Error('Master DataSource database name is unavailable');
     }
 
-    const connectableDatabases: Array<{ datname: string }> = await dataSource.query(
-      `SELECT "datname" FROM "pg_catalog"."pg_database"
+    const connectableDatabases: Array<{ datname: string }> =
+      await dataSource.query(
+        `SELECT "datname" FROM "pg_catalog"."pg_database"
        WHERE "datallowconn" = true AND "datname" <> $1`,
-      [masterDatabase],
-    );
+        [masterDatabase],
+      );
     for (const { datname } of connectableDatabases) {
       await dataSource.query(
         `REVOKE CONNECT, TEMP ON DATABASE ${quoteIdentifier(datname)} FROM PUBLIC`,
       );
     }
 
-    await dataSource.query(`REVOKE CONNECT, TEMP ON DATABASE ${provisionerDatabase} FROM PUBLIC`);
-    await dataSource.query(`GRANT CONNECT, TEMP ON DATABASE ${provisionerDatabase} TO ${provisionerRole}`);
+    await dataSource.query(
+      `REVOKE CONNECT, TEMP ON DATABASE ${provisionerDatabase} FROM PUBLIC`,
+    );
+    await dataSource.query(
+      `GRANT CONNECT, TEMP ON DATABASE ${provisionerDatabase} TO ${provisionerRole}`,
+    );
     await this.options.masterDataSource.query(`
       DO $$
       BEGIN
@@ -252,23 +303,29 @@ export class TenantDatabaseManager implements OnModuleDestroy {
     `);
   }
 
-  private async ensureRole(dataSource: DataSource, secret: TenantRuntimeSecret): Promise<void> {
+  private async ensureRole(
+    dataSource: DataSource,
+    secret: TenantRuntimeSecret,
+  ): Promise<void> {
     const rows: ExistingRoleRow[] = await dataSource.query(
       'SELECT "rolname" FROM "pg_catalog"."pg_roles" WHERE "rolname" = $1',
       [secret.username],
     );
     if (rows.length > 0) {
-      const memberships: Array<{ member_role: string }> = await dataSource.query(
-        `SELECT parent_role."rolname" AS "member_role"
+      const memberships: Array<{ member_role: string }> =
+        await dataSource.query(
+          `SELECT parent_role."rolname" AS "member_role"
          FROM "pg_catalog"."pg_auth_members" AS membership
          INNER JOIN "pg_catalog"."pg_roles" AS parent_role ON parent_role."oid" = membership."roleid"
          WHERE membership."member" = (
            SELECT "oid" FROM "pg_catalog"."pg_roles" WHERE "rolname" = $1
          )`,
-        [secret.username],
-      );
+          [secret.username],
+        );
       if (memberships.length > 0) {
-        throw new Error('Existing tenant runtime role has unexpected role memberships');
+        throw new Error(
+          'Existing tenant runtime role has unexpected role memberships',
+        );
       }
     }
 
@@ -281,7 +338,10 @@ export class TenantDatabaseManager implements OnModuleDestroy {
     );
   }
 
-  private async ensureDatabaseExists(dataSource: DataSource, databaseName: string): Promise<void> {
+  private async ensureDatabaseExists(
+    dataSource: DataSource,
+    databaseName: string,
+  ): Promise<void> {
     const rows: ExistingDatabaseRow[] = await dataSource.query(
       `SELECT pg_catalog.pg_get_userbyid("datdba") AS "owner"
        FROM "pg_catalog"."pg_database" WHERE "datname" = $1`,
@@ -289,7 +349,9 @@ export class TenantDatabaseManager implements OnModuleDestroy {
     );
     if (rows.length > 0) {
       if (rows[0]?.owner !== this.options.provisioner.username) {
-        throw new Error('Existing tenant database is not owned by the configured provisioner');
+        throw new Error(
+          'Existing tenant database is not owned by the configured provisioner',
+        );
       }
       return;
     }
@@ -306,7 +368,11 @@ export class TenantDatabaseManager implements OnModuleDestroy {
   ): Promise<void> {
     const database = quoteIdentifier(databaseName);
     const runtimeRole = quoteIdentifier(runtimeRoleName);
-    await dataSource.query(`REVOKE CONNECT, TEMP ON DATABASE ${database} FROM PUBLIC`);
-    await dataSource.query(`GRANT CONNECT ON DATABASE ${database} TO ${runtimeRole}`);
+    await dataSource.query(
+      `REVOKE CONNECT, TEMP ON DATABASE ${database} FROM PUBLIC`,
+    );
+    await dataSource.query(
+      `GRANT CONNECT ON DATABASE ${database} TO ${runtimeRole}`,
+    );
   }
 }

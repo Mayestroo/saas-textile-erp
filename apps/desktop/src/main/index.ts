@@ -1,6 +1,16 @@
 import { app, shell, BrowserWindow, ipcMain } from 'electron'
-import { join } from 'path'
+import { join } from 'node:path'
 import { electronApp, optimizer } from '@electron-toolkit/utils'
+import { openSqliteDatabase } from './database/sqlite-database'
+import { PattaLocalRepository } from './local/patta-local.repository'
+import { SyncConflictRepository } from './local/sync-conflict.repository'
+import { SyncQueueRepository } from './local/sync-queue.repository'
+import { NetworkStatusService } from './sync/network-status.service'
+import { desktopSyncEngineRegistry } from './sync/sync-engine-registry'
+import { createMainProcessIpcServices, registerIpcHandlers } from './ipc/register-ipc-handlers'
+import type { IpcMainHandlerRegistrar } from './ipc/register-ipc-handlers'
+
+let localDatabase: ReturnType<typeof openSqliteDatabase> | undefined
 
 function createWindow(): void {
   const iconPath = app.isPackaged
@@ -16,7 +26,9 @@ function createWindow(): void {
     ...(process.platform === 'linux' ? { icon: iconPath } : {}),
     webPreferences: {
       preload: join(__dirname, 'preload.js'),
-      sandbox: false
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true
     }
   })
 
@@ -42,6 +54,14 @@ function createWindow(): void {
 // initialization and is ready to create browser windows.
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
+  try {
+    localDatabase = openSqliteDatabase(join(app.getPath('userData'), 'textile-erp.sqlite'))
+  } catch (error) {
+    console.error('Failed to initialize the local SQLite database', error)
+    app.exit(1)
+    return
+  }
+
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
@@ -52,8 +72,23 @@ app.whenReady().then(() => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
+  const queueRepository = new SyncQueueRepository(localDatabase)
+  const conflictRepository = new SyncConflictRepository(localDatabase)
+  const networkStatus = new NetworkStatusService(queueRepository, conflictRepository)
+  const ipcMainAdapter: IpcMainHandlerRegistrar = {
+    handle: (channel, listener) => {
+      ipcMain.handle(channel, (event, ...args) => listener(event, ...args))
+    }
+  }
+  registerIpcHandlers(
+    ipcMainAdapter,
+    createMainProcessIpcServices({
+      appVersion: () => app.getVersion(),
+      getSyncEngine: () => desktopSyncEngineRegistry.current(),
+      networkStatus,
+      pattaRepository: new PattaLocalRepository(localDatabase)
+    })
+  )
 
   createWindow()
 
@@ -70,6 +105,14 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
+  }
+})
+
+app.on('before-quit', () => {
+  desktopSyncEngineRegistry.dispose()
+  if (localDatabase?.open) {
+    localDatabase.close()
+    localDatabase = undefined
   }
 })
 

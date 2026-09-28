@@ -1,6 +1,7 @@
 import type { DataSource, EntityManager } from 'typeorm';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AuditService } from '../audit/audit.service.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { BadgeHistoryService } from './badge-history.service.js';
 
 const actorUserId = '11111111-1111-4111-8111-111111111111';
@@ -39,11 +40,18 @@ function createHarness() {
       work(manager as unknown as EntityManager)),
   };
   const auditService = { append: vi.fn(async () => undefined) };
+  const syncChangeRecorder = {
+    record: vi.fn(async () => ({ sequenceId: '1' })),
+  };
   return {
     manager,
     dataSource: dataSource as unknown as DataSource,
     auditService,
-    service: new BadgeHistoryService(auditService as unknown as AuditService),
+    syncChangeRecorder,
+    service: new BadgeHistoryService(
+      auditService as unknown as AuditService,
+      syncChangeRecorder as unknown as SyncChangeRecorder,
+    ),
   };
 }
 
@@ -84,6 +92,27 @@ describe('BadgeHistoryService', () => {
         action: 'badge.assign',
         before: null,
         after: inserted,
+      }),
+    );
+    expect(harness.syncChangeRecorder.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'worker_badge_history',
+        entityId: inserted.id,
+        operation: 'UPSERT',
+        entityVersion: null,
+        payload: expect.objectContaining({
+          entity_type: 'worker_badge_history',
+          entity_id: inserted.id,
+          data: {
+            id: inserted.id,
+            badge_number: inserted.badge_number,
+            worker_id: inserted.worker_id,
+            valid_from: inserted.valid_from,
+            valid_to: inserted.valid_to,
+            created_at: inserted.created_at,
+          },
+        }),
       }),
     );
   });
@@ -154,6 +183,28 @@ describe('BadgeHistoryService', () => {
         after: { ...next, previous_assignment: closed },
       }),
     );
+    expect(harness.syncChangeRecorder.record).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'worker_badge_history',
+        entityId: closed.id,
+        payload: expect.objectContaining({
+          data: expect.objectContaining({ valid_to: closed.valid_to }),
+        }),
+      }),
+    );
+    expect(harness.syncChangeRecorder.record).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'worker_badge_history',
+        entityId: next.id,
+        payload: expect.objectContaining({
+          data: expect.objectContaining({ valid_to: null }),
+        }),
+      }),
+    );
   });
 
   it('releases an open badge and audits the preserved closed interval', async () => {
@@ -172,6 +223,17 @@ describe('BadgeHistoryService', () => {
     expect(harness.auditService.append).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ entityId: badgeId, action: 'badge.release', before: open, after: closed }),
+    );
+    expect(harness.syncChangeRecorder.record).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        entityType: 'worker_badge_history',
+        entityId: closed.id,
+        operation: 'UPSERT',
+        payload: expect.objectContaining({
+          data: expect.objectContaining({ valid_to: closed.valid_to }),
+        }),
+      }),
     );
   });
 
@@ -202,6 +264,16 @@ describe('BadgeHistoryService', () => {
       1,
       expect.anything(),
       expect.objectContaining({ action: 'badge.close', entityId: first.id }),
+    );
+    expect(harness.syncChangeRecorder.record).toHaveBeenNthCalledWith(
+      1,
+      expect.anything(),
+      expect.objectContaining({ entityId: first.id }),
+    );
+    expect(harness.syncChangeRecorder.record).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({ entityId: second.id }),
     );
   });
 

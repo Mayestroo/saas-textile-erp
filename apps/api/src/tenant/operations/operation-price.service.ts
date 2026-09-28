@@ -2,6 +2,8 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { Decimal } from 'decimal.js';
 import type { DataSource, EntityManager } from 'typeorm';
 import { AuditService } from '../audit/audit.service.js';
+import { createSyncProjection } from '../sync/sync-projections.js';
+import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import {
   effectiveFromInPast,
   inactiveOperation,
@@ -51,14 +53,18 @@ interface OperationPriceLockRow {
   id: string;
   model_id: string;
   name: string;
+  sort_order: number;
   status: 'ACTIVE' | 'INACTIVE';
   version: string | number;
+  created_at: string;
+  updated_at: string;
 }
 
 interface OpenPriceRow {
   id: string;
   price: string | number;
   valid_from: Date | string;
+  created_at: Date | string;
 }
 
 type PriceQueryExecutor = DataSource | EntityManager;
@@ -114,7 +120,10 @@ export function normalizePrice(value: string): string {
 
 @Injectable()
 export class OperationPriceService {
-  constructor(private readonly auditService: AuditService) {}
+  constructor(
+    private readonly auditService: AuditService,
+    private readonly syncChangeRecorder: SyncChangeRecorder,
+  ) {}
 
   async createInitialPrice(
     manager: EntityManager,
@@ -139,7 +148,27 @@ export class OperationPriceService {
     if (!created) {
       throw new Error('Initial operation price insert did not return a record');
     }
-    return serializePrice(created);
+    const result = serializePrice(created);
+    await this.syncChangeRecorder.record(manager, {
+      entityType: 'model_operation_prices',
+      entityId: result.id,
+      operation: 'UPSERT',
+      entityVersion: null,
+      projectionVersion: 1,
+      payload: createSyncProjection({
+        entityType: 'model_operation_prices',
+        data: {
+          id: result.id,
+          operation_id: result.operation_id,
+          price: result.price,
+          valid_from: result.valid_from,
+          valid_to: result.valid_to,
+          created_at: result.created_at,
+        },
+        entityVersion: null,
+      }),
+    });
+    return result;
   }
 
   async changePrice(
@@ -158,7 +187,9 @@ export class OperationPriceService {
     try {
       return await dataSource.transaction(async (manager) => {
         const operationRows: OperationPriceLockRow[] = await manager.query(
-          `SELECT "id", "model_id", "name", "status", "version"::text AS "version"
+          `SELECT "id", "model_id", "name", "sort_order", "status", "version"::text AS "version",
+                  to_char("created_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "created_at",
+                  to_char("updated_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "updated_at"
            FROM "model_operations" WHERE "id" = $1 FOR UPDATE`,
           [input.operationId],
         );
@@ -185,7 +216,8 @@ export class OperationPriceService {
 
         const openRows: OpenPriceRow[] = await manager.query(
           `SELECT "id", "price"::text AS "price",
-                  to_char("valid_from" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "valid_from"
+                  to_char("valid_from" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "valid_from",
+                  to_char("created_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "created_at"
            FROM "model_operation_prices"
            WHERE "operation_id" = $1 AND "valid_to" IS NULL
            FOR UPDATE`,
@@ -266,6 +298,67 @@ export class OperationPriceService {
             scheduled_price: record.price,
             effective_from: record.valid_from,
           },
+        });
+
+        const closedPrice = {
+          id: openPrice.id,
+          operation_id: input.operationId,
+          price: new Decimal(openPrice.price).toFixed(2),
+          valid_from: formatTimestamp(openPrice.valid_from) ?? '',
+          valid_to: record.valid_from,
+          created_at: formatTimestamp(openPrice.created_at) ?? '',
+        };
+        await this.syncChangeRecorder.record(manager, {
+          entityType: 'model_operation_prices',
+          entityId: closedPrice.id,
+          operation: 'UPSERT',
+          entityVersion: null,
+          projectionVersion: 1,
+          payload: createSyncProjection({
+            entityType: 'model_operation_prices',
+            data: closedPrice,
+            entityVersion: null,
+          }),
+        });
+        await this.syncChangeRecorder.record(manager, {
+          entityType: 'model_operation_prices',
+          entityId: record.id,
+          operation: 'UPSERT',
+          entityVersion: null,
+          projectionVersion: 1,
+          payload: createSyncProjection({
+            entityType: 'model_operation_prices',
+            data: {
+              id: record.id,
+              operation_id: record.operation_id,
+              price: record.price,
+              valid_from: record.valid_from,
+              valid_to: record.valid_to,
+              created_at: record.created_at,
+            },
+            entityVersion: null,
+          }),
+        });
+        await this.syncChangeRecorder.record(manager, {
+          entityType: 'model_operations',
+          entityId: operation.id,
+          operation: 'UPSERT',
+          entityVersion: String(updatedOperation.version),
+          projectionVersion: 1,
+          payload: createSyncProjection({
+            entityType: 'model_operations',
+            data: {
+              id: operation.id,
+              model_id: operation.model_id,
+              name: operation.name,
+              sort_order: Number(operation.sort_order),
+              status: operation.status,
+              version: String(updatedOperation.version),
+              created_at: formatTimestamp(operation.created_at) ?? '',
+              updated_at: formatTimestamp(transactionTime) ?? '',
+            },
+            entityVersion: String(updatedOperation.version),
+          }),
         });
         return { ...record, operation_version: String(updatedOperation.version) };
       });

@@ -18,6 +18,22 @@ describe('TenantRbacService', () => {
     expect(query.mock.calls[0]?.[0]).not.toContain('"platform_permissions"');
   });
 
+  it('accepts the seeded sync permissions in tenant RBAC checks', async () => {
+    const query = vi.fn(async () => [{ allowed: true }]);
+    const service = new TenantRbacService();
+
+    await expect(service.hasAllPermissions(
+      { query } as unknown as DataSource,
+      '11111111-1111-4111-8111-111111111111',
+      ['sync.pull', 'sync.push'],
+    )).resolves.toBe(true);
+    expect(query).toHaveBeenCalledOnce();
+    expect(query.mock.calls[0]?.[1]).toEqual([
+      '11111111-1111-4111-8111-111111111111',
+      ['sync.pull', 'sync.push'],
+    ]);
+  });
+
   it('denies platform permission codes even when they are not represented by tenant tables', async () => {
     const query = vi.fn(async () => [{ allowed: true }]);
     const service = new TenantRbacService();
