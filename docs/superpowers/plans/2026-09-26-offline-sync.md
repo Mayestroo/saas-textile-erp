@@ -914,14 +914,14 @@ const child = spawnSync(
 process.exit(child.status ?? 1);
 ```
 
-- [ ] **Step 1: Add Electron-runtime test for opening a temporary database, migration version recording, FK/WAL settings, and migration rollback after an injected DDL failure.**
-- [ ] **Step 2: Add desktop Vitest devDependency `^5.0.2`, script `"test": "node scripts/run-electron-tests.mjs"`, and root lockfile entry.** Then run `npm install --package-lock-only --ignore-scripts` from repository root. The runner resolves the pinned Electron executable and Vitest entry, launches Electron with `ELECTRON_RUN_AS_NODE=1`, forwards CLI arguments, inherits stdio and exits with the child status.
-- [ ] **Step 3: Run `npm run test --workspace=apps/desktop -- src/main/database/sqlite-database.spec.ts`; verify the new test runs and fails on the missing database module.**
-- [ ] **Step 4: Add `better-sqlite3` connection factory using `app.getPath('userData')`, `PRAGMA foreign_keys=ON`, WAL and busy timeout; do not add DB reset/recreate fallback.**
-- [ ] **Step 5: Add `schema_migrations(version,name,applied_at)` and apply each migration under an exclusive SQLite transaction; version is monotonic and already-applied migration names cannot be changed.**
-- [ ] **Step 6: Define SQLite schema with TEXT for every PostgreSQL BIGINT/decimal/time boundary, bounded INTEGER only for counters, and explicit constraints/indexes.** Include queue, state, conflict, reference mirrors, Patta/snapshot tables, blocks/local next number, bootstrap local session/staging and ownership/server sequence metadata.
-- [ ] **Step 7: Initialize the DB before creating BrowserWindow, keep the handle in main, close it on app shutdown, and surface migration failure without deleting local data.**
-- [ ] **Step 8: Run Electron ABI-compatible SQLite specs and desktop `typecheck:node`.**
+- [x] **Step 1: Add Electron-runtime test for opening a temporary database, migration version recording, FK/WAL settings, and migration rollback after an injected DDL failure.**
+- [x] **Step 2: Add desktop Vitest devDependency `^5.0.2`, script `"test": "node scripts/run-electron-tests.mjs"`, and root lockfile entry.** Then run `npm install --package-lock-only --ignore-scripts` from repository root. The runner resolves the pinned Electron executable and Vitest entry, launches Electron with `ELECTRON_RUN_AS_NODE=1`, forwards CLI arguments, inherits stdio and exits with the child status.
+- [x] **Step 3: Run `npm run test --workspace=apps/desktop -- src/main/database/sqlite-database.spec.ts`; verify the new test runs and fails on the missing database module.**
+- [x] **Step 4: Add `better-sqlite3` connection factory using `app.getPath('userData')`, `PRAGMA foreign_keys=ON`, WAL and busy timeout; do not add DB reset/recreate fallback.**
+- [x] **Step 5: Add `schema_migrations(version,name,applied_at)` and apply each migration under an exclusive SQLite transaction; version is monotonic and already-applied migration names cannot be changed.**
+- [x] **Step 6: Define SQLite schema with TEXT for every PostgreSQL BIGINT/decimal/time boundary, bounded INTEGER only for counters, and explicit constraints/indexes.** Include queue, state, conflict, reference mirrors, Patta/snapshot tables, blocks/local next number, bootstrap local session/staging and ownership/server sequence metadata.
+- [x] **Step 7: Initialize the DB before creating BrowserWindow, keep the handle in main, close it on app shutdown, and surface migration failure without deleting local data.**
+- [x] **Step 8: Run Electron ABI-compatible SQLite specs and desktop `typecheck:node`.**
 
 ## Task 12: Add local repositories and atomic bootstrap staging/finalization
 
@@ -949,14 +949,14 @@ save.immediate();
 
 `LocalUnitOfWork` owns this transaction wrapper; repositories receive the same `Database` and never open their own connection.
 
-- [ ] **Step 1: Test queue insert + business-row write rollback together using an injected throwing repository operation.**
-- [ ] **Step 2: Test staging pages persist individually, repeated page save is idempotent, and a staging failure cannot change live mirrors or `last_server_cursor`.**
-- [ ] **Step 3: Implement synchronous `LocalUnitOfWork.transaction<T>(action: (database: Database) => T): T` using better-sqlite3 transactions; do not await/network-call inside it.**
-- [ ] **Step 4: Implement queue/state/conflict repository methods matching the exact schema and keep JSON serialization centralized.** Recover stale `SYNCING` rows to `PENDING` at startup.
-- [ ] **Step 5: Implement staging by bootstrap session/order key; persist one page transactionally and store watermark/page completion metadata without publishing it to live reference tables.**
-- [ ] **Step 6: Implement one finalization transaction that UPSERTs all nine mirrors from staging, tombstones absent server-owned rows, preserves `LOCAL_PENDING`/`CONFLICT`/`FAILED` Pattas/snapshots, applies server block state without reducing `local_next_number`, sets `last_server_cursor=watermark`, and marks the local session complete.**
-- [ ] **Step 7: Inject failure during table reconciliation and assert transaction rollback leaves live data and cursor byte-for-byte unchanged; re-run finalization to prove idempotency.**
-- [ ] **Step 8: Run desktop database/repository tests, node typecheck and lint.**
+- [x] **Step 1: Test queue insert + business-row write rollback together using an injected throwing repository operation.**
+- [x] **Step 2: Test staging pages persist individually, repeated page save is idempotent, and a staging failure cannot change live mirrors or `last_server_cursor`.**
+- [x] **Step 3: Implement synchronous `LocalUnitOfWork.transaction<T>(action: (database: Database) => T): T` using better-sqlite3 transactions; do not await/network-call inside it.**
+- [x] **Step 4: Implement queue/state/conflict repository methods matching the exact schema and keep JSON serialization centralized.** Recover stale `SYNCING` rows to `PENDING` at startup.
+- [x] **Step 5: Implement staging by bootstrap session/order key; persist one page transactionally and store watermark/page completion metadata without publishing it to live reference tables.**
+- [x] **Step 6: Implement one finalization transaction that UPSERTs all nine mirrors from staging, tombstones absent server-owned rows, preserves `LOCAL_PENDING`/`CONFLICT`/`FAILED` Pattas/snapshots, applies server block state without reducing `local_next_number`, sets `last_server_cursor=watermark`, and marks the local session complete.**
+- [x] **Step 7: Inject failure during table reconciliation and assert transaction rollback leaves live data and cursor byte-for-byte unchanged; re-run finalization to prove idempotency.**
+- [x] **Step 8: Run desktop database/repository tests, node typecheck and lint.**
 
 ## Task 13: Implement local badge/price lookups, number blocks, and offline Patta writes
 
@@ -1038,16 +1038,16 @@ const result = this.unitOfWork.transaction(() => {
 });
 ```
 
-- [ ] **Step 1: Test badge lookup by badge-number string plus timestamp: before reassignment returns old worker ID; after reassignment returns new worker ID; absent assignment returns no worker.**
-- [ ] **Step 2: Test effective local prices before and after a `[valid_from,valid_to)` transition; assert decimal strings and never inspect `model_operations.price`.**
-- [ ] **Step 3: Test allocator exhaustion/promotion and parallel local calls over one block; each number must be unique and within inclusive range.**
-- [ ] **Step 4: Test exact 80% threshold (`consumed * 100 >= capacity * 80` using BigInt) and that server `reported_used_count` does not overwrite a greater local next number.**
-- [ ] **Step 5: Implement repository methods with parameterized SQL and stable ordering; use `BEGIN IMMEDIATE`/better-sqlite3 transaction for number consumption.**
-- [ ] **Step 6: Implement `OfflinePattaService.create(input)` resolving `last_server_cursor`, model/template/ACTIVE operations, effective price snapshots and local block number.** Generate Patta UUID, every operation snapshot UUID, and one event UUID exactly once.
-- [ ] **Step 7: In one SQLite transaction insert `LOCAL_PENDING` Patta, snapshots, advance only `local_next_number`, and enqueue the fully typed Patta event with `reference_cursor`, `client_created_at`, `occurred_at`, version context and immutable snapshot payload.** A forced queue error must roll back Patta and number consumption.
-- [ ] **Step 8: Return a typed `should_prefetch` signal at >=80%; do not perform network IO inside the local transaction.**
-- [ ] **Step 9: Run local service/repository tests under Electron runtime plus desktop typecheck/lint.**
-- [ ] **Step 10: Review and commit durable SQLite/offline Patta storage.** Run `git status` and `git diff --check`; commit `feat: add desktop offline persistence` with only desktop database/local service files and focused tests.
+- [x] **Step 1: Test badge lookup by badge-number string plus timestamp: before reassignment returns old worker ID; after reassignment returns new worker ID; absent assignment returns no worker.**
+- [x] **Step 2: Test effective local prices before and after a `[valid_from,valid_to)` transition; assert decimal strings and never inspect `model_operations.price`.**
+- [x] **Step 3: Test allocator exhaustion/promotion and parallel local calls over one block; each number must be unique and within inclusive range.**
+- [x] **Step 4: Test exact 80% threshold (`consumed * 100 >= capacity * 80` using BigInt) and that server `reported_used_count` does not overwrite a greater local next number.**
+- [x] **Step 5: Implement repository methods with parameterized SQL and stable ordering; use `BEGIN IMMEDIATE`/better-sqlite3 transaction for number consumption.**
+- [x] **Step 6: Implement `OfflinePattaService.create(input)` resolving `last_server_cursor`, model/template/ACTIVE operations, effective price snapshots and local block number.** Generate Patta UUID, every operation snapshot UUID, and one event UUID exactly once.
+- [x] **Step 7: In one SQLite transaction insert `LOCAL_PENDING` Patta, snapshots, advance only `local_next_number`, and enqueue the fully typed Patta event with `reference_cursor`, `client_created_at`, `occurred_at`, version context and immutable snapshot payload.** A forced queue error must roll back Patta and number consumption.
+- [x] **Step 8: Return a typed `should_prefetch` signal at >=80%; do not perform network IO inside the local transaction.**
+- [x] **Step 9: Run local service/repository tests under Electron runtime plus desktop typecheck/lint.**
+- [x] **Step 10: Review and commit durable SQLite/offline Patta storage.** Run `git status` and `git diff --check`; commit `feat: add desktop offline persistence` with only desktop database/local service files and focused tests.
 
 ## Task 14: Implement authenticated transport boundary and single-flight SyncEngine
 
@@ -1095,17 +1095,17 @@ runOnce(): Promise<SyncCycleResult> {
 }
 ```
 
-- [ ] **Step 1: Unit-test retry classification: network/timeout/502/503/504 transient; 400/401/403/409 non-transient; 401 delegates to the injected authenticated HTTP/session layer.**
-- [ ] **Step 2: Test single-flight behavior by calling `runOnce()` twice before the first promise resolves; both calls share one push/pull run.**
-- [ ] **Step 3: Test full cycle order: bootstrap when cursor absent; push stable event IDs; persist per-event SYNCED/CONFLICT/FAILED; pull one or more pages; atomically apply change and cursor; stop on empty/non-more page.** Also test a local `should_prefetch` signal while online calls allocation once, stores the returned next block, and later reports monotonically increasing usage through the existing Patta API.
-- [ ] **Step 4: Implement `AuthenticatedSyncTransport`; SyncEngine never stores access/refresh tokens, creates Authorization headers, or reads device identity directly.** REST adapter receives an `AuthenticatedHttpClient` and tenant API base URL through construction; the injected client owns Authorization and 401 refresh behavior.
-- [ ] **Step 5: Implement `NetworkStatusService` using real request outcomes, not `navigator.onLine`; represent `ONLINE`/`OFFLINE` and pending/conflict counts without blocking local work.**
-- [ ] **Step 6: Implement bounded retry schedule 5/15/30/60 seconds with jitter and cancellable timer; transport failure returns claimed `SYNCING` rows to `PENDING` with same `event_id`, incremented attempt count and last error.**
-- [ ] **Step 7: Implement push outcomes in one SQLite transaction per response: SYNCED persists returned authoritative Patta projection and change sequence; CONFLICT writes `sync_conflicts`; FAILED stores permanent error.**
-- [ ] **Step 8: Implement pull apply and `last_server_cursor` update in a single SQLite transaction; reject invalid/non-monotonic cursors and rollback the whole page on any projection error.**
-- [ ] **Step 9: Bootstrap pages go to SQLite staging; only all-pages-finalize advances cursor. If bootstrap fails/expires, discard only its staging rows and retain live mirrors/cursor/local pending Pattas.** Apply `DELETE` changes as local tombstones with their server sequence, never as an unsafe hard delete of referenced history.
-- [ ] **Step 10: During an online cycle, inspect local block prefetch candidates, allocate/store a next server block through `allocatePattaNumberBlock()`, and monotonically report block usage through `reportPattaBlockUsage()`.** Never perform these calls from the local SQLite transaction; preserve `local_next_number` independently from server-reported usage.
-- [ ] **Step 11: Add synced queue retention cleanup (default 30 days) that never deletes PENDING/SYNCING/CONFLICT/FAILED events; run Electron runtime tests and desktop typecheck/lint.**
+- [x] **Step 1: Unit-test retry classification: network/timeout/502/503/504 transient; 400/401/403/409 non-transient; 401 delegates to the injected authenticated HTTP/session layer.**
+- [x] **Step 2: Test single-flight behavior by calling `runOnce()` twice before the first promise resolves; both calls share one push/pull run.**
+- [x] **Step 3: Test full cycle order: bootstrap when cursor absent; push stable event IDs; persist per-event SYNCED/CONFLICT/FAILED; pull one or more pages; atomically apply change and cursor; stop on empty/non-more page.** Also test a local `should_prefetch` signal while online calls allocation once, stores the returned next block, and later reports monotonically increasing usage through the existing Patta API.
+- [x] **Step 4: Implement `AuthenticatedSyncTransport`; SyncEngine never stores access/refresh tokens, creates Authorization headers, or reads device identity directly.** REST adapter receives an `AuthenticatedHttpClient` and tenant API base URL through construction; the injected client owns Authorization and 401 refresh behavior.
+- [x] **Step 5: Implement `NetworkStatusService` using real request outcomes, not `navigator.onLine`; represent `ONLINE`/`OFFLINE` and pending/conflict counts without blocking local work.**
+- [x] **Step 6: Implement bounded retry schedule 5/15/30/60 seconds with jitter and cancellable timer; transport failure returns claimed `SYNCING` rows to `PENDING` with same `event_id`, incremented attempt count and last error.**
+- [x] **Step 7: Implement push outcomes in one SQLite transaction per response: SYNCED persists returned authoritative Patta projection and change sequence; CONFLICT writes `sync_conflicts`; FAILED stores permanent error.**
+- [x] **Step 8: Implement pull apply and `last_server_cursor` update in a single SQLite transaction; reject invalid/non-monotonic cursors and rollback the whole page on any projection error.**
+- [x] **Step 9: Bootstrap pages go to SQLite staging; only all-pages-finalize advances cursor. If bootstrap fails/expires, discard only its staging rows and retain live mirrors/cursor/local pending Pattas.** Apply `DELETE` changes as local tombstones with their server sequence, never as an unsafe hard delete of referenced history.
+- [x] **Step 10: During an online cycle, inspect local block prefetch candidates, allocate/store a next server block through `allocatePattaNumberBlock()`, and monotonically report block usage through `reportPattaBlockUsage()`.** Never perform these calls from the local SQLite transaction; preserve `local_next_number` independently from server-reported usage.
+- [x] **Step 11: Add synced queue retention cleanup (default 30 days) that never deletes PENDING/SYNCING/CONFLICT/FAILED events; run Electron runtime tests and desktop typecheck/lint.**
 
 ## Task 15: Secure Electron IPC and remove starter unrestricted bridge
 
@@ -1136,13 +1136,13 @@ contextBridge.exposeInMainWorld("erp", {
 });
 ```
 
-- [ ] **Step 1: Add typed bridge tests for only `app.getVersion`, `sync.status`, `sync.run`, and the narrow local lookup methods required by the foundation; assert no `ipcRenderer`, process object, token or database handle appears.**
-- [ ] **Step 2: Set `sandbox: true`, `contextIsolation: true`, and `nodeIntegration: false` explicitly in BrowserWindow.**
-- [ ] **Step 3: Replace `electronAPI`/generic `api` exposure and unsafe fallback with a typed `window.erp` API that invokes fixed channel names only.** Keep database, fetch, timers, and SyncEngine in main.
-- [ ] **Step 4: Register IPC handlers after SQLite/repositories/services initialize; return sanitized Uzbek-readable status values, not raw queue payload/conflict JSON.**
-- [ ] **Step 5: Remove the `ping` handler and renderer `window.electron.ipcRenderer` use.** Replace starter version access with a narrow version method or remove the starter-only version widget; keep any visible strings Uzbek Latin.
-- [ ] **Step 6: Run renderer/node typechecks, lint, build and Electron runtime smoke launch.** Confirm Electron remains `44.4.5` and `better-sqlite3` rebuild hooks were not disabled.
-- [ ] **Step 7: Review and commit main-process synchronization and IPC.** Run `git status` and `git diff --check`; commit `feat: add desktop sync engine` with SyncEngine, transport, preload/main integration and unit tests.
+- [x] **Step 1: Add typed bridge tests for only `app.getVersion`, `sync.status`, `sync.run`, and the narrow local lookup methods required by the foundation; assert no `ipcRenderer`, process object, token or database handle appears.**
+- [x] **Step 2: Set `sandbox: true`, `contextIsolation: true`, and `nodeIntegration: false` explicitly in BrowserWindow.**
+- [x] **Step 3: Replace `electronAPI`/generic `api` exposure and unsafe fallback with a typed `window.erp` API that invokes fixed channel names only.** Keep database, fetch, timers, and SyncEngine in main.
+- [x] **Step 4: Register IPC handlers after SQLite/repositories/services initialize; return sanitized Uzbek-readable status values, not raw queue payload/conflict JSON.**
+- [x] **Step 5: Remove the `ping` handler and renderer `window.electron.ipcRenderer` use.** Replace starter version access with a narrow version method or remove the starter-only version widget; keep any visible strings Uzbek Latin.
+- [x] **Step 6: Run renderer/node typechecks, lint, build and Electron runtime smoke launch.** Confirm Electron remains `44.4.5` and `better-sqlite3` rebuild hooks were not disabled.
+- [x] **Step 7: Review and commit main-process synchronization and IPC.** Run `git status` and `git diff --check`; commit `feat: add desktop sync engine` with SyncEngine, transport, preload/main integration and unit tests.
 
 ## Task 16: Real PostgreSQL/SQLite concurrency and two-PC acceptance
 
@@ -1228,18 +1228,18 @@ await waitForSuccessfulExit(child);
 
 `waitForSuccessfulExit` is a local Promise over the child's `error`/`exit` events; test credentials remain process-local and are never printed or persisted.
 
-- [ ] **Step 1: Add real PostgreSQL event harness using generated `tenant_test_<uuid>` databases and the existing `TenantTestDatabaseCleanup`; never accept arbitrary database names or use `textile_master`.**
-- [ ] **Step 2: Test ten serial deliveries of the same event ID and two concurrent same-ID transactions.** Assert one Patta, one processed event row, same result and one change sequence.
-- [ ] **Step 3: Test same event ID/different fingerprint returns `EVENT_ID_REUSE_MISMATCH`; conflict event retried ten times returns the stored conflict and handler call count remains one; injected 500 rolls reservation back so retry applies once.**
-- [ ] **Step 4: Test three-event partial results `SYNCED/CONFLICT/SYNCED`, immutable event results, transaction rollback parity and a real pull page sequence with no duplicate/loss across `cursor=0`, first page, next cursor, next page.**
-- [ ] **Step 5: Test bootstrap with more than one page, stable order, wrong device/tenant, expiry, replacement-session limit and bounded cleanup; verify no auth/password/audit projections.** For bootstrap-first-sync coverage, apply migrations only through `20260926000500`, seed all nine reference entities, then apply migration `20260926000600` and assert the first materialized snapshot contains those pre-existing rows despite an empty change log.
-- [ ] **Step 6: Coordinate concurrent mutation at bootstrap barriers.** A mutation committed before watermark is reflected in the staged snapshot; a mutation that waits behind the global lock commits after release with sequence greater than watermark and is returned by pull. While projection materialization is blocked on a test barrier, an ordinary writer must complete, proving the global lock was released.
-- [ ] **Step 7: Test page-3-of-10 desktop crash: staged pages persist, live mirror and cursor do not advance, and restart/new bootstrap reconciles safely.** Seed a `LOCAL_PENDING`/`CONFLICT` Patta before re-bootstrap and assert its row and snapshots survive reconciliation.
-- [ ] **Step 8: Test local offline Patta UUID/snapshot UUIDs, server push, response-loss retry with the same event ID, pull echo UPSERT to the same single row, and second local DB pull followed by offline Patta lookup.** Assert echo marks ownership `SERVER_SYNCED` without changing the immutable local operation snapshot JSON.
-- [ ] **Step 9: Test two tenants with overlapping local worker IDs/names/business values and two devices; neither bootstrap nor pull crosses tenant/device boundaries.**
-- [ ] **Step 10: Test old/new effective price history and old/new badge worker resolution after pull; test concurrent local number block allocation, next-block promotion, exhaustion and 80% prefetch.**
-- [ ] **Step 11: Add `test:sync` API script targeting `src/tenant/sync/sync.integration.spec.ts`; the desktop Electron test runner was added in Task 11.** In the PostgreSQL suite, asynchronously spawn the desktop acceptance test with loopback API URL, temporary DB path, tenant token, and each validated device ID; await child exit without blocking the API event loop.
-- [ ] **Step 12: Run real PostgreSQL sync tests with all five `TEST_MASTER_DB_*` settings pointing to a dedicated `_test` database; without them report blocked, not pass.**
+- [x] **Step 1: Add real PostgreSQL event harness using generated `tenant_test_<uuid>` databases and the existing `TenantTestDatabaseCleanup`; never accept arbitrary database names or use `textile_master`.**
+- [x] **Step 2: Test ten serial deliveries of the same event ID and two concurrent same-ID transactions.** Assert one Patta, one processed event row, same result and one change sequence.
+- [x] **Step 3: Test same event ID/different fingerprint returns `EVENT_ID_REUSE_MISMATCH`; conflict event retried ten times returns the stored conflict and handler call count remains one; injected 500 rolls reservation back so retry applies once.**
+- [x] **Step 4: Test three-event partial results `SYNCED/CONFLICT/SYNCED`, immutable event results, transaction rollback parity and a real pull page sequence with no duplicate/loss across `cursor=0`, first page, next cursor, next page.**
+- [x] **Step 5: Test bootstrap with more than one page, stable order, wrong device/tenant, expiry, replacement-session limit and bounded cleanup; verify no auth/password/audit projections.** For bootstrap-first-sync coverage, apply migrations only through `20260926000500`, seed all nine reference entities, then apply migration `20260926000600` and assert the first materialized snapshot contains those pre-existing rows despite an empty change log.
+- [x] **Step 6: Coordinate concurrent mutation at bootstrap barriers.** A mutation committed before watermark is reflected in the staged snapshot; a mutation that waits behind the global lock commits after release with sequence greater than watermark and is returned by pull. While projection materialization is blocked on a test barrier, an ordinary writer must complete, proving the global lock was released.
+- [x] **Step 7: Test page-3-of-10 desktop crash: staged pages persist, live mirror and cursor do not advance, and restart/new bootstrap reconciles safely.** Seed a `LOCAL_PENDING`/`CONFLICT` Patta before re-bootstrap and assert its row and snapshots survive reconciliation.
+- [x] **Step 8: Test local offline Patta UUID/snapshot UUIDs, server push, response-loss retry with the same event ID, pull echo UPSERT to the same single row, and second local DB pull followed by offline Patta lookup.** Assert echo marks ownership `SERVER_SYNCED` without changing the immutable local operation snapshot JSON.
+- [x] **Step 9: Test two tenants with overlapping local worker IDs/names/business values and two devices; neither bootstrap nor pull crosses tenant/device boundaries.**
+- [x] **Step 10: Test old/new effective price history and old/new badge worker resolution after pull; test concurrent local number block allocation, next-block promotion, exhaustion and 80% prefetch.**
+- [x] **Step 11: Add `test:sync` API script targeting `src/tenant/sync/sync.integration.spec.ts`; the desktop Electron test runner was added in Task 11.** In the PostgreSQL suite, asynchronously spawn the desktop acceptance test with loopback API URL, temporary DB path, tenant token, and each validated device ID; await child exit without blocking the API event loop.
+- [x] **Step 12: Run real PostgreSQL sync tests with all five `TEST_MASTER_DB_*` settings pointing to a dedicated `_test` database; without them report blocked, not pass.**
 
 ## Task 17: Documentation, regression verification, and feature delivery
 
@@ -1250,10 +1250,10 @@ await waitForSuccessfulExit(child);
 - Modify: `docs/testing.md`
 - Final review: all changed API/desktop/shared files
 
-- [ ] **Step 1: Document event/projection DTO versions, errors, permissions, idempotency/fingerprint/device binding, endpoints, retry and conflict behavior in `docs/sync-protocol.md`.**
-- [ ] **Step 2: Document migration tables/grants, one-lock sequence ordering, bootstrap snapshot/session/page/expiry/cleanup semantics, local DB boundaries and conservative stale-Patta limitation in `docs/database.md`.**
-- [ ] **Step 3: Document dedicated PostgreSQL environment, Electron-ABI SQLite test command, concurrency/race and two-PC suites in `docs/testing.md`.**
-- [ ] **Step 4: Run the required API commands:**
+- [x] **Step 1: Document event/projection DTO versions, errors, permissions, idempotency/fingerprint/device binding, endpoints, retry and conflict behavior in `docs/sync-protocol.md`.**
+- [x] **Step 2: Document migration tables/grants, one-lock sequence ordering, bootstrap snapshot/session/page/expiry/cleanup semantics, local DB boundaries and conservative stale-Patta limitation in `docs/database.md`.**
+- [x] **Step 3: Document dedicated PostgreSQL environment, Electron-ABI SQLite test command, concurrency/race and two-PC suites in `docs/testing.md`.**
+- [x] **Step 4: Run the required API commands:**
 
 ```powershell
 npm run lint --workspace=apps/api
@@ -1264,7 +1264,7 @@ npm run build --workspace=apps/api
 npm run test:sync --workspace=apps/api
 ```
 
-- [ ] **Step 5: Run the required desktop commands:**
+- [x] **Step 5: Run the required desktop commands:**
 
 ```powershell
 npm run lint --workspace=apps/desktop
@@ -1273,7 +1273,7 @@ npm run test --workspace=apps/desktop
 npm run build --workspace=apps/desktop
 ```
 
-- [ ] **Step 6: Run real regression suites:**
+- [x] **Step 6: Run real regression suites:**
 
 ```powershell
 npm run test:tenant-provisioning --workspace=apps/api
@@ -1282,8 +1282,8 @@ npm run test:workers-badges --workspace=apps/api
 npm run test:patta --workspace=apps/api
 ```
 
-- [ ] **Step 7: Review all changes with `git status`, `git diff --check`, `git diff`, and `git log --oneline -10`; verify only `feature/offline-sync`, no secret changes, no generated renderer artifacts, no migration edits to prior migrations, and no Electron version drift.**
-- [ ] **Step 8: Commit coherent completed implementation checkpoints; final implementation commit message is `feat: add offline synchronization engine`.** Keep the already-created design commit `b6bf289` intact.
+- [x] **Step 7: Review all changes with `git status`, `git diff --check`, `git diff`, and `git log --oneline -10`; verify only `feature/offline-sync`, no secret changes, no generated renderer artifacts, no migration edits to prior migrations, and no Electron version drift.**
+- [ ] **Step 8: Commit the documentation and regression closeout as `docs: complete offline sync documentation`; keep all previously committed implementation checkpoints and the design commit `b6bf289` intact.**
 - [ ] **Step 9: Push only `feature/offline-sync` with `git push -u origin feature/offline-sync`; record the actual result and commit hash.**
 
 ## Completion criteria

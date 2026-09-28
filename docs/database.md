@@ -254,13 +254,83 @@ allocation, usage, cancellation, and generation use
 `patta.chiqarish.create`; lookup and paginated list use `patta.hisob.view`.
 Lookup/list read tenant PostgreSQL directly. Redis caching is deferred because
 the current Redis module is a stub; PostgreSQL remains the source of truth.
-Offline registration has only reusable number-membership and structural
-snapshot validators in this stage, plus an existing `(partiya_number,
-patta_number)` lookup check before a future registration attempt. PostgreSQL's
-unique constraint remains the race-safe final authority. No sync endpoint, event
-ID, queue, or offline Patta persistence is created.
+Offline registration validates stable client Patta/snapshot UUIDs, device block
+membership, model/template/operation versions, reference cursor, effective-time
+prices, and the `(partiya_number, patta_number)` business key before persisting
+historical rows. PostgreSQL's unique constraint remains the race-safe final
+authority. Patta/snapshot writes, server change-log rows, and the terminal sync
+event result share the tenant transaction.
 
 Migration rollback refuses to remove any Patta/template/block business row or
 Patta audit event. An untouched singleton sequence row alone does not prevent
 an empty-schema test down/up cycle; a sequence whose version advanced also
 prevents rollback.
+
+## Offline synchronization database boundaries
+
+The additive tenant migration
+`20260926000600-AddOfflineSyncInfrastructure.js` adds four tenant-local tables:
+
+- `processed_sync_events` stores the UUID idempotency key, Master-validated
+  device/user identity, SHA-256 canonical request fingerprint, terminal result,
+  and processing time. A transaction may reserve `PROCESSING`, but a deferred
+  constraint trigger rejects a commit before the status is `SYNCED`, `CONFLICT`,
+  or `FAILED`. Identity/fingerprint/result rows are immutable after the one
+  terminal transition.
+- `server_change_log` is append-only. Its `BIGSERIAL sequence_id` is the tenant
+  pull cursor; changes store entity identity, `UPSERT`/`DELETE`, entity/projection
+  versions, explicit JSONB projection, and server time.
+- `bootstrap_sessions` stores a device-bound watermark, ACTIVE/COMPLETED/EXPIRED
+  lifecycle and expiry. A partial unique index permits one ACTIVE baseline per
+  device. `bootstrap_items` contains only temporary, versioned reference
+  projections and cascades with its session.
+- `patta_hisob.client_created_at` and `occurred_at` are nullable additive columns
+  for offline registrations; `created_at` remains server receipt time.
+
+Tenant runtime roles receive only the required DML grants through
+`TenantDatabaseManager.grantRuntimePrivileges()`. Master rows remain isolated:
+the API resolves company context from tenant hostname plus JWT and verifies each
+device through Master `DeviceAccessService` before accessing its tenant
+database. Desktop stores no database credentials or authentication tokens.
+
+Every sync-visible API mutation calls `SyncChangeRecorder` in the same tenant
+transaction as its business write. The recorder and bootstrap use the same
+advisory lock key. Writers acquire the transaction lock before inserting a
+sequence and hold it through commit. Bootstrap acquires a device-scoped lock,
+acquires the global change lock, starts `REPEATABLE READ`, establishes the
+snapshot, reads `COALESCE(MAX(sequence_id), 0)` as watermark, and releases the
+global lock before projection materialization. It uses that same MVCC snapshot
+for all nine reference projections. The per-device lock can remain through
+materialization; tenant business writes are not blocked during materialization
+or HTTP page reads. QueryRunners/transactions never survive an HTTP request.
+
+Projection order is stable and pages are keyset-paginated by the session-local
+decimal `order_key`. Bootstrap cleanup expires bounded batches of sessions and
+retains terminal staging for the configured TTL; it never removes source
+business rows. The API currently retains its change log so every committed
+cursor remains pullable.
+
+## Desktop SQLite persistence
+
+Each Electron workstation opens `textile-erp.sqlite` under Electron's
+`userData` directory in the main process. `better-sqlite3` is kept out of the
+renderer and remains externalized/rebuilt for pinned Electron `44.4.5`. SQLite
+uses `schema_migrations`, exclusive per-migration transactions, foreign keys,
+WAL and a bounded busy timeout. A failed migration rolls back its DDL and leaves
+the existing database intact; it is never deleted/recreated as recovery.
+
+The versioned mirror includes workers/badges, models/operations/effective price
+history, templates, Patta/block/snapshot data, queue/state/conflicts, bootstrap
+staging and tombstones. PostgreSQL BIGINT IDs/cursors/versions and NUMERIC money
+are canonical decimal TEXT; timestamps are UTC ISO strings; only bounded counts
+use SQLite INTEGER. Server-owned rows missing from a complete snapshot are
+tombstoned rather than hard-deleted, preserving historical foreign keys.
+
+An offline Patta, its immutable operation-price snapshots, and one stable UUID
+sync event commit together in a `BEGIN IMMEDIATE` local transaction. Number
+blocks are server-assigned inclusive ranges; offline allocation advances only
+`local_next_number`/local consumption and never uses `MAX(patta_number) + 1`.
+At `consumed * 100 >= capacity * 80`, online sync can request a reserved block.
+Server usage reports are monotonic and never move a locally advanced next number
+backward. Pull projection changes and `last_server_cursor` commit in one local
+transaction; failures leave both unchanged.

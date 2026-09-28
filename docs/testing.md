@@ -224,3 +224,53 @@ replace those with development or production database names. A passing
 unit/e2e run does not substitute for the real PostgreSQL suite. The feature
 completion run also includes Master DB, tenant provisioning, models/operations,
 workers/badges regressions, API lint, typecheck, and build.
+
+## Offline synchronization (PostgreSQL and Electron SQLite)
+
+Desktop SQLite tests run with the workspace's pinned Electron binary in
+`ELECTRON_RUN_AS_NODE=1` mode, so native `better-sqlite3` uses the compatible
+Electron ABI. Run the desktop suite/build from the repository root:
+
+```powershell
+npm run test --workspace=apps/desktop
+npm run typecheck --workspace=apps/desktop
+npm run lint --workspace=apps/desktop
+npm run build --workspace=apps/desktop
+```
+
+Coverage includes exclusive versioned migrations and rollback, Patta/queue
+atomicity, stable event ID retries, stale `SYNCING` recovery, conflict retention,
+idempotent bootstrap page staging, page-three restart, atomic baseline
+reconciliation, tombstones, echo identity, local historical price/badge
+resolution, multi-connection block allocation, promotion/exhaustion and the
+exact 80% prefetch threshold. A failed migration or pull page must not delete
+existing local data or advance `last_server_cursor`.
+
+Real tenant PostgreSQL sync integration uses only all five `TEST_MASTER_DB_*`
+settings, requires `TEST_MASTER_DB_NAME` to end in `_test`, and generates/cleans
+only tracked `tenant_test_<uuid>` databases. A local Docker run must use the
+separate `textile_master_test` database, never `textile_master` or production.
+Load the test password from the local PostgreSQL container environment or a
+secret store without echoing it, then run:
+
+```powershell
+npm run test:sync --workspace=apps/api
+```
+
+The PostgreSQL suite checks additive migration/revert/reapply, runtime grants,
+bootstrap from reference rows that predate the sync migration, ten serial and
+two concurrent duplicate deliveries, fingerprint reuse, stored-conflict replay,
+reservation rollback/retry, partial `SYNCED/CONFLICT/SYNCED` outcomes, ordered
+pull pagination, two-tenant overlapping identities, and a writer committing
+while bootstrap projection materialization is barrier-blocked. It also starts a
+real authenticated Nest API on loopback and asynchronously spawns the Electron
+runtime two-client test. PC-1 loses a successful push response and retries the
+same event ID; PC-2 pulls the same Patta UUID into a separate SQLite file and
+finds it after network loss. Tokens/device IDs are passed only through the
+child's process environment and are never logged or persisted.
+
+If any `TEST_MASTER_DB_*` setting is absent, `test:sync` reports the database
+suite as skipped/blocked; that is not a pass. The desktop auth/session provider
+is not included in this sync milestone. The transport accepts a main-process
+session provider; without one, the current IPC reports `AUTH_REQUIRED` rather
+than attempting unauthenticated requests.
