@@ -37,6 +37,7 @@ function createService(queryHandler: (sql: string, parameters?: unknown[]) => Pr
     auditService as unknown as AuditService,
     {
       numberStart: 1n,
+      partiyaNumberStart: 1n,
       blockSize: 1000n,
       maxActiveBlocksPerDevice: 2,
       maxBatchSize: 100,

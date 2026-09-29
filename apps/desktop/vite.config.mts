@@ -1,9 +1,10 @@
-import { resolve } from 'node:path'
+import { dirname, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import electron from 'vite-plugin-electron/simple'
 
-const projectRoot = process.cwd()
+const projectRoot = dirname(fileURLToPath(import.meta.url))
 const rendererRoot = resolve(projectRoot, 'src/renderer')
 
 export default defineConfig({
@@ -19,6 +20,9 @@ export default defineConfig({
     electron({
       main: {
         entry: { main: resolve(projectRoot, 'src/main/index.ts') },
+        onstart({ startup }) {
+          void startup(['.', '--no-sandbox'], { cwd: projectRoot })
+        },
         vite: {
           root: projectRoot,
           build: {

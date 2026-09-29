@@ -35,7 +35,7 @@ export class SyncController {
 
   @Post('push')
   @HttpCode(200)
-  @TenantPermissions('sync.push', 'patta.chiqarish.create')
+  @TenantPermissions('sync.push')
   async push(
     @Req() request: TenantAuthenticatedRequest,
     @Body() input: SyncPushEnvelopeDto,
@@ -45,7 +45,7 @@ export class SyncController {
       context.companyId,
       input.device_id,
     );
-    return this.syncService.push(context, device.id, input.events);
+    return this.syncService.push(context, device.id, input.events, input.protocol_version ?? 1);
   }
 
   @Get('pull')
@@ -56,7 +56,12 @@ export class SyncController {
   ) {
     const context = requireTenantContext(request);
     await this.deviceAccessService.assertActiveDevice(context.companyId, query.device_id);
-    return this.syncService.pull(context.dataSource, query.cursor, query.limit);
+    return this.syncService.pull(
+      context.dataSource,
+      query.cursor,
+      query.limit,
+      query.protocol_version ?? 1,
+    );
   }
 
   @Post('bootstrap')
@@ -71,7 +76,11 @@ export class SyncController {
       context.companyId,
       input.device_id,
     );
-    return this.syncBootstrapService.create(context.dataSource, device.id);
+    return this.syncBootstrapService.create(
+      context.dataSource,
+      device.id,
+      input.protocol_version ?? 1,
+    );
   }
 
   @Get('bootstrap/:sessionId')
@@ -92,6 +101,7 @@ export class SyncController {
       sessionId,
       query.after ?? null,
       query.limit,
+      query.protocol_version ?? 1,
     );
   }
 

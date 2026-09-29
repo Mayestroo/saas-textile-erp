@@ -2,8 +2,9 @@ import type Database from 'better-sqlite3'
 import type {
   SyncBootstrapPage,
   SyncBootstrapSession,
-  SyncEntityType,
-  SyncProjection
+  SyncChange,
+  SyncProjection,
+  SyncProjectionV2
 } from '@textile/sync-protocol'
 import { compareDecimalStrings, parsePostgresBigint } from './decimal-string'
 import { isJsonObject, parseLocalJson, serializeLocalJson } from './local-json'
@@ -18,7 +19,14 @@ const SYNC_ENTITY_TYPES: ReadonlySet<string> = new Set([
   'patta_templates',
   'patta_hisob',
   'patta_operation_snapshots',
-  'patta_number_blocks'
+  'patta_number_blocks',
+  'patta_partiya_number_blocks',
+  'patta_print_batches',
+  'patta_print_batch_sizes',
+  'patta_print_events',
+  'patta_sheets',
+  'patta_sheet_operation_snapshots',
+  'patta_sheet_rows'
 ])
 
 interface BootstrapStateRow {
@@ -31,7 +39,7 @@ interface BootstrapStateRow {
 
 interface BootstrapItemRow {
   order_key: string
-  entity_type: SyncEntityType
+  entity_type: SyncChange['entity_type']
   entity_id: string
   projection_json: string
 }
@@ -46,19 +54,19 @@ export interface LocalBootstrapState {
 
 export interface StagedBootstrapItem {
   order_key: string
-  entity_type: SyncEntityType
+  entity_type: SyncChange['entity_type']
   entity_id: string
-  projection: SyncProjection
+  projection: SyncProjection | SyncProjectionV2
 }
 
-function projectionIdentity(value: unknown): SyncProjection {
+function projectionIdentity(value: unknown): SyncProjection | SyncProjectionV2 {
   if (!isJsonObject(value) || !isJsonObject(value.data)) {
     throw new Error('Bootstrap item does not contain a projection object')
   }
   const entityType = value.entity_type
   const entityId = value.entity_id
   if (
-    value.projection_version !== 1 ||
+    (value.projection_version !== 1 && value.projection_version !== 2) ||
     typeof entityType !== 'string' ||
     !SYNC_ENTITY_TYPES.has(entityType) ||
     typeof entityId !== 'string' ||

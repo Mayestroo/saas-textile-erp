@@ -9,6 +9,7 @@ import {
   DefaultTenantAdminInput,
 } from '../../tenant/users/tenant-admin.seed.js';
 import { ProvisioningService, ProvisioningSnapshot } from '../provisioning/provisioning.service.js';
+import { isIanaTimezone } from '../../common/time/iana-timezone.js';
 
 export interface CreateCompanyInput {
   name: string;
@@ -51,9 +52,7 @@ function validateCompanyInput(input: CreateCompanyInput): {
       details: {},
     });
   }
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: timezone });
-  } catch {
+  if (!isIanaTimezone(timezone)) {
     throw new BadRequestException({
       code: 'INVALID_COMPANY_TIMEZONE',
       message: 'Vaqt mintaqasi yaroqsiz',

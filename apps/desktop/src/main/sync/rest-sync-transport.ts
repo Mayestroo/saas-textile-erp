@@ -1,5 +1,7 @@
 import type {
   PattaNumberBlockProjection,
+  PattaPartiyaNumberBlockProjection,
+  PattaV2LookupMirror,
   SyncBootstrapPage,
   SyncBootstrapSession,
   SyncPullRequest,
@@ -17,6 +19,8 @@ import type {
 } from './authenticated-sync-transport'
 import {
   parsePattaNumberBlock,
+  parsePattaPartiyaNumberBlock,
+  parsePattaV2LookupMirror,
   parseSyncBootstrapComplete,
   parseSyncBootstrapPage,
   parseSyncBootstrapSession,
@@ -65,6 +69,7 @@ export class RestSyncTransport implements AuthenticatedSyncTransport {
   async push(request: Omit<SyncPushRequest, 'device_id'>): Promise<SyncPushResponse> {
     const response = await this.request('POST', '/api/v1/sync/push', {
       device_id: this.deviceId(),
+      protocol_version: 2,
       events: request.events
     })
     return parseSyncPushResponse(response)
@@ -73,7 +78,8 @@ export class RestSyncTransport implements AuthenticatedSyncTransport {
   async pull(request: Omit<SyncPullRequest, 'device_id'>): Promise<SyncPullResponse> {
     const query = new URLSearchParams({
       device_id: this.deviceId(),
-      cursor: request.cursor
+      cursor: request.cursor,
+      protocol_version: '2'
     })
     if (request.limit !== undefined) query.set('limit', String(request.limit))
     const response = await this.request('GET', `/api/v1/sync/pull?${query.toString()}`)
@@ -82,7 +88,8 @@ export class RestSyncTransport implements AuthenticatedSyncTransport {
 
   async createBootstrap(): Promise<SyncBootstrapSession> {
     const response = await this.request('POST', '/api/v1/sync/bootstrap', {
-      device_id: this.deviceId()
+      device_id: this.deviceId(),
+      protocol_version: 2
     })
     const session = parseSyncBootstrapSession(response)
     if (session.device_id.toLowerCase() !== this.deviceId()) {
@@ -99,7 +106,11 @@ export class RestSyncTransport implements AuthenticatedSyncTransport {
     if (!UUID_PATTERN.test(sessionId)) {
       throw new LocalDomainError('BOOTSTRAP_SESSION_ID_INVALID', 'Sinxronlash sessiyasi yaroqsiz')
     }
-    const query = new URLSearchParams({ device_id: this.deviceId(), limit: String(limit) })
+    const query = new URLSearchParams({
+      device_id: this.deviceId(),
+      limit: String(limit),
+      protocol_version: '2'
+    })
     if (after !== null) query.set('after', assertPostgresBigint(after, 'Bootstrap order cursor'))
     const response = await this.request(
       'GET',
@@ -164,6 +175,44 @@ export class RestSyncTransport implements AuthenticatedSyncTransport {
       throw new SyncProtocolValidationError('reported block identity')
     }
     return block
+  }
+
+  async allocatePattaPartiyaNumberBlock(): Promise<PattaPartiyaNumberBlockProjection> {
+    const response = await this.request('POST', '/api/v2/patta-partiya-number-blocks/allocate', {
+      device_id: this.deviceId()
+    })
+    const block = parsePattaPartiyaNumberBlock(response)
+    if (block.device_id.toLowerCase() !== this.deviceId()) {
+      throw new SyncProtocolValidationError('allocated Partiya block device identity')
+    }
+    return block
+  }
+
+  async reportPattaPartiyaBlockUsage(
+    blockId: string,
+    reportedUsedCount: string
+  ): Promise<PattaPartiyaNumberBlockProjection> {
+    if (!UUID_PATTERN.test(blockId)) {
+      throw new LocalDomainError('PARTIYA_BLOCK_ID_INVALID', 'Partiya raqamlar bloki identifikatori yaroqsiz')
+    }
+    const response = await this.request(
+      'POST',
+      `/api/v2/patta-partiya-number-blocks/${encodeURIComponent(blockId)}/usage`,
+      { device_id: this.deviceId(), reported_used_count: assertPostgresBigint(reportedUsedCount, 'Partiya block usage count') }
+    )
+    const block = parsePattaPartiyaNumberBlock(response)
+    if (block.id.toLowerCase() !== blockId.toLowerCase() || block.device_id.toLowerCase() !== this.deviceId()) {
+      throw new SyncProtocolValidationError('reported Partiya block identity')
+    }
+    return block
+  }
+
+  async lookupPattaV2(partiyaNumber: string, pattaNumber: string): Promise<PattaV2LookupMirror> {
+    const query = new URLSearchParams({
+      partiya_number: partiyaNumber,
+      patta_number: pattaNumber
+    })
+    return parsePattaV2LookupMirror(await this.request('GET', `/api/v2/patta/lookup?${query.toString()}`))
   }
 
   private request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> {

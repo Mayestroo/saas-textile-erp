@@ -20,6 +20,7 @@ const companyContext = {
   companyId: '44444444-4444-4444-8444-444444444444',
   slug: 'atlas-textile',
   databaseName: 'tenant_44444444444444448444444444444444',
+  timezone: 'Asia/Tashkent',
 };
 
 function executionContext(request: TenantAuthenticatedRequest): ExecutionContext {

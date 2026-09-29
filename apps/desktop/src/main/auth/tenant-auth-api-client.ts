@@ -1,3 +1,6 @@
+import { isValidTenantTimezone } from './tenant-timezone'
+import { fetchWithLocalTenantFallback } from './local-tenant-host'
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const TENANT_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
@@ -17,11 +20,12 @@ export interface TenantTokenPair {
   accessToken: string
   refreshToken: string
   expiresIn: number
+  tenantTimezone?: string
 }
 
 export interface TenantLoginResult extends TenantTokenPair {
   user: { id: string; email: string; fullName: string }
-  company: { id: string; slug: string }
+  company: { id: string; slug: string; timezone: string }
 }
 
 export interface TenantAuthApi {
@@ -135,15 +139,27 @@ function parseLoginResult(value: unknown, tenantSlug: string): TenantLoginResult
     !UUID_PATTERN.test(company.id) ||
     !requiredString(company.slug, 63) ||
     !TENANT_SLUG_PATTERN.test(company.slug) ||
-    company.slug.toLowerCase() !== tenantSlug
+    company.slug.toLowerCase() !== tenantSlug ||
+    !isValidTenantTimezone(company.timezone)
   ) {
     throw new TenantAuthApiError(200, 'AUTH_RESPONSE_INVALID', false)
   }
   return {
     ...tokenPair,
     user: { id: user.id.toLowerCase(), email: user.email, fullName: user.full_name },
-    company: { id: company.id.toLowerCase(), slug: company.slug }
+    company: { id: company.id.toLowerCase(), slug: company.slug, timezone: company.timezone }
   }
+}
+
+function parseRefreshResult(value: unknown, tenantSlug: string): TenantTokenPair {
+  const pair = parseTokenPair(value)
+  if (!isRecord(value) || !isRecord(value.company) ||
+    typeof value.company.id !== 'string' || !UUID_PATTERN.test(value.company.id) ||
+    !requiredString(value.company.slug, 63) || value.company.slug.toLowerCase() !== tenantSlug ||
+    !isValidTenantTimezone(value.company.timezone)) {
+    throw new TenantAuthApiError(200, 'AUTH_RESPONSE_INVALID', false)
+  }
+  return { ...pair, tenantTimezone: value.company.timezone }
 }
 
 async function parseResponseBody(response: Response): Promise<unknown> {
@@ -179,23 +195,25 @@ export class TenantAuthApiClient implements TenantAuthApi {
     if (!requiredString(refreshToken, 8_192)) {
       throw new TenantAuthApiError(400, 'REFRESH_INPUT_INVALID', false)
     }
-    return parseTokenPair(
-      await this.post(`${tenant.origin}/api/v1/auth/refresh`, { refresh_token: refreshToken })
+    return parseRefreshResult(
+      await this.post(`${tenant.origin}/api/v1/auth/refresh`, { refresh_token: refreshToken }),
+      tenant.tenantSlug
     )
   }
 
   private async post(url: string, body: Record<string, string>): Promise<unknown> {
     let response: Response
+    const options: RequestInit = {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      cache: 'no-store',
+      credentials: 'omit',
+      redirect: 'error',
+      signal: AbortSignal.timeout(15_000)
+    }
     try {
-      response = await this.fetcher(url, {
-        method: 'POST',
-        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-        cache: 'no-store',
-        credentials: 'omit',
-        redirect: 'error',
-        signal: AbortSignal.timeout(15_000)
-      })
+      response = await fetchWithLocalTenantFallback(this.fetcher, url, options)
     } catch {
       throw new TenantAuthApiError(null, 'NETWORK_ERROR', true)
     }

@@ -22,11 +22,11 @@ const LOGIN_RESULT: TenantLoginResult = {
   refreshToken: 'refresh-A-1',
   expiresIn: 900,
   user: { id: USER_A, email: 'operator-a@example.test', fullName: 'Operator A' },
-  company: { id: COMPANY_A, slug: 'atlas' }
+  company: { id: COMPANY_A, slug: 'atlas', timezone: 'Asia/Tashkent' }
 }
 
 const SESSION_A: SecureSessionPayload = {
-  version: 1,
+  version: 2,
   refreshToken: 'refresh-A-1',
   tenantOrigin: 'https://atlas.example.test',
   tenantHost: 'atlas.example.test',
@@ -34,13 +34,15 @@ const SESSION_A: SecureSessionPayload = {
   companySlug: 'atlas',
   userId: USER_A,
   email: 'operator-a@example.test',
-  fullName: 'Operator A'
+  fullName: 'Operator A',
+  timezone: 'Asia/Tashkent'
 }
 
 const PAIR_B: TenantTokenPair = {
   accessToken: 'access-A-2',
   refreshToken: 'refresh-A-2',
-  expiresIn: 900
+  expiresIn: 900,
+  tenantTimezone: 'Asia/Tashkent'
 }
 
 class MemoryStore implements SecureSessionStore {
@@ -100,15 +102,19 @@ class TestRuntime implements TenantSessionRuntime {
   readonly events: string[] = []
   openedCompanyIds: string[] = []
   startedOrigins: string[] = []
+  openedTimezones: Array<string | null> = []
+  startedTimezones: Array<string | null> = []
 
-  async openTenant(companyId: string): Promise<void> {
+  async openTenant(companyId: string, timezone: string | null): Promise<void> {
     this.events.push(`runtime:open:${companyId}`)
     this.openedCompanyIds.push(companyId)
+    this.openedTimezones.push(timezone)
   }
 
-  async startSync(tenantOrigin: string): Promise<void> {
+  async startSync(tenantOrigin: string, timezone: string | null): Promise<void> {
     this.events.push(`runtime:start:${tenantOrigin}`)
     this.startedOrigins.push(tenantOrigin)
+    this.startedTimezones.push(timezone)
   }
 
   async clearTenant(): Promise<void> {
@@ -164,7 +170,7 @@ describe('DesktopAuthService', () => {
     expect(service.currentSession()).toEqual({
       state: 'AUTHENTICATED',
       user: { id: USER_A, email: 'operator-a@example.test', full_name: 'Operator A' },
-      company: { id: COMPANY_A, slug: 'atlas' },
+      company: { id: COMPANY_A, slug: 'atlas', timezone: 'Asia/Tashkent' },
       tenant_host: 'atlas.example.test'
     })
     expect(service.currentSession()).not.toHaveProperty('accessToken')
@@ -202,7 +208,9 @@ describe('DesktopAuthService', () => {
     expect(store.value?.refreshToken).toBe('refresh-A-2')
     await expect(service.accessToken()).resolves.toBe('access-A-2')
     expect(runtime.openedCompanyIds).toEqual([COMPANY_A])
+    expect(runtime.openedTimezones).toEqual(['Asia/Tashkent'])
     expect(runtime.startedOrigins).toEqual([SESSION_A.tenantOrigin])
+    expect(runtime.startedTimezones).toEqual(['Asia/Tashkent'])
   })
 
   it.each(['INVALID_REFRESH_TOKEN', 'SESSION_REVOKED'])('clears an expired or %s session', async (code) => {
@@ -231,7 +239,8 @@ describe('DesktopAuthService', () => {
     })
     expect(store.value?.refreshToken).toBe('refresh-A-1')
     expect(runtime.openedCompanyIds).toEqual([COMPANY_A])
-    expect(runtime.startedOrigins).toEqual([])
+    expect(runtime.openedTimezones).toEqual(['Asia/Tashkent'])
+    expect(runtime.startedOrigins).toEqual([SESSION_A.tenantOrigin])
     await expect(service.accessToken()).rejects.toMatchObject({ code: 'AUTHENTICATION_UNAVAILABLE' })
   })
 
@@ -273,7 +282,7 @@ describe('DesktopAuthService', () => {
       refreshToken: 'refresh-B-1',
       expiresIn: 900,
       user: { id: USER_B, email: 'operator-b@example.test', fullName: 'Operator B' },
-      company: { id: COMPANY_B, slug: 'bravo' }
+      company: { id: COMPANY_B, slug: 'bravo', timezone: 'Europe/London' }
     }
 
     await expect(
@@ -287,7 +296,7 @@ describe('DesktopAuthService', () => {
     expect(runtime.events[0]).toBe('runtime:clear')
     expect(runtime.openedCompanyIds.at(-1)).toBe(COMPANY_B)
     expect(store.value).toMatchObject({ companyId: COMPANY_B, refreshToken: 'refresh-B-1' })
-    expect(service.currentSession().company).toEqual({ id: COMPANY_B, slug: 'bravo' })
+    expect(service.currentSession().company).toEqual({ id: COMPANY_B, slug: 'bravo', timezone: 'Europe/London' })
   })
 
   it('performs local logout while offline and clears active session state', async () => {

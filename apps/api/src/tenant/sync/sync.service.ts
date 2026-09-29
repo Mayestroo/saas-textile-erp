@@ -1,7 +1,8 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable } from '@nestjs/common';
 import type {
+  SyncProtocolVersion,
   SyncChange,
-  SyncEntityType,
+  SyncProjectionV2,
   SyncProjection,
   SyncPullResponse,
   SyncPushResult,
@@ -24,6 +25,13 @@ const SYNC_ENTITY_TYPES: ReadonlySet<string> = new Set([
   'patta_hisob',
   'patta_operation_snapshots',
   'patta_number_blocks',
+  'patta_partiya_number_blocks',
+  'patta_print_batches',
+  'patta_print_batch_sizes',
+  'patta_print_events',
+  'patta_sheets',
+  'patta_sheet_operation_snapshots',
+  'patta_sheet_rows',
 ]);
 
 interface ServerChangeRow {
@@ -65,6 +73,22 @@ function batchTooLarge(maximum: number): BadRequestException {
   });
 }
 
+function pattaProtocolUpgradeRequired(): ConflictException {
+  return new ConflictException({
+    code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED',
+    message: 'Patta ma’lumotlarini sinxronlash uchun dastur versiyasini yangilang',
+    details: {},
+  });
+}
+
+function pattaBatchRequired(): ConflictException {
+  return new ConflictException({
+    code: 'PATTA_PRINT_BATCH_REQUIRED',
+    message: 'Yangi Pattalar v2 bosma to‘plami orqali yaratilishi kerak',
+    details: {},
+  });
+}
+
 function parseCursor(value: string): bigint {
   if (!/^(0|[1-9][0-9]*)$/.test(value)) throw invalidCursor();
   const cursor = BigInt(value);
@@ -72,14 +96,17 @@ function parseCursor(value: string): bigint {
   return cursor;
 }
 
-function projectionForChange(row: ServerChangeRow): SyncProjection | null {
+function projectionForChange(
+  row: ServerChangeRow,
+  protocolVersion: SyncProtocolVersion,
+): SyncProjection | SyncProjectionV2 | null {
   if (!SYNC_ENTITY_TYPES.has(row.entity_type)) {
     throw new Error('Server change log contains an unknown sync entity type');
   }
   if (row.operation !== 'UPSERT' && row.operation !== 'DELETE') {
     throw new Error('Server change log contains an invalid change operation');
   }
-  if (row.projection_version !== 1) {
+  if (row.projection_version !== 1 && row.projection_version !== 2) {
     throw new Error('Server change log contains an unsupported projection version');
   }
   if (row.payload === null) {
@@ -96,22 +123,64 @@ function projectionForChange(row: ServerChangeRow): SyncProjection | null {
   ) {
     throw new Error('Server change log projection identity does not match its change');
   }
+  if (row.projection_version === 2) {
+    if (protocolVersion !== 2 || !row.entity_type.startsWith('patta')) {
+      throw pattaProtocolUpgradeRequired();
+    }
+    return row.payload as unknown as SyncProjectionV2;
+  }
+
+  if (protocolVersion === 2 && row.entity_type === 'patta_hisob') {
+    const legacyData = Reflect.get(row.payload, 'data');
+    if (!isRecord(legacyData) || typeof legacyData['ish_soni'] !== 'number') {
+      throw new Error('Legacy Patta projection has no historical operation-count value');
+    }
+    const { ish_soni: legacyOperationCount, ...data } = legacyData;
+    return {
+      projection_version: 2,
+      entity_type: 'patta_hisob',
+      entity_id: row.entity_id,
+      entity_version: row.entity_version ?? '1',
+      data: {
+        ...data,
+        konveyer_snapshot: typeof data['konveyer_snapshot'] === 'string'
+          ? data['konveyer_snapshot']
+          : null,
+        ish_soni: null,
+        legacy_operation_count: legacyOperationCount,
+        status: 'ACTIVE',
+        print_batch_id: null,
+      },
+    } as SyncProjectionV2;
+  }
+  if (protocolVersion === 2 && row.entity_type === 'patta_operation_snapshots') {
+    return {
+      ...(row.payload as Record<string, unknown>),
+      projection_version: 2,
+    } as unknown as SyncProjectionV2;
+  }
   return row.payload as unknown as SyncProjection;
 }
 
-function serializeChange(row: ServerChangeRow): SyncChange {
+function serializeChange(row: ServerChangeRow, protocolVersion: SyncProtocolVersion): SyncChange {
   if (!/^[1-9][0-9]*$/.test(row.sequence_id)) {
     throw new Error('Server change sequence is not a decimal BIGINT string');
   }
   if (!row.entity_id) throw new Error('Server change log entity ID is empty');
+  const payload = projectionForChange(row, protocolVersion);
+  const projectionVersion = payload?.projection_version ?? (
+    protocolVersion === 2 && (row.entity_type === 'patta_hisob' || row.entity_type === 'patta_operation_snapshots')
+      ? 2
+      : row.projection_version
+  );
   return {
     sequence_id: row.sequence_id,
-    entity_type: row.entity_type as SyncEntityType,
+    entity_type: row.entity_type as SyncChange['entity_type'],
     entity_id: row.entity_id,
     operation: row.operation,
     entity_version: row.entity_version,
-    projection_version: 1,
-    payload: projectionForChange(row),
+    projection_version: projectionVersion as 1 | 2,
+    payload,
     changed_at: row.changed_at,
   };
 }
@@ -127,9 +196,21 @@ export class SyncService {
     context: TenantRequestContext,
     validatedDeviceId: string,
     events: readonly unknown[],
+    protocolVersion: SyncProtocolVersion = 1,
   ): Promise<SyncPushResponse> {
     if (events.length > this.configuration.pushMaxEvents) {
       throw batchTooLarge(this.configuration.pushMaxEvents);
+    }
+    if (protocolVersion === 1 && events.some((event) => {
+      if (!isRecord(event)) return false;
+      const entityType = event['entity_type'];
+      return typeof entityType === 'string' && entityType.startsWith('patta');
+    })) {
+      throw pattaProtocolUpgradeRequired();
+    }
+    if (protocolVersion === 2 && events.some((event) =>
+      isRecord(event) && event['entity_type'] === 'patta')) {
+      throw pattaBatchRequired();
     }
     const results: SyncPushResult[] = [];
     for (const event of events) {
@@ -137,6 +218,8 @@ export class SyncService {
         actorUserId: context.actorUserId,
         companyId: context.companyId,
         validatedDeviceId,
+        protocolVersion,
+        timezone: context.timezone,
       }, event));
     }
     return { results };
@@ -146,6 +229,7 @@ export class SyncService {
     dataSource: DataSource,
     cursorInput: string | undefined,
     limitInput: number | undefined,
+    protocolVersion: SyncProtocolVersion = 1,
   ): Promise<SyncPullResponse> {
     const cursorText = cursorInput ?? '0';
     const cursor = parseCursor(cursorText);
@@ -170,7 +254,10 @@ export class SyncService {
     );
     const hasMore = rows.length > limit;
     const page = hasMore ? rows.slice(0, limit) : rows;
-    const changes = page.map(serializeChange);
+    if (protocolVersion === 1 && page.some((row) => row.entity_type.startsWith('patta') || row.projection_version !== 1)) {
+      throw pattaProtocolUpgradeRequired();
+    }
+    const changes = page.map((row) => serializeChange(row, protocolVersion));
     return {
       changes,
       next_cursor: changes[changes.length - 1]?.sequence_id ?? cursorText,

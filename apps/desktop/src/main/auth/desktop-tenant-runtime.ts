@@ -5,6 +5,7 @@ import { LocalDomainError } from '../local/local-errors'
 import { PattaLocalRepository } from '../local/patta-local.repository'
 import { SyncConflictRepository } from '../local/sync-conflict.repository'
 import { SyncQueueRepository } from '../local/sync-queue.repository'
+import { SyncStateRepository } from '../local/sync-state.repository'
 import { TenantDatabaseManager } from '../database/tenant-database-manager'
 import type { DesktopSyncRunResult, DesktopSyncStatus } from '../../preload/erp-api'
 import { FetchAuthenticatedHttpClient } from '../sync/authenticated-http-client'
@@ -16,6 +17,7 @@ import type { DesktopSyncRuntime } from '../sync/create-sync-runtime'
 import { desktopSyncEngineRegistry } from '../sync/sync-engine-registry'
 import type { SyncEngine } from '../sync/sync-engine'
 import { NetworkStatusService } from '../sync/network-status.service'
+import { isValidTenantTimezone } from './tenant-timezone'
 import type { TenantSessionRuntime } from './desktop-auth.service'
 import type { DesktopAuthState } from './desktop-auth.service'
 
@@ -55,7 +57,7 @@ export class DesktopTenantRuntime implements TenantSessionRuntime {
     this.sessionProvider = provider
   }
 
-  async openTenant(companyId: string): Promise<void> {
+  async openTenant(companyId: string, timezone: string | null = null): Promise<void> {
     if (
       this.databaseManager.activeCompanyId() !== null &&
       this.databaseManager.activeCompanyId() !== companyId.toLowerCase()
@@ -63,6 +65,10 @@ export class DesktopTenantRuntime implements TenantSessionRuntime {
       await this.clearTenant()
     }
     const database = this.databaseManager.activate(companyId)
+    const state = new SyncStateRepository(database)
+    if (isValidTenantTimezone(timezone)) {
+      state.setTenantTimezone(timezone, new Date().toISOString())
+    }
     this.pattaRepository = new PattaLocalRepository(database)
     const queue = new SyncQueueRepository(database)
     const conflicts = new SyncConflictRepository(database)
@@ -70,10 +76,13 @@ export class DesktopTenantRuntime implements TenantSessionRuntime {
     this.identityStatus = await this.deviceIdentity.load()
   }
 
-  async startSync(tenantOrigin: string): Promise<void> {
+  async startSync(tenantOrigin: string, timezone: string | null = null): Promise<void> {
     const database = this.databaseManager.activeDatabase()
     if (!database) {
       throw new LocalDomainError('TENANT_DATABASE_REQUIRED', 'Korxona ma’lumotlar bazasi ochilmagan')
+    }
+    if (isValidTenantTimezone(timezone)) {
+      new SyncStateRepository(database).setTenantTimezone(timezone, new Date().toISOString())
     }
     this.identityStatus = await this.deviceIdentity.load()
     if (this.identityStatus.state !== 'CONFIGURED') return
@@ -124,6 +133,13 @@ export class DesktopTenantRuntime implements TenantSessionRuntime {
 
   activeSyncRuntime(): DesktopSyncRuntime | null {
     return this.syncRuntime
+  }
+
+  tenantTimezone(): string | null {
+    const database = this.databaseManager.activeDatabase()
+    if (!database) return null
+    const timezone = new SyncStateRepository(database).tenantTimezone()
+    return isValidTenantTimezone(timezone) ? timezone : null
   }
 
   getSyncEngine(): Pick<SyncEngine, 'runOnce'> | null {

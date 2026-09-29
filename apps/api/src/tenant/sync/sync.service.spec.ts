@@ -22,7 +22,7 @@ function context(dataSource: DataSource): TenantRequestContext {
 function event(index: number): SyncEvent {
   return {
     event_id: eventIds[index] ?? eventIds[0]!,
-    entity_type: 'patta',
+    entity_type: 'models',
     entity_id: `77777777-7777-4777-8777-77777777777${index}`,
     operation: 'CREATE',
     base_version: '0',
@@ -122,6 +122,103 @@ describe('SyncService', () => {
     });
     expect(query.mock.calls[0]?.[0]).toContain('ORDER BY "server_change_log"."sequence_id" ASC');
     expect(query.mock.calls[0]?.[1]).toEqual(['9007199254740992', 3]);
+  });
+
+  it('rejects v1 Patta mutations before invoking a domain handler', async () => {
+    const processor = { process: vi.fn() };
+    const service = new SyncService(
+      processor as unknown as SyncEventProcessor,
+      loadSyncConfiguration({}),
+    );
+    const dataSource = { query: vi.fn() } as unknown as DataSource;
+
+    await expect(service.push(context(dataSource), deviceId, [{ ...event(0), entity_type: 'patta' }], 1))
+      .rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
+    expect(processor.process).not.toHaveBeenCalled();
+  });
+
+  it('rejects v2 single-Patta mutations in favor of aggregate print batches', async () => {
+    const processor = { process: vi.fn() };
+    const service = new SyncService(
+      processor as unknown as SyncEventProcessor,
+      loadSyncConfiguration({}),
+    );
+    const dataSource = { query: vi.fn() } as unknown as DataSource;
+
+    await expect(service.push(context(dataSource), deviceId, [{ ...event(0), entity_type: 'patta' }], 2))
+      .rejects.toMatchObject({ response: { code: 'PATTA_PRINT_BATCH_REQUIRED' } });
+    expect(processor.process).not.toHaveBeenCalled();
+  });
+
+  it('returns a structured upgrade error instead of a projection failure when a v1 pull reaches Patta data', async () => {
+    const query = vi.fn(async () => [{
+      sequence_id: '42',
+      entity_type: 'patta_print_batches',
+      entity_id: '77777777-7777-4777-8777-777777777777',
+      operation: 'UPSERT',
+      entity_version: '1',
+      projection_version: 2,
+      payload: {},
+      changed_at: '2026-09-28T10:00:00.000000Z',
+    }]);
+    const dataSource = { query } as unknown as DataSource;
+    const service = new SyncService(
+      { process: vi.fn() } as unknown as SyncEventProcessor,
+      loadSyncConfiguration({}),
+    );
+
+    await expect(service.pull(dataSource, '0', 100))
+      .rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
+  });
+
+  it('adapts legacy Patta operation counts to the explicit v2 legacy field without inventing quantity', async () => {
+    const legacyProjection = {
+      projection_version: 1,
+      entity_type: 'patta_hisob',
+      entity_id: '77777777-7777-4777-8777-777777777777',
+      entity_version: '1',
+      data: {
+        id: '77777777-7777-4777-8777-777777777777',
+        partiya_number: 'LEGACY-1',
+        patta_number: '15',
+        model_id: 'model-1',
+        model_name_snapshot: 'Atlas',
+        template_id: null,
+        konveyer_snapshot: '1',
+        razmer: 'S',
+        rang: 'Qora',
+        ish_soni: 13,
+        created_device_id: deviceId,
+        created_from_block_id: null,
+        created_at: '2026-09-26T10:00:00.000000Z',
+        client_created_at: null,
+        occurred_at: null,
+      },
+    };
+    const query = vi.fn(async () => [{
+      sequence_id: '43',
+      entity_type: 'patta_hisob',
+      entity_id: '77777777-7777-4777-8777-777777777777',
+      operation: 'UPSERT',
+      entity_version: '1',
+      projection_version: 1,
+      payload: legacyProjection,
+      changed_at: '2026-09-28T10:00:00.000000Z',
+    }]);
+    const service = new SyncService(
+      { process: vi.fn() } as unknown as SyncEventProcessor,
+      loadSyncConfiguration({}),
+    );
+
+    const page = await service.pull({ query } as unknown as DataSource, '42', 10, 2);
+    expect(page.changes[0]).toMatchObject({
+      projection_version: 2,
+      payload: {
+        projection_version: 2,
+        data: { ish_soni: null, legacy_operation_count: 13 },
+      },
+    });
+    expect(Reflect.get(page.changes[0]?.payload?.data ?? {}, 'ish_soni')).toBeNull();
   });
 
   it('keeps the supplied cursor when no changes exist and rejects invalid cursor/limit values', async () => {

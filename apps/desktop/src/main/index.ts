@@ -8,6 +8,7 @@ import { TenantAuthApiClient } from './auth/tenant-auth-api-client'
 import { TenantDatabaseManager } from './database/tenant-database-manager'
 import { DeviceIdentityService } from './device/device-identity.service'
 import { createMainProcessIpcServices, registerIpcHandlers } from './ipc/register-ipc-handlers'
+import { printPattaBatchInMain } from './local/electron-patta-printer'
 import type { IpcMainHandlerRegistrar } from './ipc/register-ipc-handlers'
 
 const SESSION_RETRY_DELAYS_MS = [5_000, 15_000, 30_000, 60_000] as const
@@ -98,6 +99,7 @@ app.whenReady().then(() => {
     ipcMainAdapter,
     createMainProcessIpcServices({
       appVersion: () => app.getVersion(),
+      printPattaBatch: printPattaBatchInMain,
       authService,
       tenantRuntime
     })

@@ -1,5 +1,9 @@
 # Patta Foundation Implementation Plan
 
+> **Superseded:** Historical foundation plan. Its quantity derivation and v1
+> Patta routes are obsolete; use the approved 2026-09-28 Patta Print and Sheet
+> plan for current quantity, numbering and sync requirements.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add tenant Patta templates, collision-free number allocation, online Patta generation/accounting, immutable operation snapshots, secure device validation, and bounded lookup/list APIs.
@@ -90,7 +94,7 @@ The existing tenant permission seed already includes `patta.chiqarish.view`, `pa
 
 - [ ] **Step 1: Define the table/constraint migration before service code.** Create `patta_templates` with generated canonical name, active-only unique name index, ACTIVE/INACTIVE and version checks, model/actor FKs, timestamps, and a no-delete trigger.
 - [ ] **Step 2: Add sequence and block DDL.** Create the singleton sequence table without a seeded row. Create blocks with inclusive BIGINT ranges and checks; protect all statuses with `EXCLUDE USING gist (int8range("range_start", "range_end", '[]') WITH &&)`. Add no-delete and terminal state/usage-transition trigger rules.
-- [ ] **Step 3: Add Patta and snapshot DDL.** Create `patta_hisob` with only `UNIQUE(partiya_number, patta_number)`, restrictive model/template/block references, creation snapshots, positive version/ish_soni checks, and no-delete trigger. Create operation snapshots with unique `(patta_hisob_id, operation_id)`, `NUMERIC(14,2) >= 0`, `sort_order >= 0`, restrictive operation FK, and update/delete rejection trigger. Make the snapshot-to-Patta FK deferred so `ish_soni` can be inserted from a DB count of persisted snapshots in the same transaction.
+- [ ] **Historical Step 3 (superseded):** Create Patta parent/snapshot schema with restrictive references, stable business keys and immutable operation snapshots. The current additive schema stores actual product quantity separately from legacy operation metadata; no snapshot-count derivation is permitted.
 - [ ] **Step 4: Extend audit constraints and indexes.** Rebuild the audit type/action checks additively for Patta event values, create lookup/list/filter indexes, and restore the append-only audit trigger without opening a mutation window outside the migration transaction.
 - [ ] **Step 5: Implement fail-safe `down`.** Before dropping DDL, reject if any Patta/template/block business rows or Patta audit events exist. Permit dropping a sequence table containing only its untouched initializer row. Drop only objects introduced by this migration, in dependency order.
 - [ ] **Step 6: Extend runtime DML grants.** Add all five tables to the explicit table grant list in `TenantDatabaseManager.grantRuntimePrivileges()`; do not grant Master tables to tenant roles.
@@ -182,10 +186,10 @@ assertAllocatedNumber(dataSource: DataSource, validatedDeviceId: string, blockId
 validateOfflineSnapshotPayload(payload: OfflineSnapshotPayload): ValidatedOfflineSnapshotPayload;
 ```
 
-- [ ] **Step 1: Write generation/service tests first.** Cover normalization, template defaults/explicit overrides/null clearing, template/model mismatch, inactive model/template, zero ACTIVE operations, all snapshot values, snapshot-derived `ish_soni`, future-effective price, and transaction/audit rollback.
+- [ ] **Historical Step 1 (superseded):** Cover template history, operation snapshot values, future-effective price and transaction/audit rollback. Current tests treat product quantity independently from operation snapshot cardinality.
 - [ ] **Step 2: Lock one coherent generation state.** Validate the device before tenant transaction. In one tenant transaction lock model `FOR SHARE`, ACTIVE operations `FOR SHARE ORDER BY sort_order,id`, then selected template row; capture transaction timestamp once and resolve every price using the existing `OperationPriceService` with the transaction manager.
-- [ ] **Step 3: Allocate online numbers transactionally.** Lock/update the same singleton sequence after model/operation locks and price resolution, calculate the contiguous range with `bigint`, then insert snapshot rows, derive each `ish_soni` with `COUNT(*)::integer`, insert Patta parents, and append audits. On any error (including an audit failure after the sequence update), transaction rollback must restore `next_number`; do not use `created_from_block_id` from client input. Store `created_from_block_id = NULL` for online generation to mean server sequence allocation, not device-block allocation.
-- [ ] **Step 4: Insert historical records.** Persist model name, conveyor, dimensions, validated device, effective operation name/price/order, and template lineage from locked database rows. Derive `ish_soni` from snapshot count. Reuse the same resolved snapshot set for all Pattas in a batch.
+- [ ] **Historical Step 3 (superseded):** Online number allocation uses tenant-global Partiya and Patta sequences in the approved batch service. It never derives the required product quantity from operation rows.
+- [ ] **Historical Step 4 (superseded):** Keep effective operation name/price/order snapshots immutable. Each Patta receives explicit product `ish_soni`; operation snapshot count is separate.
 - [ ] **Step 5: Add duplicate-safe error mapping.** Convert the required `(partiya_number, patta_number)` constraint and template/version constraints into structured API errors; do not add a unique constraint on `patta_number` alone.
 - [ ] **Step 6: Implement bounded reads.** Lookup through query DTO to support slash-containing partiya strings. List filters with `page=1`, `limit=50`, maximum 100, stable `created_at DESC,id DESC`, and a response carrying total/page/limit/items; serialize BIGINT as strings and prices as decimal strings.
 - [ ] **Step 7: Add offline-only validators without persistence.** Check block existence/device/range membership regardless of ACTIVE/EXHAUSTED/CANCELLED status; check the canonical `(partiya_number,patta_number)` for an existing record while leaving the DB unique constraint authoritative. Structurally validate unique operation IDs, nonempty names, decimal nonnegative prices, nonnegative integer sort order, and count; do not mark client data authoritative and do not add sync/event/queue behavior.

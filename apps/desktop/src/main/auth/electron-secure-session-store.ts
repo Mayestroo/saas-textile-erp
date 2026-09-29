@@ -3,9 +3,10 @@ import { open, mkdir, readFile, rename, unlink } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import type { SecureSessionPayload, SecureSessionStore } from './secure-session-store'
 import { SecureSessionStoreError } from './secure-session-store'
+import { isValidTenantTimezone } from './tenant-timezone'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-const SESSION_KEYS = [
+const SESSION_KEYS_V1 = [
   'companyId',
   'companySlug',
   'email',
@@ -13,6 +14,18 @@ const SESSION_KEYS = [
   'refreshToken',
   'tenantHost',
   'tenantOrigin',
+  'userId',
+  'version'
+] as const
+const SESSION_KEYS_V2 = [
+  'companyId',
+  'companySlug',
+  'email',
+  'fullName',
+  'refreshToken',
+  'tenantHost',
+  'tenantOrigin',
+  'timezone',
   'userId',
   'version'
 ] as const
@@ -67,10 +80,11 @@ function isNonEmptyString(value: unknown, maxLength: number): value is string {
 function parseSessionPayload(value: unknown): SecureSessionPayload {
   if (!isRecord(value)) throw new Error('Session payload is not an object')
   const keys = Object.keys(value).sort()
-  if (keys.length !== SESSION_KEYS.length || keys.some((key, index) => key !== SESSION_KEYS[index])) {
-    throw new Error('Session payload fields do not match the supported version')
-  }
-  if (value.version !== 1) throw new Error('Session payload version is not supported')
+  const oldPayload = value.version === 1 && keys.length === SESSION_KEYS_V1.length &&
+    keys.every((key, index) => key === SESSION_KEYS_V1[index])
+  const currentPayload = value.version === 2 && keys.length === SESSION_KEYS_V2.length &&
+    keys.every((key, index) => key === SESSION_KEYS_V2[index])
+  if (!oldPayload && !currentPayload) throw new Error('Session payload fields do not match the supported version')
   if (!isNonEmptyString(value.refreshToken, 8_192)) throw new Error('Refresh token is invalid')
   if (!isNonEmptyString(value.tenantOrigin, 2_048)) throw new Error('Tenant origin is invalid')
   if (!isNonEmptyString(value.tenantHost, 255)) throw new Error('Tenant host is invalid')
@@ -83,6 +97,8 @@ function parseSessionPayload(value: unknown): SecureSessionPayload {
   if (typeof value.userId !== 'string' || !UUID_PATTERN.test(value.userId)) {
     throw new Error('User identity is invalid')
   }
+  const timezone = oldPayload ? null : value.timezone
+  if (timezone !== null && !isValidTenantTimezone(timezone)) throw new Error('Tenant timezone is invalid')
 
   const origin = new URL(value.tenantOrigin)
   const loopback =
@@ -103,7 +119,7 @@ function parseSessionPayload(value: unknown): SecureSessionPayload {
   }
 
   return {
-    version: 1,
+    version: 2,
     refreshToken: value.refreshToken,
     tenantOrigin: origin.origin,
     tenantHost: value.tenantHost.toLowerCase(),
@@ -111,7 +127,8 @@ function parseSessionPayload(value: unknown): SecureSessionPayload {
     companySlug: value.companySlug,
     userId: value.userId.toLowerCase(),
     email: value.email,
-    fullName: value.fullName
+    fullName: value.fullName,
+    timezone
   }
 }
 

@@ -1,3 +1,4 @@
+import { createServer } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
 import { authErrorMessage } from './auth-error-mapper'
 import {
@@ -18,7 +19,8 @@ const LOGIN_RESPONSE = {
   },
   company: {
     id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-    slug: 'atlas'
+    slug: 'atlas',
+    timezone: 'Asia/Tashkent'
   }
 }
 
@@ -75,7 +77,7 @@ describe('tenant auth API client', () => {
     ).resolves.toMatchObject({
       accessToken: 'access-token-value',
       refreshToken: 'refresh-token-value',
-      company: { id: LOGIN_RESPONSE.company.id, slug: 'atlas' }
+      company: { id: LOGIN_RESPONSE.company.id, slug: 'atlas', timezone: 'Asia/Tashkent' }
     })
 
     const [url, request] = fetcher.mock.calls[0] ?? []
@@ -91,6 +93,65 @@ describe('tenant auth API client', () => {
       credentials: 'omit',
       redirect: 'error'
     })
+  })
+
+  it('falls back to loopback IP while preserving the tenant Host header when .localhost DNS fails', async () => {
+    const observed = {
+      remoteAddress: '',
+      host: '',
+      method: '',
+      path: '',
+      contentType: '',
+      body: ''
+    }
+    const server = createServer((request, response) => {
+      observed.remoteAddress = request.socket.remoteAddress ?? ''
+      observed.host = request.headers.host ?? ''
+      observed.method = request.method ?? ''
+      observed.path = request.url ?? ''
+      observed.contentType = request.headers['content-type'] ?? ''
+      request.setEncoding('utf8')
+      request.on('data', (chunk: string) => { observed.body += chunk })
+      request.once('end', () => {
+        response.writeHead(201, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({
+          ...LOGIN_RESPONSE,
+          company: { ...LOGIN_RESPONSE.company, slug: 'textile-dev' }
+        }))
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
+    try {
+      const address = server.address()
+      if (!address || typeof address === 'string') throw new Error('Local test server did not bind')
+      const tenantOrigin = `http://textile-dev.localhost:${address.port}`
+      const fetcher = vi.fn<typeof fetch>()
+        .mockRejectedValueOnce(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } }))
+      const client = new TenantAuthApiClient(fetcher)
+
+      await expect(client.login(tenantOrigin, {
+        email: 'admin@textile-dev.local',
+        password: 'local-dev-password'
+      })).resolves.toMatchObject({ company: { slug: 'textile-dev' } })
+
+      expect(fetcher).toHaveBeenCalledTimes(1)
+      expect(observed.remoteAddress).toBe('127.0.0.1')
+      expect(observed.host).toBe(`textile-dev.localhost:${address.port}`)
+      expect(observed.method).toBe('POST')
+      expect(observed.path).toBe('/api/v1/auth/login')
+      expect(observed.contentType).toBe('application/json')
+      expect(JSON.parse(observed.body)).toEqual({
+        email: 'admin@textile-dev.local',
+        password: 'local-dev-password'
+      })
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve())
+      })
+    }
   })
 
   it('rejects malformed auth responses and response company/hostname mismatch', async () => {
@@ -116,7 +177,8 @@ describe('tenant auth API client', () => {
       access_token: 'new-access-token',
       refresh_token: 'new-refresh-token',
       token_type: 'Bearer',
-      expires_in: 900
+      expires_in: 900,
+      company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'atlas', timezone: 'Asia/Tashkent' }
     }
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(pair))
     const client = new TenantAuthApiClient(fetcher)
@@ -124,7 +186,8 @@ describe('tenant auth API client', () => {
     await expect(client.refresh('https://atlas.example.test', 'old-refresh-token')).resolves.toEqual({
       accessToken: 'new-access-token',
       refreshToken: 'new-refresh-token',
-      expiresIn: 900
+      expiresIn: 900,
+      tenantTimezone: 'Asia/Tashkent'
     })
     expect(fetcher.mock.calls[0]?.[0]).toBe('https://atlas.example.test/api/v1/auth/refresh')
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({

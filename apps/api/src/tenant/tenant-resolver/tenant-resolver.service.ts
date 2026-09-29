@@ -6,6 +6,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { normalizeCompanyUuid } from '../../database/tenant/tenant-database-names.js';
+import { isIanaTimezone } from '../../common/time/iana-timezone.js';
 import { MASTER_TENANT_READER } from './master-tenant-lookup.service.js';
 import type { MasterTenantMetadata, MasterTenantReader } from './master-tenant-lookup.service.js';
 
@@ -22,6 +23,7 @@ export interface ResolvedTenantContext {
   companyId: string;
   slug: string;
   databaseName: string;
+  timezone: string;
 }
 
 function hostnameTenantSlug(hostname: string): string | null {
@@ -91,11 +93,19 @@ export class TenantResolverService {
         message: 'Korxona konteksti tasdiqlanmadi',
       });
     }
+    if (!isIanaTimezone(company.timezone)) {
+      throw new ServiceUnavailableException({
+        code: 'TENANT_TIMEZONE_UNAVAILABLE',
+        message: 'Korxonaning vaqt mintaqasini tekshirib bo‘lmadi',
+        details: {},
+      });
+    }
 
     return {
       companyId: company.id,
       slug: company.slug,
       databaseName: company.databaseName,
+      timezone: company.timezone,
     };
   }
 
@@ -124,11 +134,19 @@ export class TenantResolverService {
         message: 'Korxona konteksti tasdiqlanmadi',
       });
     }
+    if (!isIanaTimezone(company.timezone)) {
+      throw new ServiceUnavailableException({
+        code: 'TENANT_TIMEZONE_UNAVAILABLE',
+        message: 'Korxonaning vaqt mintaqasini tekshirib bo‘lmadi',
+        details: {},
+      });
+    }
 
     return {
       companyId: company.id,
       slug: company.slug,
       databaseName: company.databaseName,
+      timezone: company.timezone,
     };
   }
 }

@@ -42,10 +42,10 @@ describe('PattaOfflineRegistrationValidator', () => {
       .rejects.toMatchObject({ response: { code: 'PATTA_ALREADY_EXISTS' } });
   });
 
-  it('normalizes structural snapshot values and derives ish_soni', () => {
+  it('keeps product quantity independent from the operation snapshot count', () => {
     const validator = new PattaOfflineRegistrationValidator(blockService);
     expect(validator.validateSnapshotPayload({
-      ish_soni: 1,
+      ish_soni: 125,
       operations: [{
         id: snapshotId,
         operation_id: operationId,
@@ -54,7 +54,8 @@ describe('PattaOfflineRegistrationValidator', () => {
         sort_order: 0,
       }],
     })).toEqual({
-      ish_soni: 1,
+      ish_soni: 125,
+      operation_count: 1,
       operations: [{
         id: snapshotId,
         operation_id: operationId,
@@ -65,7 +66,7 @@ describe('PattaOfflineRegistrationValidator', () => {
     });
   });
 
-  it('rejects duplicate operations, invalid price/order, and an inconsistent count', () => {
+  it('rejects duplicate operations, invalid price/order, and missing product quantity', () => {
     const validator = new PattaOfflineRegistrationValidator(blockService);
     const operation = {
       id: snapshotId,
@@ -83,7 +84,9 @@ describe('PattaOfflineRegistrationValidator', () => {
     expect(() => validator.validateSnapshotPayload({
       operations: [{ ...operation, sort_order: -1 }],
     })).toThrowError();
-    expect(() => validator.validateSnapshotPayload({ ish_soni: 2, operations: [operation] }))
+    expect(validator.validateSnapshotPayload({ ish_soni: 125, operations: [operation] }))
+      .toMatchObject({ ish_soni: 125, operation_count: 1 });
+    expect(() => validator.validateSnapshotPayload({ operations: [operation] }))
       .toThrowError();
     expect(() => validator.validateSnapshotPayload(null)).toThrowError();
     expect(() => validator.validateSnapshotPayload({ operations: [null] })).toThrowError();
@@ -111,6 +114,7 @@ describe('PattaOfflineRegistrationValidator', () => {
         rang: null,
         block_id: blockId,
         reference_versions: { model: '1', template: null, operations: { [operationId]: '1' } },
+        ish_soni: 125,
         operations: [{
           id: snapshotId,
           operation_id: operationId,
@@ -138,7 +142,8 @@ describe('PattaOfflineRegistrationValidator', () => {
       occurred_at: '2026-09-26T10:00:00.000Z',
       reference_cursor: '12',
       reference_versions: { model: '1', template: null, operations: { [operationId]: '1' } },
-      ish_soni: 1,
+      ish_soni: 125,
+      operation_count: 1,
       operations: [{
         id: snapshotId,
         operation_id: operationId,
@@ -147,6 +152,13 @@ describe('PattaOfflineRegistrationValidator', () => {
         sort_order: 0,
       }],
     });
+
+    expect(() => validator.validateRegistration({
+      ...event,
+      payload: { ...event.payload, ish_soni: undefined },
+    })).toThrowError(expect.objectContaining({
+      response: expect.objectContaining({ code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' }),
+    }));
 
     const templateId = '99999999-9999-4999-8999-999999999999';
     expect(validator.validateRegistration({
@@ -182,6 +194,7 @@ describe('PattaOfflineRegistrationValidator', () => {
         partiya_number: 'A-1', patta_number: '1001', model_id: modelId,
         model_name_snapshot: 'Atlas', template_id: null, konveyer_snapshot: '1',
         razmer: null, rang: null, block_id: blockId,
+        ish_soni: 125,
         reference_versions: { model: '1', template: null, operations: { [operationId]: '1' } },
         operations: [
           { id: snapshotId, operation_id: operationId, operation_name_snapshot: 'Tikish', unit_price_snapshot: '10.00', sort_order: 0 },

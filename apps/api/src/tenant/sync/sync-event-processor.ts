@@ -1,4 +1,4 @@
-import { HttpException, Inject, Injectable, Optional } from '@nestjs/common';
+import { ConflictException, HttpException, Inject, Injectable, Optional } from '@nestjs/common';
 import type { DataSource, EntityManager, QueryRunner } from 'typeorm';
 import type {
   SyncEvent,
@@ -31,6 +31,40 @@ const CONFLICT_CODES = new Set([
   'PATTA_SNAPSHOT_MISMATCH',
   'REFERENCE_DATA_STALE',
   'DEVICE_NOT_ACTIVE',
+  'SYNC_PERMISSION_REQUIRED',
+  'TENANT_PERMISSION_REQUIRED',
+  'PATTA_ALREADY_IN_USE',
+  'PATTA_PRINT_BATCH_INACTIVE',
+  'PATTA_CORRECTION_PAYLOAD_MISMATCH',
+  'PATTA_BATCH_IDENTITY_CORRECTION_REQUIRES_REPLACEMENT',
+  'PATTA_CORRECTION_DEPENDENCY_UNSUPPORTED',
+  'CONFLICT_BADGE_ASSIGNMENT',
+  'PATTA_SHEET_ALREADY_EXISTS',
+  'PATTA_SHEET_TRASHED',
+  'PATTA_SHEET_QUANTITY_MISMATCH',
+  'PATTA_SHEET_ROW_INVALID',
+  'PATTA_SHEET_ROW_REQUIRED',
+  'PATTA_SHEET_ROW_DELETED',
+  'PATTA_SHEET_OPERATION_IMMUTABLE',
+  'PATTA_SHEET_SOURCE_SNAPSHOT_INVALID',
+  'PATTA_SHEET_CUSTOM_OPERATION_INVALID',
+  'PATTA_SHEET_OPERATION_PRICE_MISMATCH',
+  'PATTA_SHEET_SOURCE_SNAPSHOT_REQUIRED',
+  'PATTA_SHEET_PATTA_UNAVAILABLE',
+  'PATTA_SHEET_PURGE_REQUIRES_TRASH',
+  'PATTA_QUANTITY_UNKNOWN',
+  'TENANT_TIMEZONE_UNAVAILABLE',
+  'PATTA_SHEET_ALREADY_TRASHED',
+  'PATTA_SHEET_NOT_TRASHED',
+  'PATTA_SHEET_ROW_OPERATION_IMMUTABLE',
+  'PATTA_SHEET_LIFECYCLE_REQUIRES_EXPLICIT_ACTION',
+  'MODEL_OPERATION_DEPENDENCY_NOT_SYNCED',
+  'MODEL_OPERATION_CANONICAL_NAME_CONFLICT',
+  'PATTA_SHEET_BUSINESS_DATE_MISMATCH',
+  'PATTA_SHEET_IDENTITY_IMMUTABLE',
+  'PATTA_SHEET_OPERATION_ALREADY_ASSIGNED',
+  'PATTA_SHEET_OPERATION_REQUIRED',
+  'PATTA_SHEET_BADGE_REQUIRED',
 ]);
 const EVENT_FIELDS = new Set([
   'event_id',
@@ -113,6 +147,44 @@ function invalidEvent(message: string): StoredSyncOutcomeError {
     status: 'FAILED',
     error: { code: 'PAYLOAD_INVALID', message, details: {} },
   });
+}
+
+function permissionForEvent(event: SyncEvent): string | null {
+  if (event.entity_type === 'patta' && event.operation === 'CREATE') return 'patta.chiqarish.create';
+  if (event.entity_type === 'patta_print_batch' && event.operation === 'CREATE') return 'patta.chiqarish.create';
+  if (event.entity_type === 'patta_print_batch' && event.operation === 'UPDATE') return 'patta.chiqarish.correct';
+  if (event.entity_type === 'patta_print_event' && event.operation === 'CREATE') return 'patta.chiqarish.create';
+  if (event.entity_type === 'patta_sheet' && event.operation === 'CREATE') return 'patta_varaq.create';
+  if (event.entity_type === 'patta_sheet' && event.operation === 'DELETE') return 'patta_varaq.purge';
+  if (event.entity_type === 'model_operation' && event.operation === 'CREATE') return 'patta_varaq.custom_operation';
+  return null;
+}
+
+async function assertSyncEventPermission(
+  manager: EntityManager,
+  actorUserId: string,
+  event: SyncEvent,
+): Promise<void> {
+  const permissionCode = permissionForEvent(event);
+  if (permissionCode === null) return;
+  const rows: Array<{ allowed: boolean }> = await manager.query(
+    `SELECT EXISTS (
+       SELECT 1 FROM "users" user_account
+       JOIN "roles" role ON role."id" = user_account."role_id"
+       JOIN "role_permissions" assignment ON assignment."role_id" = role."id"
+       JOIN "permissions" permission ON permission."id" = assignment."permission_id"
+       WHERE user_account."id" = $1::uuid AND user_account."status" = 'ACTIVE'
+         AND permission."code" = $2
+     ) AS "allowed"`,
+    [actorUserId, permissionCode],
+  );
+  if (rows[0]?.allowed !== true) {
+    throw new ConflictException({
+      code: 'SYNC_PERMISSION_REQUIRED',
+      message: 'Bu sinxronlash amalini bajarish uchun korxona ruxsati yetarli emas',
+      details: { permission: permissionCode },
+    });
+  }
 }
 
 function validateIsoTimestamp(
@@ -365,7 +437,22 @@ export class SyncEventProcessor {
       await runner.manager.query(`SAVEPOINT "${APPLY_SAVEPOINT}"`);
       try {
         const event = parseSyncEvent(rawEvent, eventId);
+        if (context.protocolVersion === 2 && event.entity_type === 'patta') {
+          throw new ConflictException({
+            code: 'PATTA_PRINT_BATCH_REQUIRED',
+            message: 'Yangi Pattalar v2 bosma to‘plami orqali sinxronlanishi kerak',
+            details: {},
+          });
+        }
+        if (context.protocolVersion === 1 && event.entity_type.startsWith('patta')) {
+          throw new ConflictException({
+            code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED',
+            message: 'Patta ma’lumotlarini sinxronlash uchun dastur versiyasini yangilang',
+            details: {},
+          });
+        }
         await this.assertClientClock(runner, event);
+        await assertSyncEventPermission(runner.manager, context.actorUserId, event);
         const handler = this.handlerRegistry.find(
           event.entity_type,
           event.operation,

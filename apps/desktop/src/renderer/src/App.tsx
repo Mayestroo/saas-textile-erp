@@ -5,6 +5,11 @@ import type {
   DesktopSyncRunResult,
   DesktopSyncStatus
 } from '../../preload/erp-api'
+import { PattaPrintPage } from './pages/PattaPrintPage'
+import { PattaEntryPage } from './pages/PattaEntryPage'
+import { PattaHistoryPage } from './pages/PattaHistoryPage'
+import { PattaTrashPage } from './pages/PattaTrashPage'
+import { ModelAccountPage } from './pages/ModelAccountPage'
 
 const EMPTY_AUTH_STATUS: DesktopAuthStatus = {
   state: 'REFRESHING',
@@ -61,6 +66,7 @@ function App(): React.JSX.Element {
   const [isSyncing, setIsSyncing] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [appVersion, setAppVersion] = useState<string | null>(null)
+  const [factoryScreen, setFactoryScreen] = useState<'print' | 'entry' | 'history' | 'trash' | 'account'>('print')
 
   useEffect(() => {
     let isMounted = true
@@ -166,7 +172,7 @@ function App(): React.JSX.Element {
   const deviceMessage = syncErrorMessage(syncStatus?.errorCode ?? null)
 
   return (
-    <main className="erp-shell">
+    <main className={`erp-shell ${sessionIsAvailable ? 'has-session' : ''}`}>
       <header className="erp-header">
         <p className="erp-eyebrow">To‘qimachilik korxonasi</p>
         <h1>Textile ERP</h1>
@@ -231,6 +237,34 @@ function App(): React.JSX.Element {
               {isSyncing ? 'Sinxronlanmoqda…' : 'Hozir sinxronlash'}
             </button>
           </section>
+          <nav className="factory-navigation" aria-label="Ish bo‘limlari">
+            <button type="button" className={factoryScreen === 'print' ? 'factory-nav-active' : ''}
+              aria-current={factoryScreen === 'print' ? 'page' : undefined} onClick={() => setFactoryScreen('print')}>
+              Patta chiqarish
+            </button>
+            <button type="button" className={factoryScreen === 'entry' ? 'factory-nav-active' : ''}
+              aria-current={factoryScreen === 'entry' ? 'page' : undefined} onClick={() => setFactoryScreen('entry')}>
+              Patta kiritish
+            </button>
+            <button type="button" className={factoryScreen === 'history' ? 'factory-nav-active' : ''}
+              aria-current={factoryScreen === 'history' ? 'page' : undefined} onClick={() => setFactoryScreen('history')}>
+              Kiritilgan Pattalar
+            </button>
+            <button type="button" className={factoryScreen === 'trash' ? 'factory-nav-active' : ''}
+              aria-current={factoryScreen === 'trash' ? 'page' : undefined} onClick={() => setFactoryScreen('trash')}>
+              Korzinka
+            </button>
+            <button type="button" className={factoryScreen === 'account' ? 'factory-nav-active' : ''}
+              aria-current={factoryScreen === 'account' ? 'page' : undefined} onClick={() => setFactoryScreen('account')}>
+              Model hisob
+            </button>
+            <span>Offline ish stoli</span>
+          </nav>
+          {factoryScreen === 'print' ? <PattaPrintPage /> : null}
+          {factoryScreen === 'entry' ? <PattaEntryPage /> : null}
+          {factoryScreen === 'history' ? <PattaHistoryPage /> : null}
+          {factoryScreen === 'trash' ? <PattaTrashPage /> : null}
+          {factoryScreen === 'account' ? <ModelAccountPage /> : null}
         </>
       ) : authStatus.state === 'REFRESHING' || authStatus.state === 'AUTHENTICATING' ? (
         <section className="auth-card loading-card" aria-live="polite">

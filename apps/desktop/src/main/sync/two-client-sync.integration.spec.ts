@@ -22,6 +22,12 @@ const REQUIRED_ENVIRONMENT = [
   'SYNC_TEST_DEVICE_PC1',
   'SYNC_TEST_DEVICE_PC2',
   'SYNC_TEST_MODEL_ID',
+  'SYNC_TEST_WORKER_PC1',
+  'SYNC_TEST_WORKER_PC2',
+  'SYNC_TEST_BADGE_PC1',
+  'SYNC_TEST_BADGE_PC2',
+  'SYNC_TEST_USER_ID',
+  'SYNC_TEST_TENANT_TIMEZONE',
   'SYNC_TEST_LOCAL_DATA_DIR'
 ] as const
 
@@ -82,7 +88,7 @@ afterAll(() => {
 })
 
 acceptanceDescribe('two-client offline sync acceptance', () => {
-  it('retries the same offline event ID after response loss and makes the Patta available offline on PC-2', async () => {
+  it('syncs print, Entry correction and lifecycle/accounting changes across two PCs', async () => {
     const dataDirectory = requiredSetting('SYNC_TEST_LOCAL_DATA_DIR')
     const databasePc1 = openTestDatabase(join(dataDirectory, `pc1-${randomUUID()}.sqlite`))
     const databasePc2 = openTestDatabase(join(dataDirectory, `pc2-${randomUUID()}.sqlite`))
@@ -95,7 +101,6 @@ acceptanceDescribe('two-client offline sync acceptance', () => {
     const devicePc2: DeviceIdentity = { deviceId: () => requiredSetting('SYNC_TEST_DEVICE_PC2') }
     const clientPc1 = new TestNetworkClient(new FetchAuthenticatedHttpClient(session, apiBaseUrl))
     const clientPc2 = new TestNetworkClient(new FetchAuthenticatedHttpClient(session, apiBaseUrl))
-    clientPc1.loseFirstPushResponse = true
     const transportPc1 = new RestSyncTransport(clientPc1, devicePc1, apiBaseUrl)
     const transportPc2 = new RestSyncTransport(clientPc2, devicePc2, apiBaseUrl)
     let pc1ClockMilliseconds = Date.now()
@@ -105,19 +110,34 @@ acceptanceDescribe('two-client offline sync acceptance', () => {
 
     const baselinePc1 = await runtimePc1.syncEngine.runOnce()
     const baselinePc2 = await runtimePc2.syncEngine.runOnce()
-    expect(baselinePc1).toMatchObject({ status: 'COMPLETED', bootstrapped: true })
-    expect(baselinePc2).toMatchObject({ status: 'COMPLETED', bootstrapped: true })
+    expect(baselinePc1, JSON.stringify(runtimePc1.networkStatus.snapshot()))
+      .toMatchObject({ status: 'COMPLETED', bootstrapped: true })
+    expect(baselinePc2, JSON.stringify(runtimePc2.networkStatus.snapshot()))
+      .toMatchObject({ status: 'COMPLETED', bootstrapped: true })
+
+    const pattaBlockPc1 = await transportPc1.allocatePattaNumberBlock()
+    const partiyaBlockPc1 = await transportPc1.allocatePattaPartiyaNumberBlock()
+    runtimePc1.repositories.unitOfWork.transaction(() => {
+      runtimePc1.repositories.numberBlocks.storeAllocatedBlock(pattaBlockPc1)
+      runtimePc1.repositories.partiyaNumberBlocks.storeAllocatedBlock(partiyaBlockPc1)
+    })
+    expect((await runtimePc1.syncEngine.runOnce()).status).toBe('COMPLETED')
+    clientPc1.loseFirstPushResponse = true
 
     const requestsBeforeCreate = clientPc1.pushEventIds.length
-    const localPatta = runtimePc1.offlinePattaService.create({
-      partiya_number: `TWO-PC-${randomUUID()}`,
+    const localBatch = runtimePc1.pattaPrintService.createBatch({
+      ish_soni: 125,
       model_id: requiredSetting('SYNC_TEST_MODEL_ID'),
-      konveyer: 'Sinov liniyasi',
-      occurred_at: clockPc1.nowIsoUtc()
+      rang: 'Qora',
+      size_distribution: [
+        { razmer: 'XS', patta_count: 1, sort_order: 0 },
+        { razmer: 'S', patta_count: 1, sort_order: 1 }
+      ]
     })
     const queuedEvent = runtimePc1.repositories.queue.pendingBatch(10, clockPc1.nowIsoUtc())[0]
-    if (!queuedEvent) throw new Error('PC-1 local Patta was not queued')
-    expect(localPatta.patta.ownership_state).toBe('LOCAL_PENDING')
+    if (!queuedEvent) throw new Error('PC-1 offline print batch was not queued')
+    expect(databasePc1.prepare('SELECT ownership_state FROM patta_print_batches WHERE id = ?')
+      .get(localBatch.batch.id)).toEqual({ ownership_state: 'LOCAL_PENDING' })
     expect(clientPc1.pushEventIds).toHaveLength(requestsBeforeCreate)
 
     const lostResponse = await runtimePc1.syncEngine.runOnce()
@@ -136,29 +156,128 @@ acceptanceDescribe('two-client offline sync acceptance', () => {
     expect(runtimePc1.repositories.queue.countByStatus('SYNCED')).toBe(1)
     expect(
       databasePc1
-        .prepare('SELECT ownership_state FROM patta_hisob WHERE id = ?')
-        .get(localPatta.patta.id)
+        .prepare('SELECT ownership_state FROM patta_print_batches WHERE id = ?')
+        .get(localBatch.batch.id)
     ).toEqual({ ownership_state: 'SERVER_SYNCED' })
 
     const pc2Catchup = await runtimePc2.syncEngine.runOnce()
     expect(pc2Catchup.status).toBe('COMPLETED')
     clientPc2.offline = true
     expect((await runtimePc2.syncEngine.runOnce()).status).toBe('OFFLINE')
-    expect(
-      runtimePc2.repositories.pattas.findByBusinessKey(
-        localPatta.patta.partiya_number,
-        localPatta.patta.patta_number
-      )
-    ).toMatchObject({
-      id: localPatta.patta.id,
-      ownership_state: 'SERVER_SYNCED',
-      operations: localPatta.patta.operations
+    expect(runtimePc2.repositories.printBatches.getById(localBatch.batch.id)).toMatchObject({
+      id: localBatch.batch.id,
+      partiya_number: localBatch.batch.partiya_number,
+      ish_soni: 125,
+      size_distribution: localBatch.batch.size_distribution,
+      pattas: localBatch.batch.pattas.map((patta) => ({
+        id: patta.id,
+        patta_number: patta.patta_number,
+        ish_soni: patta.ish_soni,
+        status: patta.status,
+        operations: patta.operations.map((operation) => ({
+          id: operation.id,
+          operation_id: operation.operation_id,
+          unit_price_snapshot: operation.unit_price_snapshot
+        }))
+      }))
     })
     expect(
       databasePc2
-        .prepare('SELECT COUNT(*) AS count FROM patta_hisob WHERE id = ?')
-        .get(localPatta.patta.id)
-    ).toEqual({ count: 1 })
+        .prepare('SELECT COUNT(*) AS count FROM patta_hisob WHERE print_batch_id = ?')
+        .get(localBatch.batch.id)
+    ).toEqual({ count: 2 })
+
+    clientPc2.offline = false
+    const tenantTimezone = requiredSetting('SYNC_TEST_TENANT_TIMEZONE')
+    runtimePc1.repositories.state.setTenantTimezone(tenantTimezone, clockPc1.nowIsoUtc())
+    runtimePc2.repositories.state.setTenantTimezone(tenantTimezone, new Date().toISOString())
+    const patta = localBatch.batch.pattas[0]
+    const pattaOperation = patta?.operations[0]
+    if (!patta || !pattaOperation) throw new Error('Printed Patta operation snapshot is unavailable')
+    const initialEntry = runtimePc1.pattaSheetService.create({
+      partiya_number: patta.partiya_number,
+      patta_number: patta.patta_number,
+      conveyor_snapshot: '1-konveyer',
+      assignments: [{
+        model_operation_id: pattaOperation.operation_id,
+        badge_number: requiredSetting('SYNC_TEST_BADGE_PC1'),
+        nuqson: false
+      }]
+    })
+    expect(initialEntry).toMatchObject({
+      entered_at: expect.any(String),
+      rows: [{ worker_id: requiredSetting('SYNC_TEST_WORKER_PC1'), quantity_snapshot: 125 }]
+    })
+    const entryCreatePush = await runtimePc1.syncEngine.runOnce()
+    const entrySyncDiagnostic = databasePc1.prepare(`
+      SELECT status, last_error_code, last_error_message FROM sync_queue
+      WHERE entity_type = 'patta_sheet' AND entity_id = ?
+    `).get(initialEntry.id)
+    expect(entryCreatePush, JSON.stringify({ network: runtimePc1.networkStatus.snapshot(), queue: entrySyncDiagnostic }))
+      .toMatchObject({ status: 'COMPLETED', pushed: 1 })
+    await expect(runtimePc2.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED' })
+    const accountAfterCreate = runtimePc2.repositories.modelAccount.getModelAccountSheet(requiredSetting('SYNC_TEST_MODEL_ID'))
+    expect(accountAfterCreate.rows).toEqual([{
+      worker_id: requiredSetting('SYNC_TEST_WORKER_PC1'),
+      worker_name: expect.any(String),
+      model_operation_id: pattaOperation.operation_id,
+      quantity: '125'
+    }])
+
+    const syncedEntryPc1 = runtimePc1.repositories.sheets.findByPatta(patta.id)
+    if (!syncedEntryPc1) throw new Error('PC-1 did not retain the synced Entry')
+    runtimePc1.pattaSheetService.update({
+      sheet_id: syncedEntryPc1.id,
+      expected_version: syncedEntryPc1.version,
+      conveyor_snapshot: '2-konveyer',
+      assignments: [{
+        model_operation_id: pattaOperation.operation_id,
+        badge_number: requiredSetting('SYNC_TEST_BADGE_PC2'),
+        nuqson: true
+      }]
+    }, requiredSetting('SYNC_TEST_USER_ID'))
+    await expect(runtimePc1.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED', pushed: 1 })
+    await expect(runtimePc2.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED' })
+    expect(runtimePc2.repositories.modelAccount.getModelAccountSheet(requiredSetting('SYNC_TEST_MODEL_ID')).rows)
+      .toEqual([{
+        worker_id: requiredSetting('SYNC_TEST_WORKER_PC2'),
+        worker_name: expect.any(String),
+        model_operation_id: pattaOperation.operation_id,
+        quantity: '125'
+      }])
+
+    const editEntryPc1 = runtimePc1.repositories.sheets.findByPatta(patta.id)
+    if (!editEntryPc1) throw new Error('PC-1 Entry disappeared after worker correction')
+    runtimePc1.pattaSheetService.trash(editEntryPc1.id, editEntryPc1.version, requiredSetting('SYNC_TEST_USER_ID'))
+    await expect(runtimePc1.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED', pushed: 1 })
+    await expect(runtimePc2.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED' })
+    expect(runtimePc2.repositories.modelAccount.getModelAccountSheet(requiredSetting('SYNC_TEST_MODEL_ID')).rows)
+      .toEqual([])
+    expect(runtimePc2.repositories.sheets.listForModel(requiredSetting('SYNC_TEST_MODEL_ID'), true))
+      .toEqual([expect.objectContaining({ id: editEntryPc1.id, deleted_at: expect.any(String) })])
+
+    const trashedEntryPc1 = runtimePc1.repositories.sheets.findByPatta(patta.id)
+    if (!trashedEntryPc1) throw new Error('Trashed Entry disappeared before restore')
+    runtimePc1.pattaSheetService.restore(trashedEntryPc1.id, trashedEntryPc1.version, requiredSetting('SYNC_TEST_USER_ID'))
+    await expect(runtimePc1.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED', pushed: 1 })
+    await expect(runtimePc2.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED' })
+    expect(runtimePc2.repositories.modelAccount.getModelAccountSheet(requiredSetting('SYNC_TEST_MODEL_ID')).rows)
+      .toMatchObject([{ worker_id: requiredSetting('SYNC_TEST_WORKER_PC2'), quantity: '125' }])
+
+    const restoredEntryPc1 = runtimePc1.repositories.sheets.findByPatta(patta.id)
+    if (!restoredEntryPc1) throw new Error('Restored Entry is unavailable for purge')
+    runtimePc1.pattaSheetService.trash(restoredEntryPc1.id, restoredEntryPc1.version, requiredSetting('SYNC_TEST_USER_ID'))
+    await expect(runtimePc1.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED', pushed: 1 })
+    await expect(runtimePc2.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED' })
+    const finalTrashedEntryPc1 = runtimePc1.repositories.sheets.findByPatta(patta.id)
+    if (!finalTrashedEntryPc1) throw new Error('Trashed Entry is unavailable for purge')
+    runtimePc1.pattaSheetService.purge(finalTrashedEntryPc1.id, finalTrashedEntryPc1.version)
+    await expect(runtimePc1.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED', pushed: 1 })
+    await expect(runtimePc2.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED' })
+    expect(runtimePc2.repositories.sheets.findByPatta(patta.id)).toBeNull()
+    expect(runtimePc2.repositories.pattas.getById(patta.id)).not.toBeNull()
+    expect(runtimePc2.repositories.modelAccount.getModelAccountSheet(requiredSetting('SYNC_TEST_MODEL_ID')).rows)
+      .toEqual([])
 
     runtimePc1.syncEngine.dispose()
     runtimePc2.syncEngine.dispose()

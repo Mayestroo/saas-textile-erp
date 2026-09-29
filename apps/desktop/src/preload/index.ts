@@ -1,8 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { createErpApi } from './erp-api'
+import { createErpApi, createNarrowIpcInvoker } from './erp-api'
 
-const erp = createErpApi({
-  invoke: (channel, payload) => ipcRenderer.invoke(channel, payload)
-})
+const erp = createErpApi(createNarrowIpcInvoker(ipcRenderer))
 
 contextBridge.exposeInMainWorld('erp', erp)

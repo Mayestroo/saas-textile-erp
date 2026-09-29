@@ -1,5 +1,5 @@
 export interface SecureSessionPayload {
-  version: 1
+  version: 2
   refreshToken: string
   tenantOrigin: string
   tenantHost: string
@@ -8,6 +8,7 @@ export interface SecureSessionPayload {
   userId: string
   email: string
   fullName: string
+  timezone: string | null
 }
 
 export interface SecureSessionStore {

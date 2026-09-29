@@ -48,15 +48,16 @@ function createHarness() {
     record: vi.fn(async () => ({ sequenceId: '1' })),
   };
   const priceService = {
-    createInitialPrice: vi.fn(async () => ({
+    createInitialPrice: vi.fn(async (_manager, operation_id, price, created_by, effectiveAt) => ({
       id: '44444444-4444-4444-8444-444444444444',
-      operation_id: operationId,
-      price: '1000.00',
-      valid_from: '2026-09-26T00:00:00.000Z',
+      operation_id,
+      price,
+      valid_from: effectiveAt,
       valid_to: null,
-      created_by: actorUserId,
+      created_by,
       created_at: '2026-09-26T00:00:00.000Z',
     })),
+    resolvePrice: vi.fn(async () => '1000.00'),
     resolveCurrentPrice: vi.fn(async () => '1000.00'),
     resolveCurrentPrices: vi.fn(async () => new Map([[operationId, '1000.00']])),
   };
@@ -136,6 +137,57 @@ describe('OperationsService', () => {
         }),
       }),
     );
+  });
+
+  it('creates a new sheet operation with stable ID and a price interval effective at entered_at', async () => {
+    const customOperation = row({ id: operationId, name: 'Kesish', sort_order: 2 });
+    harness.manager.query
+      .mockResolvedValueOnce([{ id: modelId, status: 'ACTIVE' }])
+      .mockResolvedValueOnce([{ transaction_time: '2026-09-28T10:00:00.000Z' }])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([customOperation]);
+
+    await expect(harness.service.createForPattaSheet(
+      harness.dataSource,
+      modelId,
+      actorUserId,
+      '55555555-5555-4555-8555-555555555555',
+      {
+        id: operationId,
+        name: ' Kesish ',
+        initial_price: '4.50',
+        sort_order: 2,
+        effective_from: '2026-09-27T20:00:00.000Z',
+      },
+    )).resolves.toMatchObject({ id: operationId, name: 'Kesish', price: '4.50' });
+    expect(harness.priceService.createInitialPrice).toHaveBeenCalledWith(
+      expect.anything(), operationId, '4.50', actorUserId, '2026-09-27T20:00:00.000Z',
+    );
+    expect(harness.auditService.append).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      deviceId: '55555555-5555-4555-8555-555555555555', action: 'operation.create', entityId: operationId,
+    }));
+  });
+
+  it('reuses an active same-model canonical operation without adding a price history row', async () => {
+    harness.manager.query
+      .mockResolvedValueOnce([{ id: modelId, status: 'ACTIVE' }])
+      .mockResolvedValueOnce([{ transaction_time: '2026-09-28T10:00:00.000Z' }])
+      .mockResolvedValueOnce([row({ name: 'Kesish', sort_order: 2 })]);
+
+    await expect(harness.service.createForPattaSheet(
+      harness.dataSource,
+      modelId,
+      actorUserId,
+      '55555555-5555-4555-8555-555555555555',
+      {
+        id: '99999999-9999-4999-8999-999999999999',
+        name: ' Kesish ', initial_price: '4.50', sort_order: 2,
+        effective_from: '2026-09-27T20:00:00.000Z',
+      },
+    )).resolves.toMatchObject({ id: operationId, name: 'Kesish', price: '1000.00' });
+    expect(harness.priceService.createInitialPrice).not.toHaveBeenCalled();
+    expect(harness.auditService.append).not.toHaveBeenCalled();
   });
 
   it('rejects operation creation under an inactive model', async () => {

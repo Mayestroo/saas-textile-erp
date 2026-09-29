@@ -17,6 +17,7 @@ const activeCompany: MasterTenantMetadata = {
   status: 'ACTIVE',
   databaseName: 'tenant_de305d5475b4431badb2eb6b9e546014',
   connectionCiphertext: 'v1:encrypted',
+  timezone: 'Asia/Tashkent',
 };
 
 describe('TenantResolverService', () => {
@@ -28,6 +29,7 @@ describe('TenantResolverService', () => {
         companyId,
         slug: 'atlas-textile',
         databaseName: activeCompany.databaseName,
+        timezone: activeCompany.timezone,
       });
   });
 
@@ -43,6 +45,7 @@ describe('TenantResolverService', () => {
       companyId,
       slug: 'atlas-textile',
       databaseName: activeCompany.databaseName,
+      timezone: activeCompany.timezone,
     });
   });
 
@@ -100,5 +103,14 @@ describe('TenantResolverService', () => {
     await expect(new TenantResolverService(failingReader)
       .resolveForLogin({ hostname: 'atlas-textile.erp.example.test' }))
       .rejects.toBeInstanceOf(ServiceUnavailableException);
+  });
+
+  it('fails closed when trusted Master tenant timezone is invalid', async () => {
+    const resolver = new TenantResolverService(createReader({ ...activeCompany, timezone: 'Mars/Olympus' }));
+    await expect(resolver.resolveForLogin({ hostname: 'atlas-textile.erp.example.test' }))
+      .rejects.toMatchObject({ response: { code: 'TENANT_TIMEZONE_UNAVAILABLE' } });
+    await expect(resolver.resolve({
+      hostname: 'atlas-textile.erp.example.test', authenticatedCompanyId: companyId,
+    })).rejects.toMatchObject({ response: { code: 'TENANT_TIMEZONE_UNAVAILABLE' } });
   });
 });

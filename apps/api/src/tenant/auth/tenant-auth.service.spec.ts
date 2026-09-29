@@ -24,6 +24,7 @@ const company: ResolvedTenantContext = {
   companyId: '44444444-4444-4444-8444-444444444444',
   slug: 'atlas-textile',
   databaseName: 'tenant_44444444444444448444444444444444',
+  timezone: 'Asia/Tashkent',
 };
 
 const user = {
@@ -124,7 +125,7 @@ describe('TenantAuthService', () => {
       identifier: 'owner@example.test',
       ipAddress: '203.0.113.8',
     });
-    expect(result.company).toEqual({ id: company.companyId, slug: company.slug });
+    expect(result.company).toEqual({ id: company.companyId, slug: company.slug, timezone: company.timezone });
 
     const claims = await new JwtTokenService().verify(result.access_token, {
       secret: authConfiguration.tenant.accessSecret,
@@ -191,6 +192,11 @@ describe('TenantAuthService', () => {
     const setup = createService({ storedSession: session });
 
     const result = await setup.service.refresh('atlas-textile.erp.example.test', oldToken);
+    expect(result.company).toEqual({
+      id: company.companyId,
+      slug: company.slug,
+      timezone: company.timezone,
+    });
     expect(result.refresh_token).not.toBe(oldToken);
     expect(session.refresh_token_hash).toBe(createHash('sha256').update(result.refresh_token).digest('hex'));
 

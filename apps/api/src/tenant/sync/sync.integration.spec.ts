@@ -19,13 +19,17 @@ import { loadAuthConfiguration } from '../../common/auth/auth-configuration.js';
 import { PasswordPolicy } from '../../common/auth/password-policy.js';
 import type {
   OfflinePattaCreateEvent,
+  PattaPrintBatchSyncEvent,
+  SyncEvent,
   SyncProjection,
   SyncPushResult,
 } from '@textile/sync-protocol';
 import { AuditService } from '../audit/audit.service.js';
 import { loadPattaConfiguration } from '../patta/patta.config.js';
 import { PattaNumberBlocksService } from '../patta/patta-number-blocks.service.js';
+import { PattaPartiyaNumberBlocksService } from '../patta/patta-partiya-number-blocks.service.js';
 import { PattaOfflineRegistrationValidator } from '../patta/patta-offline-registration.validator.js';
+import { PattaPrintBatchesService } from '../patta/patta-print-batches.service.js';
 import { PattaService } from '../patta/patta.service.js';
 import { OperationPriceService } from '../operations/operation-price.service.js';
 import { createTestMasterDataSourceOptions } from '../../database/master/master-database.config.js';
@@ -35,6 +39,7 @@ import {
   createTestTenantProvisionerCredentials,
 } from '../../database/tenant/tenant-database.config.js';
 import { TenantDatabaseManager } from '../../database/tenant/tenant-database-manager.js';
+import { PattaSequenceInitializer } from '../../database/tenant/patta-sequence.initializer.js';
 import { TenantTestDatabaseCleanup } from '../../database/tenant/tenant-test-database-cleanup.js';
 import { SyncChangeRecorder } from './sync-change-recorder.js';
 import { createSyncProjection } from './sync-projections.js';
@@ -47,6 +52,8 @@ import type {
 } from './sync-entity-handler.js';
 import { SyncHandlerRegistry } from './sync-handler.registry.js';
 import { PattaSyncHandler } from './patta-sync-handler.js';
+import { PattaPrintBatchSyncHandler } from './patta-print-batch-sync-handler.js';
+import { PattaPrintEventSyncHandler } from './patta-print-event-sync-handler.js';
 import { SyncService } from './sync.service.js';
 import {
   seedTenantPermissions,
@@ -232,6 +239,7 @@ integrationDescribe(
         occurred_at: new Date().toISOString(),
         reference_cursor: cursor,
         payload: {
+          ish_soni: 125,
           partiya_number: overrides.partiyaNumber ?? `SYNC-${randomUUID()}`,
           patta_number: overrides.pattaNumber ?? rangeStart.toString(),
           model_id: modelId,
@@ -274,6 +282,9 @@ integrationDescribe(
     ): {
       processor: SyncEventProcessor;
       handler: PattaSyncHandler;
+      batchHandler: PattaPrintBatchSyncHandler;
+      printEventHandler: PattaPrintEventSyncHandler;
+      batchService: PattaPrintBatchesService;
       syncService: SyncService;
     } {
       const auditService = new AuditService();
@@ -288,51 +299,79 @@ integrationDescribe(
         pattaConfiguration,
         recorder,
       );
+      const partiyaBlockService = new PattaPartiyaNumberBlocksService(
+        auditService,
+        pattaConfiguration,
+        recorder,
+      );
       const validator = new PattaOfflineRegistrationValidator(blockService);
       const pattaService = new PattaService(
         auditService,
         operationPriceService,
-        pattaConfiguration,
         recorder,
         validator,
       );
       const pattaHandler = new PattaSyncHandler(pattaService);
+      const batchService = new PattaPrintBatchesService(
+        auditService,
+        operationPriceService,
+        pattaConfiguration,
+        recorder,
+        blockService,
+        partiyaBlockService,
+        validator,
+      );
+      const batchHandler = new PattaPrintBatchSyncHandler(batchService);
+      const printEventHandler = new PattaPrintEventSyncHandler(batchService);
       const registry = new SyncHandlerRegistry([
         handlerFactory ? handlerFactory(pattaHandler) : pattaHandler,
+        batchHandler,
+        printEventHandler,
       ]);
       const configuration = loadSyncConfiguration({});
       const processor = new SyncEventProcessor(registry, configuration);
       return {
         processor,
         handler: pattaHandler,
+        batchHandler,
+        printEventHandler,
+        batchService,
         syncService: new SyncService(processor, configuration),
       };
     }
 
-    async function createGeneratedTenantFixture(): Promise<TenantFixture> {
+    async function createGeneratedTenantFixture(
+      databaseManager: TenantDatabaseManager = tenantDatabaseManager,
+    ): Promise<TenantFixture> {
       const companyId = randomUUID();
       const databaseName = cleanup.trackCompany(companyId);
-      const secret = tenantDatabaseManager.createSecret(companyId);
-      await tenantDatabaseManager.ensureDatabase(
+      const secret = databaseManager.createSecret(companyId);
+      await databaseManager.ensureDatabase(
         companyId,
         databaseName,
         secret,
       );
       const migrationDataSource = new DataSource(
         createTenantMigrationDataSourceOptions(
-          tenantDatabaseManager.migrationCredentials(databaseName),
+          databaseManager.migrationCredentials(databaseName),
         ),
       );
       await migrationDataSource.initialize();
       await migrationDataSource.runMigrations({ transaction: 'all' });
-      await tenantDatabaseManager.grantRuntimePrivileges(
+      const pattaConfiguration = loadPattaConfiguration({});
+      await new PattaSequenceInitializer().initialize(
+        migrationDataSource,
+        pattaConfiguration.numberStart,
+        pattaConfiguration.partiyaNumberStart,
+      );
+      await databaseManager.grantRuntimePrivileges(
         companyId,
         databaseName,
         secret,
       );
       const runtimeDataSource = new DataSource(
-        createTenantRuntimeDataSourceOptions(
-          tenantDatabaseManager.runtimeCredentials(
+          createTenantRuntimeDataSourceOptions(
+          databaseManager.runtimeCredentials(
             companyId,
             databaseName,
             secret,
@@ -419,6 +458,12 @@ integrationDescribe(
       );
       await migrationDataSource.initialize();
       await migrationDataSource.runMigrations({ transaction: 'all' });
+      const pattaConfiguration = loadPattaConfiguration({});
+      await new PattaSequenceInitializer().initialize(
+        migrationDataSource,
+        pattaConfiguration.numberStart,
+        pattaConfiguration.partiyaNumberStart,
+      );
 
       await tenantDatabaseManager.grantRuntimePrivileges(
         companyId,
@@ -510,6 +555,7 @@ integrationDescribe(
           'ix_server_change_log_entity',
           'uq_bootstrap_sessions_active_device',
           'ix_bootstrap_sessions_expiry',
+          'ix_bootstrap_sessions_protocol_version',
         ]),
       );
 
@@ -532,6 +578,7 @@ integrationDescribe(
           'ck_server_change_log_operation',
           'pk_bootstrap_sessions',
           'ck_bootstrap_sessions_watermark',
+          'ck_bootstrap_sessions_protocol_version',
           'pk_bootstrap_items',
           'ck_bootstrap_items_order_key',
         ]),
@@ -550,6 +597,12 @@ integrationDescribe(
         },
         { column_name: 'occurred_at', data_type: 'timestamp with time zone' },
       ]);
+      const protocolColumn: ColumnRow[] = await tenant.migrationDataSource.query(
+        `SELECT "column_name", "data_type" FROM information_schema.columns
+         WHERE "table_schema" = 'public' AND "table_name" = 'bootstrap_sessions'
+           AND "column_name" = 'protocol_version'`,
+      );
+      expect(protocolColumn).toEqual([{ column_name: 'protocol_version', data_type: 'smallint' }]);
 
       const privileges: RuntimePrivilegeRow[] =
         await tenant.runtimeDataSource.query(
@@ -594,6 +647,11 @@ integrationDescribe(
       await tenant.migrationDataSource.undoLastMigration({
         transaction: 'all',
       });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       const removedTables: TableNameRow[] =
         await tenant.migrationDataSource.query(
           `SELECT "table_name" FROM information_schema.tables
@@ -676,6 +734,12 @@ integrationDescribe(
       );
 
       await tenant.migrationDataSource.runMigrations({ transaction: 'all' });
+      const syncTestPattaConfig = loadPattaConfiguration({});
+      await new PattaSequenceInitializer().initialize(
+        tenant.migrationDataSource,
+        syncTestPattaConfig.numberStart,
+        syncTestPattaConfig.partiyaNumberStart,
+      );
       const reappliedTables: TableNameRow[] =
         await tenant.migrationDataSource.query(
           `SELECT "table_name" FROM information_schema.tables
@@ -713,6 +777,7 @@ integrationDescribe(
       const baseline = await bootstrapService.create(
         tenant.runtimeDataSource,
         baselineDeviceId,
+        2,
       );
       const baselinePage = await bootstrapService.page(
         tenant.runtimeDataSource,
@@ -720,6 +785,7 @@ integrationDescribe(
         baseline.id,
         null,
         250,
+        2,
       );
       expect(
         new Set(
@@ -738,6 +804,14 @@ integrationDescribe(
           'patta_number_blocks',
         ]),
       );
+      const baselineLegacyPatta = baselinePage.items.find(
+        ({ projection }) => projection.entity_type === 'patta_hisob',
+      )?.projection;
+      expect(baselineLegacyPatta).toMatchObject({
+        projection_version: 2,
+        entity_type: 'patta_hisob',
+        data: { ish_soni: null, legacy_operation_count: 1 },
+      });
       expect(
         baselinePage.items.find(
           ({ projection }) => projection.entity_type === 'models',
@@ -936,6 +1010,136 @@ integrationDescribe(
       expect(stagingRows[0]?.count).toBe('0');
     });
 
+    it('pushes an offline v2 print-batch aggregate idempotently and keeps v1 Patta writes blocked', async () => {
+      const fixture = await createOfflineEventFixture();
+      const actorId = fixture.actorUserId;
+      const config = loadPattaConfiguration({ PATTA_NUMBER_BLOCK_SIZE: '2' });
+      const audit = new AuditService();
+      const recorder = new SyncChangeRecorder();
+      const pattaBlocks = new PattaNumberBlocksService(audit, config, recorder);
+      const partiyaBlocks = new PattaPartiyaNumberBlocksService(audit, config, recorder);
+      const partiyaBlock = await partiyaBlocks.allocate(tenant.runtimeDataSource, actorId, fixture.deviceId);
+      const pattaBlock = await pattaBlocks.allocate(tenant.runtimeDataSource, actorId, fixture.deviceId);
+      expect([partiyaBlock.range_start, pattaBlock.range_start]).toEqual(['1', '1']);
+      expect([partiyaBlock.range_end, pattaBlock.range_end]).toEqual(['2', '2']);
+
+      const baseSnapshot = fixture.event.payload.operations[0];
+      if (!baseSnapshot) throw new Error('Batch sync reference fixture has no operation snapshot');
+      const batchId = randomUUID();
+      const sizeRows = [
+        { id: randomUUID(), razmer: 'XS', patta_count: 1, sort_order: 0 },
+        { id: randomUUID(), razmer: 'S', patta_count: 1, sort_order: 1 },
+      ];
+      const batchEvent: PattaPrintBatchSyncEvent = {
+        event_id: randomUUID(),
+        entity_type: 'patta_print_batch',
+        entity_id: batchId,
+        operation: 'CREATE',
+        base_version: '0',
+        client_created_at: new Date().toISOString(),
+        occurred_at: fixture.event.occurred_at,
+        reference_cursor: '0',
+        payload: {
+          model_id: fixture.event.payload.model_id,
+          model_name_snapshot: fixture.event.payload.model_name_snapshot,
+          partiya_block_id: partiyaBlock.id,
+          partiya_number: partiyaBlock.range_start,
+          ish_soni: 125,
+          rang: 'Qora',
+          size_distribution: sizeRows,
+          pattas: [
+            { id: randomUUID(), patta_number: pattaBlock.range_start, block_id: pattaBlock.id,
+              razmer: 'XS', operation_snapshots: [{ ...baseSnapshot, id: randomUUID() }] },
+            { id: randomUUID(), patta_number: (BigInt(pattaBlock.range_start) + 1n).toString(), block_id: pattaBlock.id,
+              razmer: 'S', operation_snapshots: [{ ...baseSnapshot, id: randomUUID() }] },
+          ],
+          depends_on_event_ids: [],
+        },
+      };
+      const cursorRows: Array<{ cursor: string }> = await tenant.runtimeDataSource.query(
+        `SELECT COALESCE(MAX("sequence_id"), 0)::text AS "cursor" FROM "server_change_log"`,
+      );
+      const cursor = cursorRows[0]?.cursor;
+      if (cursor === undefined) throw new Error('V2 print batch sync cursor missing');
+      const queuedEvent: PattaPrintBatchSyncEvent = { ...batchEvent, reference_cursor: cursor };
+      const { syncService, processor } = createProcessor();
+
+      const pushContext = {
+        dataSource: tenant.runtimeDataSource,
+        actorUserId: fixture.actorUserId,
+        companyId: tenant.companyId,
+      };
+      const first = await syncService.push(pushContext, fixture.deviceId, [queuedEvent], 2);
+      const retry = await syncService.push(pushContext, fixture.deviceId, [queuedEvent], 2);
+      expect(first.results[0]).toMatchObject({
+        status: 'SYNCED',
+        projection: {
+          projection_version: 2,
+          entity_type: 'patta_print_batches',
+          data: {
+            partiya_number: partiyaBlock.range_start,
+            ish_soni: 125,
+            size_distribution: [{ razmer: 'XS' }, { razmer: 'S' }],
+            pattas: [
+              { patta_number: pattaBlock.range_start, ish_soni: 125, legacy_operation_count: null },
+              { patta_number: (BigInt(pattaBlock.range_start) + 1n).toString(), ish_soni: 125, legacy_operation_count: null },
+            ],
+          },
+        },
+      });
+      expect(retry).toEqual(first);
+      const printEventId = randomUUID();
+      const printEvent: SyncEvent<'patta_print_event'> = {
+        event_id: printEventId,
+        entity_type: 'patta_print_event',
+        entity_id: printEventId,
+        operation: 'CREATE',
+        base_version: '0',
+        client_created_at: new Date().toISOString(),
+        occurred_at: new Date().toISOString(),
+        reference_cursor: cursor,
+        payload: {
+          batch_id: batchId,
+          revision: 1,
+          kind: 'INITIAL',
+          outcome: 'SUCCEEDED',
+          device_id: fixture.deviceId,
+        },
+      };
+      const v2Context: SyncApplyContext = { ...fixture.context, protocolVersion: 2 };
+      const printOutcome = await processor.process(tenant.runtimeDataSource, v2Context, printEvent);
+      const printRetry = await processor.process(tenant.runtimeDataSource, v2Context, printEvent);
+      expect(printOutcome).toMatchObject({
+        status: 'SYNCED',
+        projection: { projection_version: 2, entity_type: 'patta_print_events', entity_id: printEventId },
+      });
+      expect(printRetry).toEqual(printOutcome);
+      const counts: Array<{ batches: string; pattas: string; snapshots: string; events: string }> =
+        await tenant.runtimeDataSource.query(
+          `SELECT
+             (SELECT count(*)::text FROM "patta_print_batches" WHERE "id" = $1::uuid) AS "batches",
+             (SELECT count(*)::text FROM "patta_hisob" WHERE "print_batch_id" = $1::uuid) AS "pattas",
+             (SELECT count(*)::text FROM "patta_operation_snapshots" snapshot
+               JOIN "patta_hisob" patta ON patta."id" = snapshot."patta_hisob_id"
+               WHERE patta."print_batch_id" = $1::uuid) AS "snapshots",
+             (SELECT count(*)::text FROM "processed_sync_events" WHERE "event_id" IN ($2::uuid, $3::uuid)) AS "events"`,
+          [batchId, queuedEvent.event_id, printEventId],
+        );
+      expect(counts).toEqual([{ batches: '1', pattas: '2', snapshots: '2', events: '2' }]);
+      const printRows: Array<{ printed_at: string | null; event_count: string }> = await tenant.runtimeDataSource.query(
+        `SELECT to_char(batch."printed_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "printed_at",
+                (SELECT count(*)::text FROM "patta_print_events" WHERE "batch_id" = batch."id") AS "event_count"
+         FROM "patta_print_batches" batch WHERE batch."id" = $1::uuid`,
+        [batchId],
+      );
+      expect(printRows[0]?.printed_at).not.toBeNull();
+      expect(printRows[0]?.event_count).toBe('1');
+      await expect(syncService.pull(tenant.runtimeDataSource, cursor, 100, 1))
+        .rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
+      await expect(syncService.push(fixture.context, fixture.deviceId, [fixture.event], 1))
+        .rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
+    }, 60_000);
+
     it('returns one persisted result and change sequence for ten serial duplicate deliveries', async () => {
       const fixture = await createOfflineEventFixture();
       const { processor } = createProcessor();
@@ -1124,7 +1328,7 @@ integrationDescribe(
         ).toString(),
       });
 
-      const pushed = await syncService.push(
+      await expect(syncService.push(
         {
           dataSource: tenant.runtimeDataSource,
           actorUserId: fixture.actorUserId,
@@ -1132,12 +1336,16 @@ integrationDescribe(
         },
         fixture.deviceId,
         [fixture.event, conflictEvent, lastEvent],
-      );
-      expect(pushed.results.map(({ status }) => status)).toEqual([
-        'SYNCED',
-        'CONFLICT',
-        'SYNCED',
-      ]);
+        1,
+      )).rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
+      for (let index = 0; index < 3; index += 1) {
+        await tenant.runtimeDataSource.query(
+          `INSERT INTO "server_change_log"
+             ("entity_type", "entity_id", "operation", "entity_version", "projection_version", "payload_json")
+           VALUES ('models', $1, 'DELETE', NULL, 1, NULL)`,
+          [randomUUID()],
+        );
+      }
 
       const expectedRows: Array<{ sequence_id: string }> =
         await tenant.runtimeDataSource.query(
@@ -1166,7 +1374,7 @@ integrationDescribe(
       expect(new Set(pulledSequences).size).toBe(pulledSequences.length);
     });
 
-    it('materializes all nine versioned reference projections and serves stable keyset pages', async () => {
+    it('materializes v2 Patta/Partiya/batch projections with separate legacy quantity metadata', async () => {
       const modelRows: Array<{ id: string }> =
         await tenant.runtimeDataSource.query(
           `INSERT INTO "models" ("name") VALUES ('Bootstrap Atlas') RETURNING "id"::text AS "id"`,
@@ -1211,18 +1419,25 @@ integrationDescribe(
       if (!templateId)
         throw new Error('Bootstrap template fixture was not created');
       const blockId = randomUUID();
+      const deviceId = randomUUID();
       await tenant.runtimeDataSource.query(
         `INSERT INTO "patta_number_blocks" ("id", "device_id", "range_start", "range_end")
          VALUES ($1::uuid, $2::uuid, 1000, 1999)`,
-        [blockId, randomUUID()],
+        [blockId, deviceId],
+      );
+      const partiyaBlockId = randomUUID();
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_partiya_number_blocks" ("id", "device_id", "range_start", "range_end")
+         VALUES ($1::uuid, $2::uuid, 5000, 5099)`,
+        [partiyaBlockId, deviceId],
       );
       const pattaId = randomUUID();
       await tenant.runtimeDataSource.query(
         `INSERT INTO "patta_hisob"
            ("id", "partiya_number", "patta_number", "model_id", "model_name_snapshot",
-            "template_id", "konveyer_snapshot", "ish_soni", "created_device_id")
+             "template_id", "konveyer_snapshot", "ish_soni", "legacy_operation_count", "created_device_id")
          VALUES ($1::uuid, 'BOOTSTRAP-1', 1000, $2::uuid, 'Bootstrap Atlas',
-                 $3::uuid, '1-konveyer', 1, $4::uuid)`,
+                 $3::uuid, '1-konveyer', NULL, 1, $4::uuid)`,
         [pattaId, modelId, templateId, randomUUID()],
       );
       const snapshotId = randomUUID();
@@ -1248,6 +1463,47 @@ integrationDescribe(
         );
       const userId = userRows[0]?.id;
       if (!userId) throw new Error('Bootstrap user fixture was not created');
+
+      const bootstrapAudit = new AuditService();
+      const bootstrapRecorder = new SyncChangeRecorder();
+      const bootstrapPattaConfiguration = loadPattaConfiguration({});
+      const bootstrapPriceService = new OperationPriceService(bootstrapAudit, bootstrapRecorder);
+      const bootstrapBatchService = new PattaPrintBatchesService(
+        bootstrapAudit,
+        bootstrapPriceService,
+        bootstrapPattaConfiguration,
+        bootstrapRecorder,
+        new PattaNumberBlocksService(bootstrapAudit, bootstrapPattaConfiguration, bootstrapRecorder),
+        new PattaPartiyaNumberBlocksService(bootstrapAudit, bootstrapPattaConfiguration, bootstrapRecorder),
+        new PattaOfflineRegistrationValidator(
+          new PattaNumberBlocksService(bootstrapAudit, bootstrapPattaConfiguration, bootstrapRecorder),
+        ),
+      );
+      const bootstrapBatch = await bootstrapBatchService.create(
+        tenant.runtimeDataSource,
+        userId,
+        deviceId,
+        {
+          model_id: modelId,
+          ish_soni: 125,
+          rang: 'Qora',
+          device_id: deviceId,
+          size_distribution: [{ razmer: 'M', patta_count: 1, sort_order: 0 }],
+        },
+      );
+      await bootstrapBatchService.recordPrintEvent(
+        tenant.runtimeDataSource,
+        userId,
+        deviceId,
+        bootstrapBatch.id,
+        {
+          event_id: randomUUID(),
+          revision: 1,
+          kind: 'INITIAL',
+          outcome: 'SUCCEEDED',
+          device_id: deviceId,
+        },
+      );
       await tenant.runtimeDataSource.query(
         `INSERT INTO "auth_sessions" ("user_id", "refresh_token_hash", "expires_at")
          VALUES ($1::uuid, repeat('a', 64), transaction_timestamp() + interval '1 day')`,
@@ -1263,14 +1519,14 @@ integrationDescribe(
       const service = new SyncBootstrapService(
         loadSyncConfiguration({ SYNC_BOOTSTRAP_PAGE_SIZE: '2' }),
       );
-      const deviceId = randomUUID();
+      const baselineDeviceId = randomUUID();
       const watermarkRows: Array<{ watermark: string }> =
         await tenant.runtimeDataSource.query(
           `SELECT COALESCE(MAX("sequence_id"), 0)::text AS "watermark" FROM "server_change_log"`,
         );
-      const session = await service.create(tenant.runtimeDataSource, deviceId);
+      const session = await service.create(tenant.runtimeDataSource, baselineDeviceId, 2);
       expect(session).toMatchObject({
-        device_id: deviceId,
+        device_id: baselineDeviceId,
         watermark: watermarkRows[0]?.watermark,
         status: 'ACTIVE',
       });
@@ -1284,9 +1540,10 @@ integrationDescribe(
       while (hasMore) {
         const page = await service.page(
           tenant.runtimeDataSource,
-          deviceId,
+          baselineDeviceId,
           session.id,
           after,
+          2,
           2,
         );
         items.push(...page.items);
@@ -1294,7 +1551,7 @@ integrationDescribe(
         hasMore = page.has_more;
       }
 
-      expect(items.length).toBeGreaterThanOrEqual(10);
+      expect(items.length).toBeGreaterThanOrEqual(13);
       expect(
         new Set(items.map(({ projection }) => projection.entity_type)),
       ).toEqual(
@@ -1305,9 +1562,13 @@ integrationDescribe(
           'model_operations',
           'model_operation_prices',
           'patta_templates',
+          'patta_number_blocks',
           'patta_hisob',
           'patta_operation_snapshots',
-          'patta_number_blocks',
+          'patta_partiya_number_blocks',
+          'patta_print_batches',
+          'patta_print_batch_sizes',
+          'patta_print_events',
         ]),
       );
       expect(items.map(({ order_key }) => order_key)).toEqual(
@@ -1327,6 +1588,25 @@ integrationDescribe(
             projection.entity_id === pattaId,
         )?.projection.entity_id,
       ).toBe(pattaId);
+      const migratedLegacyProjection = items.find(
+        ({ projection }) => projection.entity_type === 'patta_hisob' && projection.entity_id === pattaId,
+      )?.projection;
+      expect(migratedLegacyProjection).toMatchObject({
+        projection_version: 2,
+        data: { ish_soni: null, legacy_operation_count: 1 },
+      });
+      const batchProjection = items.find(
+        ({ projection }) => projection.entity_type === 'patta_print_batches' && projection.entity_id === bootstrapBatch.id,
+      )?.projection;
+      expect(batchProjection).toMatchObject({
+        projection_version: 2,
+        data: {
+          partiya_number: bootstrapBatch.partiya_number,
+          ish_soni: 125,
+          size_distribution: [{ razmer: 'M', patta_count: 1 }],
+          pattas: [{ ish_soni: 125, legacy_operation_count: null }],
+        },
+      });
       expect(JSON.stringify(items)).not.toMatch(
         /password_hash|auth_sessions|audit_log|platform_users/i,
       );
@@ -1343,13 +1623,13 @@ integrationDescribe(
         response: { code: 'SYNC_BOOTSTRAP_DEVICE_MISMATCH' },
       });
       await expect(
-        service.complete(tenant.runtimeDataSource, deviceId, session.id),
+        service.complete(tenant.runtimeDataSource, baselineDeviceId, session.id),
       ).resolves.toEqual({
         session_id: session.id,
         status: 'COMPLETED',
       });
       await expect(
-        service.complete(tenant.runtimeDataSource, deviceId, session.id),
+        service.complete(tenant.runtimeDataSource, baselineDeviceId, session.id),
       ).resolves.toEqual({
         session_id: session.id,
         status: 'COMPLETED',
@@ -1536,7 +1816,7 @@ integrationDescribe(
           BigInt(fixture.event.payload.patta_number) + 1n
         ).toString(),
       });
-      const response = await syncService.push(
+      await expect(syncService.push(
         {
           dataSource: tenant.runtimeDataSource,
           actorUserId: fixture.actorUserId,
@@ -1544,12 +1824,16 @@ integrationDescribe(
         },
         fixture.deviceId,
         [fixture.event, conflictEvent, finalEvent],
-      );
-      expect(response.results.map(({ status }) => status)).toEqual([
-        'SYNCED',
-        'CONFLICT',
-        'SYNCED',
-      ]);
+        1,
+      )).rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
+      for (let index = 0; index < 3; index += 1) {
+        await tenant.runtimeDataSource.query(
+          `INSERT INTO "server_change_log"
+             ("entity_type", "entity_id", "operation", "entity_version", "projection_version", "payload_json")
+           VALUES ('models', $1, 'DELETE', NULL, 1, NULL)`,
+          [randomUUID()],
+        );
+      }
 
       const expectedRows: Array<{ sequence_id: string }> =
         await tenant.runtimeDataSource.query(
@@ -1698,10 +1982,11 @@ integrationDescribe(
           loadSyncConfiguration({}),
         );
         const [primarySession, secondarySession] = await Promise.all([
-          bootstrapService.create(tenant.runtimeDataSource, primaryDeviceId),
+          bootstrapService.create(tenant.runtimeDataSource, primaryDeviceId, 2),
           bootstrapService.create(
             secondTenant.runtimeDataSource,
             secondaryDeviceId,
+            2,
           ),
         ]);
         const collectItems = async (
@@ -1719,6 +2004,7 @@ integrationDescribe(
               sessionId,
               after,
               250,
+              2,
             );
             items.push(...page.items);
             after = page.next_order_key;
@@ -1986,6 +2272,7 @@ integrationDescribe(
         bootstrapPromise = bootstrapService.create(
           tenant.runtimeDataSource,
           deviceId,
+          2,
         );
         let barrierObserved = false;
         const barrierDeadline = Date.now() + 5_000;
@@ -2038,6 +2325,7 @@ integrationDescribe(
         session.id,
         null,
         250,
+        2,
       );
       const snapshotModel = page.items.find(
         ({ projection }) =>
@@ -2052,6 +2340,7 @@ integrationDescribe(
         tenant.runtimeDataSource,
         session.watermark,
         250,
+        2,
       );
       expect(afterWatermarkPull.changes).toContainEqual(
         expect.objectContaining({
@@ -2212,6 +2501,23 @@ integrationDescribe(
            VALUES ($1::uuid, 12.50, now() - interval '1 day')`,
           [operationId],
         );
+        const workerRowsPc1: Array<{ id: string }> = await tenant.runtimeDataSource.query(
+          `INSERT INTO "workers" ("full_name") VALUES ('PC One Entry Worker') RETURNING "id"::text AS "id"`,
+        );
+        const workerPc1 = workerRowsPc1[0]?.id;
+        const workerRowsPc2: Array<{ id: string }> = await tenant.runtimeDataSource.query(
+          `INSERT INTO "workers" ("full_name") VALUES ('PC Two Entry Worker') RETURNING "id"::text AS "id"`,
+        );
+        const workerPc2 = workerRowsPc2[0]?.id;
+        if (!workerPc1 || !workerPc2) throw new Error('Two-PC Entry workers were not created');
+        const badgePc1 = `pc1-${randomUUID()}`;
+        const badgePc2 = `pc2-${randomUUID()}`;
+        await tenant.runtimeDataSource.query(
+          `INSERT INTO "worker_badge_history" ("badge_number", "worker_id", "valid_from")
+           VALUES ($1, $2::bigint, '2020-01-01T00:00:00.000Z'),
+                  ($3, $4::bigint, '2020-01-01T00:00:00.000Z')`,
+          [badgePc1, workerPc1, badgePc2, workerPc2],
+        );
         await tenant.runtimeDataSource.query(
           `INSERT INTO "patta_number_sequence" ("id", "next_number", "version")
            VALUES (1, 1, 1) ON CONFLICT ("id") DO NOTHING`,
@@ -2309,13 +2615,18 @@ integrationDescribe(
             const requestedTestHost = request.headers['x-test-tenant-host'];
             const allowedTestHosts = new Set([
               `${tenantSlug}.factory.test`,
+              `${tenantSlug}.localhost:${apiAddress.port}`,
               ...(secondTenantSlug ? [`${secondTenantSlug}.factory.test`] : []),
+              ...(secondTenantSlug ? [`${secondTenantSlug}.localhost:${apiAddress.port}`] : []),
             ]);
+            const incomingHost = request.headers.host;
             request.headers.host =
               typeof requestedTestHost === 'string' &&
               allowedTestHosts.has(requestedTestHost)
                 ? requestedTestHost
-                : `${tenantSlug}.factory.test`;
+                : typeof incomingHost === 'string' && allowedTestHosts.has(incomingHost)
+                  ? incomingHost
+                  : `${tenantSlug}.factory.test`;
             next();
           },
         );
@@ -2398,16 +2709,21 @@ integrationDescribe(
               SYNC_TEST_DEVICE_PC1: devicePc1,
               SYNC_TEST_DEVICE_PC2: devicePc2,
               SYNC_TEST_MODEL_ID: modelId,
+              SYNC_TEST_WORKER_PC1: workerPc1,
+              SYNC_TEST_WORKER_PC2: workerPc2,
+              SYNC_TEST_BADGE_PC1: badgePc1,
+              SYNC_TEST_BADGE_PC2: badgePc2,
+              SYNC_TEST_USER_ID: authUserId,
+              SYNC_TEST_TENANT_TIMEZONE: 'Asia/Tashkent',
               SYNC_TEST_LOCAL_DATA_DIR: localDataDirectory,
               DESKTOP_AUTH_TEST_TENANT_URL:
-                `https://${tenantSlug}.factory.test`,
-              DESKTOP_AUTH_TEST_API_BASE_URL: apiBaseUrl,
+                `http://${tenantSlug}.localhost:${apiAddress.port}`,
               DESKTOP_AUTH_TEST_EMAIL: `two-pc-${authUserId}@example.test`,
               DESKTOP_AUTH_TEST_PASSWORD: desktopAuthPassword,
               DESKTOP_AUTH_TEST_DEVICE_ID: desktopAuthDeviceId,
               DESKTOP_AUTH_TEST_MODEL_ID: modelId,
               DESKTOP_AUTH_TEST_TENANT_B_URL:
-                `https://${secondTenantSlug}.factory.test`,
+                `http://${secondTenantSlug}.localhost:${apiAddress.port}`,
               DESKTOP_AUTH_TEST_EMAIL_B: secondTenantAuthEmail,
               DESKTOP_AUTH_TEST_PASSWORD_B: secondTenantAuthPassword,
               DESKTOP_AUTH_TEST_DEVICE_ID_B: secondTenantDeviceId,
@@ -2430,10 +2746,11 @@ integrationDescribe(
         const processedRows: Array<{ count: string }> =
           await tenant.runtimeDataSource.query(
             `SELECT count(*)::text AS "count" FROM "processed_sync_events"
-           WHERE "device_id" = $1::uuid AND "user_id" = $2::uuid AND "result_status" = 'SYNCED'`,
+           WHERE "device_id" = $1::uuid AND "user_id" = $2::uuid
+             AND "entity_type" = 'patta_print_batch' AND "result_status" = 'SYNCED'`,
             [devicePc1, authUserId],
           );
-        expect(acceptedRows[0]?.count).toBe('1');
+        expect(acceptedRows[0]?.count).toBe('2');
         expect(processedRows[0]?.count).toBe('1');
       } finally {
         if (apiApp) await apiApp.close();
@@ -2457,30 +2774,52 @@ integrationDescribe(
       }
     }, 120_000);
 
-    it('refuses to revert processed events or change history before dropping sync schema', async () => {
-      await expect(
-        tenant.migrationDataSource.undoLastMigration({ transaction: 'all' }),
-      ).rejects.toThrow('cannot revert sync schema');
+    it('reverts empty correction policy, then refuses to remove v2 history', async () => {
+      const rollbackManager = new TenantDatabaseManager({
+        provisioner: provisionerCredentials,
+        masterDataSource,
+        runtimeHost: provisionerCredentials.host,
+        runtimePort: provisionerCredentials.port,
+        mode: 'test',
+      });
+      let rollbackTenant: TenantFixture | undefined;
+      try {
+        rollbackTenant = await createGeneratedTenantFixture(rollbackManager);
+        const fixture = rollbackTenant;
+        await fixture.migrationDataSource.query(
+          `INSERT INTO "server_change_log"
+            ("entity_type", "entity_id", "operation", "projection_version", "payload_json")
+           VALUES ('patta_print_batches', $1, 'UPSERT', 2, '{}'::jsonb)`,
+          [randomUUID()],
+        );
+        await fixture.migrationDataSource.undoLastMigration({ transaction: 'all' });
+        await fixture.migrationDataSource.undoLastMigration({ transaction: 'all' });
+        await expect(
+          fixture.migrationDataSource.undoLastMigration({ transaction: 'all' }),
+        ).rejects.toThrow('cannot revert sync protocol v2');
 
-      const retained: TableNameRow[] = await tenant.migrationDataSource.query(
-        `SELECT "table_name" FROM information_schema.tables
-         WHERE "table_schema" = 'public' AND "table_name" = ANY($1::varchar[])
-         ORDER BY "table_name"`,
-        [
-          [
+        const retained: TableNameRow[] = await fixture.migrationDataSource.query(
+          `SELECT "table_name" FROM information_schema.tables
+           WHERE "table_schema" = 'public' AND "table_name" = ANY($1::varchar[])
+           ORDER BY "table_name"`,
+          [[
             'processed_sync_events',
             'server_change_log',
             'bootstrap_sessions',
             'bootstrap_items',
-          ],
-        ],
-      );
-      expect(retained.map(({ table_name }) => table_name)).toEqual([
-        'bootstrap_items',
-        'bootstrap_sessions',
-        'processed_sync_events',
-        'server_change_log',
-      ]);
+          ]],
+        );
+        expect(retained.map(({ table_name }) => table_name)).toEqual([
+          'bootstrap_items',
+          'bootstrap_sessions',
+          'processed_sync_events',
+          'server_change_log',
+        ]);
+      } finally {
+        if (rollbackTenant?.runtimeDataSource.isInitialized) await rollbackTenant.runtimeDataSource.destroy();
+        if (rollbackTenant?.migrationDataSource.isInitialized) await rollbackTenant.migrationDataSource.destroy();
+        await rollbackManager.close();
+      }
     });
   },
 );

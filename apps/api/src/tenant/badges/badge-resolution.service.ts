@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import type { DataSource } from 'typeorm';
+import type { DataSource, EntityManager } from 'typeorm';
 import { badgeNotFound, invalidBadgeNumber, invalidBadgeTimestamp } from './badge-errors.js';
 
 const ISO_TIMESTAMP_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i;
@@ -57,7 +57,7 @@ function serialize(row: BadgeResolutionRow): BadgeResolution {
 @Injectable()
 export class BadgeResolutionService {
   async resolve(
-    dataSource: DataSource,
+    dataSource: DataSource | EntityManager,
     badgeNumberInput: string,
     performedAt: string,
   ): Promise<BadgeResolution> {
@@ -84,7 +84,7 @@ export class BadgeResolutionService {
   }
 
   async resolveCurrent(
-    dataSource: DataSource,
+    dataSource: DataSource | EntityManager,
     badgeNumberInput: string,
   ): Promise<BadgeResolution> {
     const badgeNumber = canonicalBadge(badgeNumberInput);

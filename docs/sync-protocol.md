@@ -5,6 +5,26 @@ API is authoritative for server writes; each Electron workstation persists its
 own durable mirror/queue in SQLite. Desktop never connects directly to
 PostgreSQL. There is no LAN or local factory server dependency.
 
+## Patta quantity/print protocol transition
+
+Patta product quantity is `ish_soni`, independent of operation snapshot count.
+Tenant migration `20260928000700` preserves prior column values as
+`legacy_operation_count` and leaves historical actual quantity unknown. The
+`POST /api/v2/patta-print-batches` API writes atomic multi-size batch aggregates;
+Partiya blocks are allocated through `/api/v2/patta-partiya-number-blocks/*`.
+Legacy v1 Patta generate/lookup/list routes return
+`SYNC_PROTOCOL_UPGRADE_REQUIRED`. A legacy Patta CREATE missing `ish_soni` also
+gets that structured error. V1 pull and bootstrap return the same error rather
+than serializing a Patta, batch, Partiya block or other Patta projection under
+the old contract. Reference-only pages without Patta data can still be pulled.
+
+Protocol v2 is implemented end to end for print batches, Partiya/Patta metadata,
+custom model operations, and Patta Sheets. API push, pull, and bootstrap use
+versioned aggregate projections; Desktop persists the matching SQLite mirrors,
+queues offline mutations with stable event IDs, and calculates Model hisob from
+active Entry rows. A v2 batch change-log entry is never interpreted as a v1
+`patta_hisob` projection.
+
 ## Shared contracts and representations
 
 Wire DTOs live in `packages/sync-protocol` and are consumed by both `apps/api`
@@ -13,14 +33,14 @@ results, `SyncChange`, versioned `SyncProjection`, conflicts/failures, bootstrap
 session/page DTOs, and block projection records. Desktop additionally validates
 all HTTP responses against strict projection schemas before SQLite sees them.
 
-The first outbound mutation is `entity_type: "patta"`, `operation: "CREATE"`,
-and `base_version: "0"`. Its payload carries canonical `partiya_number`,
-server-assigned `block_id`, immutable model/template and operation version
-context, and client-generated UUID operation snapshots with exact decimal
-`unit_price_snapshot` values. The resulting server mirror entity is
-`patta_hisob`; its snapshot rows are `patta_operation_snapshots`. Other
-`SyncEntityType` values are server-authoritative reference projections, not
-offline mutation permissions.
+The legacy protocol-v1 outbound mutation was `entity_type: "patta"`,
+`operation: "CREATE"`, and `base_version: "0"`. Its payload carries canonical
+`partiya_number`, server-assigned `block_id`, immutable model/template and
+operation version context, and client-generated UUID operation snapshots with
+exact decimal `unit_price_snapshot` values. That v1 payload cannot represent
+product quantity, so v1 Patta operations require an upgrade. Current v2
+mutations use aggregates such as `patta_print_batch`, `patta_sheet`,
+`patta_print_event`, and `model_operation`; references remain server-authoritative.
 
 Representation rules:
 
@@ -35,7 +55,7 @@ Representation rules:
   time; the API rejects client time more than 300 seconds in the future.
 - Event mutation operations are `CREATE`/`UPDATE`/`DELETE`; pull change
   operations are `UPSERT`/`DELETE`. Projection version is explicit and currently
-  `1`.
+  `1` for existing reference projections; new Patta aggregates use v2.
 
 The protocol error codes include `VERSION_CONFLICT`, `PATTA_ALREADY_EXISTS`,
 `PATTA_NUMBER_OUTSIDE_BLOCK`, `PATTA_BLOCK_DEVICE_MISMATCH`,
@@ -62,6 +82,10 @@ tenant selector. Push is constrained to tenant permissions `sync.push` and
 | `POST /api/v1/sync/bootstrap/:sessionId/complete` | Mark server staging complete after local commit. |
 | `POST /api/v1/patta-number-blocks/allocate` | Allocate the next server-owned block to a validated device. |
 | `POST /api/v1/patta-number-blocks/:id/usage` | Monotonically report workstation block usage. |
+| `POST /api/v2/patta-print-batches` | Create an online multi-size batch with product quantity and immutable operation snapshots. |
+| `POST /api/v2/patta-partiya-number-blocks/allocate` | Allocate a Partiya range to a validated device. |
+| `POST /api/v2/patta-partiya-number-blocks/:id/usage` | Monotonically report Partiya block usage. |
+| `GET /api/v2/patta/lookup` | Read Patta metadata without creating an entry. |
 
 No raw tenant ID or company ID is accepted as authority. Device IDs are resolved
 in Master and must belong to the authenticated company and remain ACTIVE. The
@@ -152,11 +176,12 @@ its staging and restarts the baseline.
 
 Electron main owns auth, SQLite, local repositories, transport and SyncEngine.
 The renderer sees only fixed `window.erp` APIs for app version, login/logout/auth
-status/safe session metadata, sync status/run, and sanitized local Patta lookup.
-It receives no `ipcRenderer`, Node/process object, password hash,
-bearer/refresh token, device ID, filesystem access, or database handle. Electron
-stays exactly pinned at `44.4.5`; `contextIsolation`, `sandbox`, and disabled
-`nodeIntegration` are explicit.
+status/safe session metadata, sync status/run, Patta print/lookup, Patta Sheet
+Entry/history/trash/restore, and derived Model hisob. It receives only validated
+business projections and safe session metadata, not `ipcRenderer`, Node/process
+objects, password hashes, bearer/refresh tokens, filesystem access, or database
+handles. Electron stays exactly pinned at `44.4.5`; `contextIsolation`,
+`sandbox`, and disabled `nodeIntegration` are explicit.
 
 The single-flight cycle recovers stale `SYNCING` queue rows, pushes stable event
 IDs, persists per-event outcomes, pulls pages, applies each page and its cursor
@@ -192,8 +217,10 @@ handle, and does not require a remote logout request. The server session can
 remain valid until expiry/server invalidation; remote revoke is not queued for
 retry.
 
-Two-PC acceptance uses real PostgreSQL and HTTP: PC-1 creates locally with a
-server-owned block, loses the first successful push response, retries the same
-event ID, and PC-2 pulls the same UUID into a separate SQLite database before
-disconnecting. The same Patta remains available offline on PC-2; operation
-snapshot UUIDs/prices remain immutable.
+Two-PC acceptance uses real PostgreSQL and HTTP. PC-1 creates a print batch,
+loses the first successful push response, and retries the same event ID; PC-2
+pulls the batch into a separate SQLite database. PC-1 then creates an Entry,
+corrects its worker, trashes, restores, and purges it. PC-2 pulls each change;
+Model hisob moves the quantity between stable worker IDs, omits trashed rows,
+restores the contribution, and removes purged Entry data while retaining the
+printed Patta.

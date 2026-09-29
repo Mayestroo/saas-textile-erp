@@ -25,7 +25,7 @@ export interface DesktopAuthStatus {
 export interface SafeDesktopSession {
   state: DesktopAuthState
   user: { id: string; email: string; full_name: string } | null
-  company: { id: string; slug: string } | null
+  company: { id: string; slug: string; timezone: string | null } | null
   tenant_host: string | null
 }
 
@@ -36,8 +36,8 @@ export interface DesktopLoginInput {
 }
 
 export interface TenantSessionRuntime {
-  openTenant(companyId: string): Promise<void>
-  startSync(tenantOrigin: string): Promise<void>
+  openTenant(companyId: string, timezone: string | null): Promise<void>
+  startSync(tenantOrigin: string, timezone: string | null): Promise<void>
   clearTenant(preserveLocalDatabase?: boolean): Promise<void>
 }
 
@@ -90,7 +90,7 @@ function payloadFromLogin(
 ): SecureSessionPayload {
   const tenant = normalizeTenantOrigin(tenantUrl)
   return {
-    version: 1,
+    version: 2,
     refreshToken: result.refreshToken,
     tenantOrigin: tenant.origin,
     tenantHost: tenant.tenantHost,
@@ -98,7 +98,8 @@ function payloadFromLogin(
     companySlug: result.company.slug,
     userId: result.user.id,
     email: result.user.email,
-    fullName: result.user.fullName
+    fullName: result.user.fullName,
+    timezone: result.company.timezone
   }
 }
 
@@ -143,7 +144,9 @@ export class DesktopAuthService implements AuthenticatedSessionProvider {
       user: payload
         ? { id: payload.userId, email: payload.email, full_name: payload.fullName }
         : null,
-      company: payload ? { id: payload.companyId, slug: payload.companySlug } : null,
+      company: payload
+        ? { id: payload.companyId, slug: payload.companySlug, timezone: payload.timezone }
+        : null,
       tenant_host: payload?.tenantHost ?? null
     }
   }
@@ -174,7 +177,7 @@ export class DesktopAuthService implements AuthenticatedSessionProvider {
       const payload = payloadFromLogin(input.tenantUrl, result)
       return await this.runTransition(async () => {
         if (generation !== this.operationGeneration) return this.status()
-        await this.runtime.openTenant(payload.companyId)
+        await this.runtime.openTenant(payload.companyId, payload.timezone)
         if (generation !== this.operationGeneration) return this.status()
         try {
           await this.secureStore.save(payload)
@@ -191,7 +194,7 @@ export class DesktopAuthService implements AuthenticatedSessionProvider {
         this.accessTokenValue = result.accessToken
         this.authState = 'AUTHENTICATED'
         this.currentErrorCode = null
-        await this.runtime.startSync(payload.tenantOrigin)
+        await this.runtime.startSync(payload.tenantOrigin, payload.timezone)
         return this.status()
       })
     } catch (error) {
@@ -314,7 +317,7 @@ export class DesktopAuthService implements AuthenticatedSessionProvider {
           return null
         }
         this.sessionPayload = stored
-        await this.runtime.openTenant(stored.companyId)
+         await this.runtime.openTenant(stored.companyId, stored.timezone)
         return generation === this.operationGeneration ? stored : null
       })
     } catch (error) {
@@ -349,6 +352,11 @@ export class DesktopAuthService implements AuthenticatedSessionProvider {
       if (isTransient(error)) {
         this.authState = 'OFFLINE_SESSION_PENDING'
         this.currentErrorCode = errorCode(error)
+        try {
+          await this.runtime.startSync(payload.tenantOrigin, payload.timezone)
+        } catch (runtimeError) {
+          this.logFailure('restore', runtimeError)
+        }
         return this.status()
       }
       return this.runTransition(async () => {
@@ -408,7 +416,11 @@ export class DesktopAuthService implements AuthenticatedSessionProvider {
     tokens: TenantTokenPair,
     generation: number
   ): Promise<DesktopAuthStatus> {
-    const updatedPayload: SecureSessionPayload = { ...payload, refreshToken: tokens.refreshToken }
+    const updatedPayload: SecureSessionPayload = {
+      ...payload,
+      refreshToken: tokens.refreshToken,
+      timezone: tokens.tenantTimezone ?? payload.timezone
+    }
     return this.runTransition(async () => {
       if (generation !== this.operationGeneration) return this.status()
       try {
@@ -430,7 +442,7 @@ export class DesktopAuthService implements AuthenticatedSessionProvider {
       this.accessTokenValue = tokens.accessToken
       this.authState = 'AUTHENTICATED'
       this.currentErrorCode = null
-      await this.runtime.startSync(updatedPayload.tenantOrigin)
+      await this.runtime.startSync(updatedPayload.tenantOrigin, updatedPayload.timezone)
       return this.status()
     })
   }

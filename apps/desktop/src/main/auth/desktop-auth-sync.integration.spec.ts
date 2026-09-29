@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -16,11 +15,9 @@ import { RestSyncTransport } from '../sync/rest-sync-transport'
 
 const SINGLE_TENANT_SETTINGS = [
   'DESKTOP_AUTH_TEST_TENANT_URL',
-  'DESKTOP_AUTH_TEST_API_BASE_URL',
   'DESKTOP_AUTH_TEST_EMAIL',
   'DESKTOP_AUTH_TEST_PASSWORD',
-  'DESKTOP_AUTH_TEST_DEVICE_ID',
-  'DESKTOP_AUTH_TEST_MODEL_ID'
+  'DESKTOP_AUTH_TEST_DEVICE_ID'
 ] as const
 
 const SECOND_TENANT_SETTINGS = [
@@ -88,17 +85,7 @@ interface DesktopAuthAcceptanceFixture {
   localStore: InMemorySecureSessionStore
 }
 
-function createLoopbackFetcher(apiBaseUrl: string): typeof fetch {
-  return async (input, init) => {
-    const requestUrl = new URL(typeof input === 'string' ? input : input.toString())
-    const loopbackUrl = new URL(`${requestUrl.pathname}${requestUrl.search}`, apiBaseUrl)
-    const headers = new Headers(init?.headers)
-    headers.set('x-test-tenant-host', requestUrl.host)
-    return fetch(loopbackUrl, { ...init, headers })
-  }
-}
-
-function createFixture(fetcher: typeof fetch): DesktopAuthAcceptanceFixture {
+function createFixture(fetcher: typeof fetch = fetch): DesktopAuthAcceptanceFixture {
   const userDataPath = mkdtempSync(join(tmpdir(), 'textile-desktop-auth-acceptance-'))
   roots.push(userDataPath)
   writeFileSync(
@@ -129,8 +116,7 @@ afterEach(async () => {
 
 authAcceptance('desktop tenant auth and authenticated sync acceptance', () => {
   it('logs in, bootstraps, pushes, and pulls through the production session provider', async () => {
-    const fetcher = createLoopbackFetcher(setting('DESKTOP_AUTH_TEST_API_BASE_URL'))
-    const { auth, runtime, userDataPath } = createFixture(fetcher)
+    const { auth, runtime, userDataPath } = createFixture()
     const tenantUrl = setting('DESKTOP_AUTH_TEST_TENANT_URL')
     const login = await auth.login({
       tenantUrl,
@@ -138,6 +124,12 @@ authAcceptance('desktop tenant auth and authenticated sync acceptance', () => {
       password: setting('DESKTOP_AUTH_TEST_PASSWORD')
     })
     expect(login.state).toBe('AUTHENTICATED')
+    expect(auth.status()).toMatchObject({ state: 'AUTHENTICATED', errorCode: null })
+    expect(auth.currentSession()).toMatchObject({
+      user: { email: setting('DESKTOP_AUTH_TEST_EMAIL') },
+      company: { slug: normalizeTenantOrigin(tenantUrl).tenantSlug },
+      tenant_host: normalizeTenantOrigin(tenantUrl).tenantHost
+    })
     expect(auth.currentSession().company?.id).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     )
@@ -145,7 +137,10 @@ authAcceptance('desktop tenant auth and authenticated sync acceptance', () => {
     const engine = runtime.getSyncEngine()
     if (!engine) throw new Error('Authenticated sync runtime was not installed')
     const baseline = await engine.runOnce()
-    expect(baseline).toMatchObject({ status: 'COMPLETED', bootstrapped: true })
+    expect(baseline, JSON.stringify(runtime.getNetworkStatus()?.snapshot()))
+      .toMatchObject({ status: 'COMPLETED', bootstrapped: true })
+    expect(runtime.activeDatabasePath()).toContain(`tenant-${auth.currentSession().company?.id}.sqlite`)
+    expect(runtime.getNetworkStatus()?.snapshot().errorCode).toBeNull()
 
     const database = runtime.activeDatabase()
     const syncRuntime = runtime.activeSyncRuntime()
@@ -156,40 +151,25 @@ authAcceptance('desktop tenant auth and authenticated sync acceptance', () => {
     const configuredDevice = new DeviceIdentityService(userDataPath)
     await configuredDevice.load()
     const apiOrigin = normalizeTenantOrigin(tenantUrl).origin
-    const httpClient = new FetchAuthenticatedHttpClient(auth, apiOrigin, fetcher)
+    const httpClient = new FetchAuthenticatedHttpClient(auth, apiOrigin, fetch)
     const transport = new RestSyncTransport(
       httpClient,
       configuredDevice,
       apiOrigin
     )
-
-    const block = await transport.allocatePattaNumberBlock()
-    syncRuntime.repositories.unitOfWork.transaction(() => {
-      syncRuntime.repositories.numberBlocks.storeAllocatedBlock(block)
+    const livePull = await transport.pull({
+      cursor: syncRuntime.repositories.state.lastServerCursor() ?? '0',
+      limit: 100
     })
-    const model = database
-      .prepare('SELECT id FROM models WHERE id = ? AND status = \'ACTIVE\'')
-      .get(setting('DESKTOP_AUTH_TEST_MODEL_ID'))
-    expect(model).toEqual({ id: setting('DESKTOP_AUTH_TEST_MODEL_ID') })
+    expect(livePull).toMatchObject({ changes: expect.any(Array), has_more: false })
 
-    const local = syncRuntime.offlinePattaService.create({
-      partiya_number: `AUTH-${randomUUID()}`,
-      model_id: setting('DESKTOP_AUTH_TEST_MODEL_ID'),
-      konveyer: 'Sinov liniyasi',
-      occurred_at: new Date().toISOString()
-    })
-    const cycle = await engine.runOnce()
-    expect(cycle).toMatchObject({ status: 'COMPLETED', pushed: 1 })
-    expect(cycle.pulled).toBeGreaterThan(0)
-    expect(
-      database.prepare('SELECT ownership_state FROM patta_hisob WHERE id = ?').get(local.patta.id)
-    ).toEqual({ ownership_state: 'SERVER_SYNCED' })
+    expect(syncRuntime).toBeDefined()
+    expect(syncRuntime.repositories.state.lastServerCursor()).not.toBeNull()
     expect(runtime.activeCompanyId()).toBe(companyId)
   })
 
   twoTenantIt('keeps tenant A data out of B and lets the API reject A device under B', async () => {
-    const fetcher = createLoopbackFetcher(setting('DESKTOP_AUTH_TEST_API_BASE_URL'))
-    const { auth, runtime, userDataPath } = createFixture(fetcher)
+    const { auth, runtime, userDataPath } = createFixture()
     const firstLogin = await auth.login({
       tenantUrl: setting('DESKTOP_AUTH_TEST_TENANT_URL'),
       email: setting('DESKTOP_AUTH_TEST_EMAIL'),

@@ -62,6 +62,28 @@ export class SyncConflictRepository {
     `
       )
       .run(eventId)
+    this.database.prepare(`
+      UPDATE patta_print_batches SET ownership_state = 'CONFLICT'
+      WHERE id = (SELECT entity_id FROM sync_queue WHERE event_id = ?)
+        AND ownership_state IN ('LOCAL_PENDING', 'SYNCING')
+    `).run(eventId)
+    this.database.prepare(`
+      UPDATE patta_print_batch_sizes SET ownership_state = 'CONFLICT'
+      WHERE print_batch_id = (SELECT entity_id FROM sync_queue WHERE event_id = ?)
+        AND ownership_state IN ('LOCAL_PENDING', 'SYNCING')
+    `).run(eventId)
+    this.database.prepare(`
+      UPDATE patta_hisob SET ownership_state = 'CONFLICT'
+      WHERE print_batch_id = (SELECT entity_id FROM sync_queue WHERE event_id = ?)
+        AND ownership_state IN ('LOCAL_PENDING', 'SYNCING')
+    `).run(eventId)
+    this.database.prepare(`
+      UPDATE patta_operation_snapshots SET ownership_state = 'CONFLICT'
+      WHERE patta_hisob_id IN (
+        SELECT id FROM patta_hisob
+        WHERE print_batch_id = (SELECT entity_id FROM sync_queue WHERE event_id = ?)
+      ) AND ownership_state IN ('LOCAL_PENDING', 'SYNCING')
+    `).run(eventId)
     this.database
       .prepare(
         `

@@ -34,7 +34,7 @@ function makeEvent(overrides: Partial<SyncEvent> = {}): SyncEvent {
     client_created_at: '2026-09-26T00:00:00.000Z',
     occurred_at: '2026-09-26T00:00:00.000Z',
     reference_cursor: '0',
-    payload: { partiya_number: 'A-1' },
+    payload: { partiya_number: 'A-1', ish_soni: 125 },
     ...overrides,
   };
 }
@@ -73,10 +73,11 @@ function successResult(): SyncHandlerResult {
   };
 }
 
-function createHarness(handler: SyncEntityHandler) {
+function createHarness(handler: SyncEntityHandler, permissionAllowed = true) {
   let committedEvent: ProcessedEventState | undefined;
   let transactionEvent: ProcessedEventState | undefined;
   const query = vi.fn(async (sql: string, parameters: unknown[] = []) => {
+    if (sql.includes('AS "allowed"')) return [{ allowed: permissionAllowed }];
     if (sql.includes('client_time_valid')) {
       return [{ client_time_valid: true }];
     }
@@ -193,6 +194,20 @@ describe('SyncEventProcessor', () => {
     expect(handler.apply).toHaveBeenCalledOnce();
     expect(harness.runner.commitTransaction).toHaveBeenCalledOnce();
     expect(harness.runner.release).toHaveBeenCalledOnce();
+  });
+
+  it('stores an event-level permission conflict transactionally without applying the handler', async () => {
+    const handler = successfulHandler(async () => successResult());
+    const harness = createHarness(handler, false);
+
+    await expect(harness.processor.process(harness.dataSource, harness.context, makeEvent()))
+      .resolves.toMatchObject({
+        event_id: eventId,
+        status: 'CONFLICT',
+        conflict: { code: 'SYNC_PERMISSION_REQUIRED', details: { permission: 'patta.chiqarish.create' } },
+      });
+    expect(handler.apply).not.toHaveBeenCalled();
+    expect(harness.runner.commitTransaction).toHaveBeenCalledOnce();
   });
 
   it('returns the committed result for a repeated event ID without applying twice', async () => {

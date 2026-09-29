@@ -44,7 +44,12 @@ export interface TenantLoginResponse extends AuthTokenPair {
   company: {
     id: string;
     slug: string;
+    timezone: string;
   };
+}
+
+export interface TenantRefreshResponse extends AuthTokenPair {
+  company: { id: string; slug: string; timezone: string };
 }
 
 type RefreshDecision = 'ROTATED' | 'INVALID' | 'REUSED';
@@ -143,11 +148,11 @@ export class TenantAuthService {
       token_type: 'Bearer',
       expires_in: this.authConfiguration.accessTokenTtlSeconds,
       user: { id: user.id, email: user.email, full_name: user.full_name },
-      company: { id: company.companyId, slug: company.slug },
+      company: { id: company.companyId, slug: company.slug, timezone: company.timezone },
     };
   }
 
-  async refresh(hostname: string, refreshToken: string): Promise<AuthTokenPair> {
+  async refresh(hostname: string, refreshToken: string): Promise<TenantRefreshResponse> {
     const domain = this.authConfiguration.tenant;
     let claims: TenantJwtClaims;
     try {
@@ -218,6 +223,7 @@ export class TenantAuthService {
       refresh_token: newTokens.refresh_token,
       token_type: 'Bearer',
       expires_in: this.authConfiguration.accessTokenTtlSeconds,
+      company: { id: company.companyId, slug: company.slug, timezone: company.timezone },
     };
   }
 

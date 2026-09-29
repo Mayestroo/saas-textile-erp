@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
 import { DataSource } from 'typeorm';
 import { MASTER_DATA_SOURCE_NAME } from '../../database/master/master-database.config.js';
+import { isIanaTimezone } from '../../common/time/iana-timezone.js';
 
 export interface MasterTenantMetadata {
   id: string;
@@ -9,6 +10,7 @@ export interface MasterTenantMetadata {
   status: string;
   databaseName: string;
   connectionCiphertext: string | null;
+  timezone: string;
 }
 
 export interface MasterTenantReader {
@@ -39,7 +41,7 @@ export class MasterTenantLookupService implements MasterTenantReader {
     identityValue: string,
   ): Promise<MasterTenantMetadata | null> {
     const result: unknown = await this.masterDataSource.query(
-      `SELECT "id", "slug", "status", "db_name", "db_connection_ciphertext"
+      `SELECT "id", "slug", "status", "db_name", "db_connection_ciphertext", "timezone"
        FROM "companies" WHERE "${identityColumn}" = $1`,
       [identityValue],
     );
@@ -59,16 +61,18 @@ export class MasterTenantLookupService implements MasterTenantReader {
     const status = Reflect.get(row, 'status');
     const databaseName = Reflect.get(row, 'db_name');
     const connectionCiphertext = Reflect.get(row, 'db_connection_ciphertext');
+    const timezone = Reflect.get(row, 'timezone');
     if (
       typeof id !== 'string' ||
       typeof slug !== 'string' ||
       typeof status !== 'string' ||
       typeof databaseName !== 'string' ||
-      !(typeof connectionCiphertext === 'string' || connectionCiphertext === null)
+      !(typeof connectionCiphertext === 'string' || connectionCiphertext === null) ||
+      !isIanaTimezone(timezone)
     ) {
       throw new Error('Master tenant query returned incomplete metadata');
     }
 
-    return { id, slug, status, databaseName, connectionCiphertext };
+    return { id, slug, status, databaseName, connectionCiphertext, timezone };
   }
 }

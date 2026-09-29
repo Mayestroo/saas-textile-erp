@@ -14,6 +14,7 @@ import { PattaSequenceInitializer } from '../../database/tenant/patta-sequence.i
 import { TenantTestDatabaseCleanup } from '../../database/tenant/tenant-test-database-cleanup.js';
 import { DeviceAccessService } from '../../master/devices/device-access.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { BadgeResolutionService } from '../badges/badge-resolution.service.js';
 import { SyncChangeRecorder } from '../sync/sync-change-recorder.js';
 import { ModelsService } from '../models/models.service.js';
 import { OperationPriceService } from '../operations/operation-price.service.js';
@@ -21,9 +22,12 @@ import { OperationsService } from '../operations/operations.service.js';
 import { loadPattaConfiguration } from './patta.config.js';
 import type { PattaConfiguration } from './patta.config.js';
 import { PattaNumberBlocksService } from './patta-number-blocks.service.js';
+import { PattaPartiyaNumberBlocksService } from './patta-partiya-number-blocks.service.js';
 import { PattaOfflineRegistrationValidator } from './patta-offline-registration.validator.js';
+import { PattaPrintBatchesService } from './patta-print-batches.service.js';
 import { PattaService } from './patta.service.js';
 import { PattaTemplatesService } from './patta-templates.service.js';
+import { PattaSheetsService } from '../patta-sheets/patta-sheets.service.js';
 
 const TEST_DATABASE_VARIABLES = [
   'TEST_MASTER_DB_HOST',
@@ -51,6 +55,11 @@ const provisionerCredentials = configuredVariables.length === TEST_DATABASE_VARI
 const TEST_PATTA_CONFIGURATION = loadPattaConfiguration({});
 const PATTA_MIGRATION_NAME = 'AddPattaFoundation20260926000500';
 const SYNC_MIGRATION_NAME = 'AddOfflineSyncInfrastructure20260926000600';
+const QUANTITY_MIGRATION_NAME = 'CorrectPattaQuantitySemantics20260928000700';
+const PRINT_BATCH_MIGRATION_NAME = 'AddPattaPrintBatches20260928000800';
+const SYNC_V2_MIGRATION_NAME = 'AddSyncProtocolV2Sessions20260928000900';
+const PRINT_CORRECTIONS_MIGRATION_NAME = 'AddPattaPrintBatchCorrections20260928001000';
+const SHEET_MIGRATION_NAME = 'AddPattaSheets20260928001100';
 
 interface TenantFixture {
   companyId: string;
@@ -230,11 +239,33 @@ integrationDescribe(
       return actorId;
     }
 
+    async function grantTenantPermission(dataSource: DataSource, actorId: string, permissionCode: string): Promise<void> {
+      const roleRows: Array<{ role_id: string }> = await dataSource.query(
+        `SELECT "role_id"::text AS "role_id" FROM "users" WHERE "id" = $1`, [actorId],
+      );
+      const roleId = roleRows[0]?.role_id;
+      if (!roleId) throw new Error('Patta integration actor role was not returned');
+      await dataSource.query(
+        `INSERT INTO "permissions" ("code", "description") VALUES ($1, $1)
+         ON CONFLICT ("code") DO NOTHING`,
+        [permissionCode],
+      );
+      await dataSource.query(
+        `INSERT INTO "role_permissions" ("role_id", "permission_id")
+         SELECT $1, permission."id" FROM "permissions" permission WHERE permission."code" = $2
+         ON CONFLICT ("role_id", "permission_id") DO NOTHING`,
+        [roleId, permissionCode],
+      );
+    }
+
     function featureServices(configuration: PattaConfiguration = TEST_PATTA_CONFIGURATION) {
       const audit = new AuditService();
       const syncChangeRecorder = new SyncChangeRecorder();
       const prices = new OperationPriceService(audit, syncChangeRecorder);
       const blocks = new PattaNumberBlocksService(audit, configuration, syncChangeRecorder);
+      const partiyaBlocks = new PattaPartiyaNumberBlocksService(audit, configuration, syncChangeRecorder);
+      const offlineValidator = new PattaOfflineRegistrationValidator(blocks);
+      const sheets = new PattaSheetsService(audit, new BadgeResolutionService(), prices, syncChangeRecorder);
       return {
         audit,
         prices,
@@ -242,13 +273,17 @@ integrationDescribe(
         operations: new OperationsService(audit, prices, syncChangeRecorder),
         templates: new PattaTemplatesService(audit, syncChangeRecorder),
         blocks,
-        offline: new PattaOfflineRegistrationValidator(blocks),
+        partiyaBlocks,
+        sheets,
+        printBatches: new PattaPrintBatchesService(
+          audit, prices, configuration, syncChangeRecorder, blocks, partiyaBlocks, offlineValidator, sheets,
+        ),
+        offline: offlineValidator,
         pattas: new PattaService(
           audit,
           prices,
-          configuration,
           syncChangeRecorder,
-          new PattaOfflineRegistrationValidator(blocks),
+          offlineValidator,
         ),
       };
     }
@@ -272,17 +307,26 @@ integrationDescribe(
       const migrations: Array<{ name: string }> = await tenant.migrationDataSource.query(
         'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"',
       );
-      expect(migrations.at(-1)?.name).toBe(SYNC_MIGRATION_NAME);
+      expect(migrations.map(({ name }) => name)).toContain(QUANTITY_MIGRATION_NAME);
       expect(migrations.map(({ name }) => name)).toContain(PATTA_MIGRATION_NAME);
+      expect(migrations.map(({ name }) => name)).toContain(PRINT_CORRECTIONS_MIGRATION_NAME);
       const sequenceRows: Array<{ next_number: string }> = await tenant.runtimeDataSource.query(
         `SELECT "next_number"::text AS "next_number" FROM "patta_number_sequence" WHERE "id" = 1`,
       );
       expect(sequenceRows).toEqual([{ next_number: '1' }]);
-      await new PattaSequenceInitializer().initialize(tenant.migrationDataSource, 900n);
+      const partiyaSequenceRows: Array<{ next_number: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "next_number"::text AS "next_number" FROM "patta_partiya_number_sequence" WHERE "id" = 1`,
+      );
+      expect(partiyaSequenceRows).toEqual([{ next_number: '1' }]);
+      await new PattaSequenceInitializer().initialize(tenant.migrationDataSource, 900n, 17n);
       const unchangedRows: Array<{ next_number: string }> = await tenant.runtimeDataSource.query(
         `SELECT "next_number"::text AS "next_number" FROM "patta_number_sequence" WHERE "id" = 1`,
       );
       expect(unchangedRows).toEqual([{ next_number: '1' }]);
+      const unchangedPartiyaRows: Array<{ next_number: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "next_number"::text AS "next_number" FROM "patta_partiya_number_sequence" WHERE "id" = 1`,
+      );
+      expect(unchangedPartiyaRows).toEqual([{ next_number: '1' }]);
 
       const customCompany = await createMasterCompany();
       const customStart = 9_007_199_254_740_993n;
@@ -370,19 +414,32 @@ integrationDescribe(
 
       const emptyCompany = await createMasterCompany();
       const emptyTenant = await createTenant(emptyCompany);
-      await emptyTenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await emptyTenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      let emptyTenantMigrations: Array<{ name: string }> = await emptyTenant.migrationDataSource.query(
+        'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"',
+      );
+      while (emptyTenantMigrations.at(-1)?.name !== PATTA_MIGRATION_NAME) {
+        if (!emptyTenantMigrations.at(-1)?.name) throw new Error('Patta foundation migration is missing');
+        await emptyTenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+        emptyTenantMigrations = await emptyTenant.migrationDataSource.query(
+          'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"',
+        );
+      }
       const absentAfterDown: Array<{ table_name: string }> = await emptyTenant.migrationDataSource.query(
         `SELECT "table_name" FROM "information_schema"."tables"
-         WHERE "table_schema" = 'public' AND "table_name" = 'patta_number_sequence'`,
+         WHERE "table_schema" = 'public' AND "table_name" = ANY($1::text[])`,
+        [['patta_partiya_number_sequence', 'patta_print_batches']],
       );
       expect(absentAfterDown).toHaveLength(0);
       const reapplied = await emptyTenant.migrationDataSource.runMigrations({ transaction: 'all' });
       expect(reapplied.map(({ name }) => name)).toEqual([
-        PATTA_MIGRATION_NAME,
         SYNC_MIGRATION_NAME,
+        QUANTITY_MIGRATION_NAME,
+        PRINT_BATCH_MIGRATION_NAME,
+        SYNC_V2_MIGRATION_NAME,
+        PRINT_CORRECTIONS_MIGRATION_NAME,
+        SHEET_MIGRATION_NAME,
       ]);
-      await initializer.initialize(emptyTenant.migrationDataSource, 77n);
+      await initializer.initialize(emptyTenant.migrationDataSource, 77n, 88n);
       await tenantDatabaseManager.grantRuntimePrivileges(
         emptyTenant.companyId,
         emptyTenant.databaseName,
@@ -391,7 +448,392 @@ integrationDescribe(
       const reinitialized: Array<{ next_number: string }> = await emptyTenant.runtimeDataSource.query(
         `SELECT "next_number"::text AS "next_number" FROM "patta_number_sequence" WHERE "id" = 1`,
       );
-      expect(reinitialized).toEqual([{ next_number: '77' }]);
+      expect(reinitialized).toEqual([{ next_number: '1' }]);
+      const reinitializedPartiya: Array<{ next_number: string }> = await emptyTenant.runtimeDataSource.query(
+        `SELECT "next_number"::text AS "next_number" FROM "patta_partiya_number_sequence" WHERE "id" = 1`,
+      );
+      expect(reinitializedPartiya).toEqual([{ next_number: '88' }]);
+    }, 60_000);
+
+    it('moves legacy snapshot-count values out of actual ish_soni without data loss', async () => {
+      const companyId = await createMasterCompany();
+      const tenant = await createTenant(companyId);
+      const actorId = await createActor(tenant.runtimeDataSource);
+      const model = await featureServices().models.create(tenant.runtimeDataSource, actorId, {
+        name: `Legacy quantity model ${randomUUID()}`,
+      });
+      const operations: Array<{ id: string; name: string }> = [];
+      for (let index = 0; index < 13; index += 1) {
+        operations.push(await featureServices().operations.create(
+          tenant.runtimeDataSource,
+          model.id,
+          actorId,
+          { name: `Legacy operation ${index}`, price: '10.00', sort_order: index },
+        ));
+      }
+
+      let migrationRows: Array<{ name: string }> = await tenant.migrationDataSource.query(
+        'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"',
+      );
+      while (migrationRows.at(-1)?.name !== SYNC_MIGRATION_NAME) {
+        if (!migrationRows.at(-1)?.name) throw new Error('Offline sync migration is missing');
+        await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+        migrationRows = await tenant.migrationDataSource.query(
+          'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"',
+        );
+      }
+
+      const pattaId = randomUUID();
+      const deviceId = await createMasterDevice(companyId, 'ACTIVE');
+      await tenant.migrationDataSource.transaction(async (manager) => {
+        for (const [index, operation] of operations.entries()) {
+          await manager.query(
+            `INSERT INTO "patta_operation_snapshots"
+               ("id", "patta_hisob_id", "operation_id", "operation_name_snapshot", "unit_price_snapshot", "sort_order")
+             VALUES ($1, $2, $3, $4, 10.00, $5)`,
+            [randomUUID(), pattaId, operation.id, operation.name, index],
+          );
+        }
+        await manager.query(
+          `INSERT INTO "patta_hisob"
+             ("id", "partiya_number", "patta_number", "model_id", "model_name_snapshot",
+              "konveyer_snapshot", "rang", "razmer", "ish_soni", "created_device_id")
+           VALUES ($1, 'LEGACY-QTY', 9125, $2, $3, '1-konveyer', 'Qora', 'S', 13, $4)`,
+          [pattaId, model.id, model.name, deviceId],
+        );
+      });
+
+      await migrationRunner.run(tenantDatabaseManager.migrationCredentials(tenant.databaseName));
+
+      const migrated: Array<{ ish_soni: number | null; legacy_operation_count: number }> =
+        await tenant.runtimeDataSource.query(
+          `SELECT "ish_soni", "legacy_operation_count"
+           FROM "patta_hisob" WHERE "id" = $1`,
+          [pattaId],
+        );
+      const snapshotCount: Array<{ count: string }> = await tenant.runtimeDataSource.query(
+        `SELECT count(*)::text AS "count" FROM "patta_operation_snapshots" WHERE "patta_hisob_id" = $1`,
+        [pattaId],
+      );
+      expect(migrated).toEqual([{ ish_soni: null, legacy_operation_count: 13 }]);
+      expect(snapshotCount).toEqual([{ count: '13' }]);
+
+      migrationRows = await tenant.migrationDataSource.query(
+        'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"',
+      );
+      while (migrationRows.at(-1)?.name !== QUANTITY_MIGRATION_NAME) {
+        if (!migrationRows.at(-1)?.name) throw new Error('Quantity semantics migration is missing');
+        await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+        migrationRows = await tenant.migrationDataSource.query(
+          'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"',
+        );
+      }
+      await expect(tenant.migrationDataSource.undoLastMigration({ transaction: 'all' }))
+        .rejects.toThrow(/cannot revert Patta quantity semantics while historical Pattas exist/);
+    }, 60_000);
+
+    it('creates multi-size batches with tenant-global numbering, immutable operation prices, and atomic rollback', async () => {
+      const companyId = await createMasterCompany();
+      const tenant = await createTenant(companyId);
+      const actorId = await createActor(tenant.runtimeDataSource);
+      const deviceId = await createMasterDevice(companyId, 'ACTIVE');
+      const services = featureServices();
+      const createModelWithOperations = async (name: string) => {
+        const model = await services.models.create(tenant.runtimeDataSource, actorId, { name });
+        await services.operations.create(tenant.runtimeDataSource, model.id, actorId, {
+          name: 'Tikish', price: '100.00', sort_order: 0,
+        });
+        await services.operations.create(tenant.runtimeDataSource, model.id, actorId, {
+          name: 'Qadoqlash', price: '25.00', sort_order: 1,
+        });
+        return model;
+      };
+      const inputFor = (modelId: string, size: string) => ({
+        model_id: modelId,
+        ish_soni: 125,
+        rang: 'Qora',
+        size_distribution: [{ razmer: size, patta_count: 1, sort_order: 0 }],
+        device_id: deviceId,
+      });
+      const modelA = await createModelWithOperations(`Print batch A ${randomUUID()}`);
+      const modelB = await createModelWithOperations(`Print batch B ${randomUUID()}`);
+
+      const first = await services.printBatches.create(tenant.runtimeDataSource, actorId, deviceId, {
+        model_id: modelA.id,
+        ish_soni: 125,
+        rang: 'Qora',
+        size_distribution: [
+          { razmer: 'XS', patta_count: 1, sort_order: 0 },
+          { razmer: 'S', patta_count: 2, sort_order: 1 },
+        ],
+        device_id: deviceId,
+      });
+      const second = await services.printBatches.create(tenant.runtimeDataSource, actorId, deviceId, {
+        model_id: modelB.id,
+        ish_soni: 125,
+        rang: 'Qora',
+        size_distribution: [{ razmer: 'M', patta_count: 3, sort_order: 0 }],
+        device_id: deviceId,
+      });
+      expect(first.partiya_number).toBe('1');
+      expect(first.pattas.map(({ patta_number }) => patta_number)).toEqual(['1', '2', '3']);
+      expect(second.partiya_number).toBe('2');
+      expect(second.pattas.map(({ patta_number }) => patta_number)).toEqual(['4', '5', '6']);
+      expect(first.pattas.every(({ ish_soni, operations }) => ish_soni === 125 && operations.length === 2)).toBe(true);
+
+      const initialPrintEventId = randomUUID();
+      const successfulPrint = await services.printBatches.recordPrintEvent(
+        tenant.runtimeDataSource,
+        actorId,
+        deviceId,
+        first.id,
+        {
+          event_id: initialPrintEventId,
+          revision: 1,
+          kind: 'INITIAL',
+          outcome: 'SUCCEEDED',
+          device_id: deviceId,
+        },
+      );
+      expect(successfulPrint.printed_at).not.toBeNull();
+      await expect(services.printBatches.recordPrintEvent(
+        tenant.runtimeDataSource,
+        actorId,
+        deviceId,
+        first.id,
+        {
+          event_id: initialPrintEventId,
+          revision: 1,
+          kind: 'INITIAL',
+          outcome: 'SUCCEEDED',
+          device_id: deviceId,
+        },
+      )).resolves.toEqual(successfulPrint);
+      await services.printBatches.recordPrintEvent(
+        tenant.runtimeDataSource,
+        actorId,
+        deviceId,
+        first.id,
+        {
+          event_id: randomUUID(),
+          revision: 1,
+          kind: 'REPRINT',
+          outcome: 'FAILED',
+          device_id: deviceId,
+        },
+      );
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `UPDATE "patta_print_events" SET "outcome" = 'FAILED' WHERE "id" = $1`,
+          [initialPrintEventId],
+        ),
+        'trg_patta_print_events_append_only',
+      );
+      const firstBatchNumbers: Array<{ partiya_number: string; patta_number: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "partiya_number", "patta_number"::text AS "patta_number"
+         FROM "patta_hisob" WHERE "print_batch_id" = $1 ORDER BY "patta_number"`,
+        [first.id],
+      );
+      expect(firstBatchNumbers).toEqual([
+        { partiya_number: '1', patta_number: '1' },
+        { partiya_number: '1', patta_number: '2' },
+        { partiya_number: '1', patta_number: '3' },
+      ]);
+
+      const pattaValues: Array<{ partiya_number: string; patta_number: string; ish_soni: number; status: string }> =
+        await tenant.runtimeDataSource.query(
+          `SELECT "partiya_number", "patta_number"::text AS "patta_number", "ish_soni", "status"
+           FROM "patta_hisob" WHERE "print_batch_id" = ANY($1::uuid[]) ORDER BY "patta_number"`,
+          [[first.id, second.id]],
+        );
+      expect(pattaValues).toEqual([
+        { partiya_number: '1', patta_number: '1', ish_soni: 125, status: 'ACTIVE' },
+        { partiya_number: '1', patta_number: '2', ish_soni: 125, status: 'ACTIVE' },
+        { partiya_number: '1', patta_number: '3', ish_soni: 125, status: 'ACTIVE' },
+        { partiya_number: '2', patta_number: '4', ish_soni: 125, status: 'ACTIVE' },
+        { partiya_number: '2', patta_number: '5', ish_soni: 125, status: 'ACTIVE' },
+        { partiya_number: '2', patta_number: '6', ish_soni: 125, status: 'ACTIVE' },
+      ]);
+      const operationCounts: Array<{ total: string }> = await tenant.runtimeDataSource.query(
+        `SELECT count(*)::text AS "total" FROM "patta_operation_snapshots"
+         WHERE "patta_hisob_id" = ANY($1::uuid[])`,
+        [[...first.pattas.map(({ id }) => id), ...second.pattas.map(({ id }) => id)]],
+      );
+      expect(operationCounts).toEqual([{ total: '12' }]);
+
+      const concurrent = await Promise.all([
+        services.printBatches.create(tenant.runtimeDataSource, actorId, deviceId, inputFor(modelA.id, 'L')),
+        services.printBatches.create(tenant.runtimeDataSource, actorId, deviceId, inputFor(modelB.id, 'XL')),
+      ]);
+      expect(concurrent.map(({ partiya_number }) => partiya_number).sort()).toEqual(['3', '4']);
+      expect(concurrent.flatMap(({ pattas }) => pattas.map(({ patta_number }) => patta_number)).sort())
+        .toEqual(['7', '8']);
+
+      const beforeFailure: Array<{ partiya_number: string; patta_number: string }> = await tenant.runtimeDataSource.query(
+        `SELECT (SELECT "next_number"::text FROM "patta_partiya_number_sequence" WHERE "id" = 1) AS "partiya_number",
+                (SELECT "next_number"::text FROM "patta_number_sequence" WHERE "id" = 1) AS "patta_number"`,
+      );
+      const failingService = new PattaPrintBatchesService(
+        { append: async () => { throw new Error('Injected audit failure'); } } as unknown as AuditService,
+        services.prices,
+        TEST_PATTA_CONFIGURATION,
+        new SyncChangeRecorder(),
+        services.blocks,
+        services.partiyaBlocks,
+        services.offline,
+      );
+      await expect(failingService.create(
+        tenant.runtimeDataSource, actorId, deviceId, inputFor(modelA.id, 'XXL'),
+      )).rejects.toThrow('Injected audit failure');
+      const afterFailure: Array<{ partiya_number: string; patta_number: string }> = await tenant.runtimeDataSource.query(
+        `SELECT (SELECT "next_number"::text FROM "patta_partiya_number_sequence" WHERE "id" = 1) AS "partiya_number",
+                (SELECT "next_number"::text FROM "patta_number_sequence" WHERE "id" = 1) AS "patta_number"`,
+      );
+      expect(afterFailure).toEqual(beforeFailure);
+    }, 60_000);
+
+    it('enforces Partiya block ownership, monotonic usage, non-overlap and singleton sequence constraints', async () => {
+      const companyId = await createMasterCompany();
+      const tenant = await createTenant(companyId);
+      const actorId = await createActor(tenant.runtimeDataSource);
+      const deviceId = await createMasterDevice(companyId, 'ACTIVE');
+      const secondDeviceId = await createMasterDevice(companyId, 'ACTIVE');
+      const services = featureServices({ ...TEST_PATTA_CONFIGURATION, blockSize: 2n });
+      const allocations = await Promise.all([
+        services.partiyaBlocks.allocate(tenant.runtimeDataSource, actorId, deviceId),
+        services.partiyaBlocks.allocate(tenant.runtimeDataSource, actorId, secondDeviceId),
+      ]);
+      const [block, secondBlock] = allocations;
+      if (!block || !secondBlock) throw new Error('Concurrent Partiya block allocations returned no rows');
+      expect(allocations.map(({ range_start, range_end }) => [range_start, range_end]).sort()).toEqual([
+        ['1', '2'],
+        ['3', '4'],
+      ]);
+      expect(block.status).toBe('ACTIVE');
+
+      await expect(services.partiyaBlocks.reportUsage(tenant.runtimeDataSource, deviceId, block.id, 1n))
+        .resolves.toMatchObject({ reported_used_count: '1', status: 'ACTIVE' });
+      await expect(services.partiyaBlocks.reportUsage(tenant.runtimeDataSource, deviceId, block.id, 0n))
+        .rejects.toMatchObject({ response: { code: 'PARTIYA_BLOCK_USAGE_INVALID' } });
+      await expect(services.partiyaBlocks.reportUsage(tenant.runtimeDataSource, deviceB, block.id, 1n))
+        .rejects.toMatchObject({ response: { code: 'PARTIYA_NUMBER_BLOCK_DEVICE_MISMATCH' } });
+
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `INSERT INTO "patta_partiya_number_blocks" ("device_id", "range_start", "range_end", "created_by")
+           VALUES ($1, 2, 3, $2)`,
+          [deviceId, actorId],
+        ),
+        'ex_patta_partiya_number_blocks_no_overlap',
+      );
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `INSERT INTO "patta_partiya_number_sequence" ("id", "next_number") VALUES (2, 10)`,
+        ),
+        'ck_patta_partiya_number_sequence_singleton',
+      );
+
+      const beforeRollback: Array<{ next_number: string; version: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "next_number"::text AS "next_number", "version"::text AS "version"
+         FROM "patta_partiya_number_sequence" WHERE "id" = 1`,
+      );
+      const rollbackDevice = await createMasterDevice(companyId, 'ACTIVE');
+      const failingBlockService = new PattaPartiyaNumberBlocksService(
+        { append: async () => { throw new Error('Injected Partiya audit failure'); } } as unknown as AuditService,
+        { ...TEST_PATTA_CONFIGURATION, blockSize: 2n },
+        new SyncChangeRecorder(),
+      );
+      await expect(failingBlockService.allocate(tenant.runtimeDataSource, actorId, rollbackDevice))
+        .rejects.toThrow('Injected Partiya audit failure');
+      const afterRollback: Array<{ next_number: string; version: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "next_number"::text AS "next_number", "version"::text AS "version"
+         FROM "patta_partiya_number_sequence" WHERE "id" = 1`,
+      );
+      expect(afterRollback).toEqual(beforeRollback);
+      const afterRollbackBlockCount: Array<{ count: string }> = await tenant.runtimeDataSource.query(
+        `SELECT count(*)::text AS "count" FROM "patta_partiya_number_blocks" WHERE "device_id" = $1`,
+        [rollbackDevice],
+      );
+      expect(afterRollbackBlockCount).toEqual([{ count: '0' }]);
+      const afterRollbackBlock = await services.partiyaBlocks.allocate(
+        tenant.runtimeDataSource, actorId, rollbackDevice,
+      );
+      expect(afterRollbackBlock.range_start).toBe('5');
+
+      await expect(services.partiyaBlocks.reportUsage(tenant.runtimeDataSource, deviceId, block.id, 2n))
+        .resolves.toMatchObject({ reported_used_count: '2', status: 'EXHAUSTED' });
+      await expect(services.partiyaBlocks.reportUsage(tenant.runtimeDataSource, deviceId, block.id, 3n))
+        .rejects.toMatchObject({ response: { code: 'PARTIYA_NUMBER_BLOCK_TERMINAL' } });
+      const afterExhaustion = await services.partiyaBlocks.allocate(
+        tenant.runtimeDataSource, actorId, deviceId,
+      );
+      expect(BigInt(afterExhaustion.range_start)).toBeGreaterThan(BigInt(block.range_end));
+    }, 60_000);
+
+    it('preserves old operation-count values as legacy metadata and leaves actual Patta quantity unknown', async () => {
+      const companyId = await createMasterCompany();
+      const tenant = await createTenant(companyId);
+      const actorId = await createActor(tenant.runtimeDataSource);
+      const services = featureServices();
+      const model = await services.models.create(tenant.runtimeDataSource, actorId, {
+        name: `Legacy quantity model ${randomUUID()}`,
+      });
+      const operations: Array<{ id: string; name: string }> = [];
+      for (let index = 0; index < 13; index += 1) {
+        const operation = await services.operations.create(
+          tenant.runtimeDataSource,
+          model.id,
+          actorId,
+          { name: `Legacy operation ${index}`, price: '10.00', sort_order: index },
+        );
+        operations.push({ id: operation.id, name: operation.name });
+      }
+
+      let migrationRows: Array<{ name: string }> = await tenant.migrationDataSource.query(
+        'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"',
+      );
+      while (migrationRows.at(-1)?.name !== SYNC_MIGRATION_NAME) {
+        if (!migrationRows.at(-1)?.name) throw new Error('Offline sync migration is missing');
+        await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+        migrationRows = await tenant.migrationDataSource.query(
+          'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"',
+        );
+      }
+      const quantityMigrationRow = migrationRows.find(({ name }) => name === QUANTITY_MIGRATION_NAME);
+      expect(quantityMigrationRow).toBeUndefined();
+
+      const pattaId = randomUUID();
+      const deviceId = await createMasterDevice(companyId, 'ACTIVE');
+      await tenant.migrationDataSource.transaction(async (manager) => {
+        for (const [index, operation] of operations.entries()) {
+          await manager.query(
+            `INSERT INTO "patta_operation_snapshots"
+               ("id", "patta_hisob_id", "operation_id", "operation_name_snapshot", "unit_price_snapshot", "sort_order")
+             VALUES ($1, $2, $3, $4, 10.00, $5)`,
+            [randomUUID(), pattaId, operation.id, operation.name, index],
+          );
+        }
+        await manager.query(
+          `INSERT INTO "patta_hisob"
+             ("id", "partiya_number", "patta_number", "model_id", "model_name_snapshot",
+              "konveyer_snapshot", "rang", "razmer", "ish_soni", "created_device_id")
+           VALUES ($1, 'LEGACY-QTY', 9125, $2, $3, '1-konveyer', 'Qora', 'S', 13, $4)`,
+          [pattaId, model.id, model.name, deviceId],
+        );
+      });
+
+      await migrationRunner.run(tenantDatabaseManager.migrationCredentials(tenant.databaseName));
+      const migrated: Array<{ ish_soni: number | null; legacy_operation_count: number }> =
+        await tenant.runtimeDataSource.query(
+          `SELECT "ish_soni", "legacy_operation_count" FROM "patta_hisob" WHERE "id" = $1`,
+          [pattaId],
+        );
+      const snapshotCount: Array<{ count: string }> = await tenant.runtimeDataSource.query(
+        `SELECT count(*)::text AS "count" FROM "patta_operation_snapshots" WHERE "patta_hisob_id" = $1`,
+        [pattaId],
+      );
+      expect(migrated).toEqual([{ ish_soni: null, legacy_operation_count: 13 }]);
+      expect(snapshotCount).toEqual([{ count: '13' }]);
     }, 60_000);
 
     it('validates Master device ownership/status and atomically allocates non-overlapping BIGINT ranges', async () => {
@@ -428,6 +870,26 @@ integrationDescribe(
         ['1', '5'],
         ['6', '10'],
       ]);
+
+      const rollbackDevice = await createMasterDevice(tenant.companyId, 'ACTIVE');
+      const beforeFailedBlockAllocation: Array<{ next_number: string; version: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "next_number"::text AS "next_number", "version"::text AS "version"
+         FROM "patta_number_sequence" WHERE "id" = 1`,
+      );
+      const failingBlockService = new PattaNumberBlocksService(
+        { append: async () => { throw new Error('Injected Patta block audit failure'); } } as unknown as AuditService,
+        configuration,
+        new SyncChangeRecorder(),
+      );
+      await expect(failingBlockService.allocate(tenant.runtimeDataSource, actorId, rollbackDevice))
+        .rejects.toThrow('Injected Patta block audit failure');
+      const afterFailedBlockAllocation: Array<{ next_number: string; version: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "next_number"::text AS "next_number", "version"::text AS "version"
+         FROM "patta_number_sequence" WHERE "id" = 1`,
+      );
+      expect(afterFailedBlockAllocation).toEqual(beforeFailedBlockAllocation);
+      const recoveredBlock = await blocks.allocate(tenant.runtimeDataSource, actorId, rollbackDevice);
+      expect(recoveredBlock.range_start).toBe('11');
 
       const moreDevices = await Promise.all(Array.from({ length: 8 }, () =>
         createMasterDevice(tenant.companyId, 'ACTIVE')));
@@ -563,256 +1025,426 @@ integrationDescribe(
       expect(BigInt(afterCancel.range_start)).toBeGreaterThan(BigInt(cancelBlock.range_end));
     }, 60_000);
 
-    it('creates templates and Patta snapshots from historical prices without changing old records', async () => {
+    it('persists v2 batches with 13 operation snapshots and product quantity 125, and blocks v1 Patta APIs', async () => {
+      const tenant = tenants[0];
+      if (!tenant) throw new Error('Tenant A fixture was not initialized');
+      const actorId = await createActor(tenant.runtimeDataSource);
+      const feature = featureServices();
+      const device = await new DeviceAccessService(masterDataSource).assertActiveDevice(tenant.companyId, deviceA);
+      const model = await feature.models.create(tenant.runtimeDataSource, actorId, {
+        name: `Quantity 125 model ${randomUUID()}`,
+      });
+      for (let index = 0; index < 13; index += 1) {
+        await feature.operations.create(tenant.runtimeDataSource, model.id, actorId, {
+          name: `Operation ${index}`,
+          price: `${index + 1}.00`,
+          sort_order: index,
+        });
+      }
+      const batch = await feature.printBatches.create(tenant.runtimeDataSource, actorId, device.id, {
+        model_id: model.id,
+        ish_soni: 125,
+        rang: 'Qora',
+        device_id: device.id,
+        size_distribution: [
+          { razmer: 'XS', patta_count: 1, sort_order: 0 },
+          { razmer: 'S', patta_count: 1, sort_order: 1 },
+        ],
+      });
+      expect(batch.size_distribution.map(({ razmer }) => razmer)).toEqual(['XS', 'S']);
+      expect(batch.pattas).toHaveLength(2);
+      expect(batch.pattas.every((patta) => patta.ish_soni === 125 && patta.operations.length === 13)).toBe(true);
+
+      const persistedCount: Array<{ ish_soni: number; operation_count: string }> = await tenant.runtimeDataSource.query(
+        `SELECT patta."ish_soni",
+                (SELECT count(*)::text FROM "patta_operation_snapshots" snapshot
+                 WHERE snapshot."patta_hisob_id" = patta."id") AS "operation_count"
+         FROM "patta_hisob" patta WHERE patta."print_batch_id" = $1 ORDER BY patta."patta_number"`,
+        [batch.id],
+      );
+      expect(persistedCount).toEqual([
+        { ish_soni: 125, operation_count: '13' },
+        { ish_soni: 125, operation_count: '13' },
+      ]);
+      const lookup = await feature.printBatches.lookup(tenant.runtimeDataSource, {
+        partiya_number: batch.partiya_number,
+        patta_number: batch.pattas[0]?.patta_number ?? '1',
+      });
+      expect(lookup).toMatchObject({ ish_soni: 125, legacy_operation_count: null, operation_count: 13 });
+
+      await expect(feature.pattas.generate(tenant.runtimeDataSource, actorId, device.id, {
+        partiya_number: 'OLD-CLIENT',
+        model_id: model.id,
+        count: 1,
+      })).rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
+      await expect(feature.pattas.lookup(tenant.runtimeDataSource, batch.partiya_number, batch.pattas[0]?.patta_number ?? '1'))
+        .rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
+      await expect(feature.pattas.list(tenant.runtimeDataSource, { page: 1, limit: 25 }))
+        .rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
+    }, 30_000);
+
+    it('corrects batches with deterministic Patta retention, VOID history, append-only audit and no number reuse', async () => {
+      const tenant = tenants[0];
+      if (!tenant) throw new Error('Tenant A fixture was not initialized');
+      const actorId = await createActor(tenant.runtimeDataSource);
+      await grantTenantPermission(tenant.runtimeDataSource, actorId, 'patta.chiqarish.correct');
+      const feature = featureServices();
+      const device = await new DeviceAccessService(masterDataSource).assertActiveDevice(tenant.companyId, deviceA);
+      const model = await feature.models.create(tenant.runtimeDataSource, actorId, {
+        name: `Correction model ${randomUUID()}`,
+      });
+      await feature.operations.create(tenant.runtimeDataSource, model.id, actorId, {
+        name: 'Tikish', price: '25.00', sort_order: 0,
+      });
+      const original = await feature.printBatches.create(tenant.runtimeDataSource, actorId, device.id, {
+        model_id: model.id,
+        ish_soni: 125,
+        rang: 'Qora',
+        device_id: device.id,
+        size_distribution: [
+          { razmer: 'S', patta_count: 1, sort_order: 0 },
+          { razmer: 'M', patta_count: 1, sort_order: 1 },
+        ],
+      });
+      const sequenceAfterInitialBatch: Array<{ next_number: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "next_number"::text AS "next_number" FROM "patta_number_sequence" WHERE "id" = 1`,
+      );
+      const firstCorrectionNumber = sequenceAfterInitialBatch[0]?.next_number;
+      if (!firstCorrectionNumber) throw new Error('Patta sequence did not return the next correction number');
+      const sizeUp = await feature.printBatches.correctBatch(tenant.runtimeDataSource, actorId, device.id, original.id, {
+        expected_version: '1', correction_reason: 'Yana bir M razmer kerak', ish_soni: 125,
+        rang: 'Qora', device_id: device.id,
+        size_distribution: [
+          { razmer: 'S', patta_count: 1, sort_order: 0 },
+          { razmer: 'M', patta_count: 2, sort_order: 1 },
+        ],
+      });
+      expect(sizeUp.pattas.map(({ id, patta_number, razmer, status }) => [id, patta_number, razmer, status])).toEqual([
+        [original.pattas[0]?.id, original.pattas[0]?.patta_number, 'S', 'ACTIVE'],
+        [original.pattas[1]?.id, original.pattas[1]?.patta_number, 'M', 'ACTIVE'],
+        [sizeUp.pattas[2]?.id, firstCorrectionNumber, 'M', 'ACTIVE'],
+      ]);
+      expect(sizeUp.pattas[0]?.id).toBe(original.pattas[0]?.id);
+
+      const sizeDown = await feature.printBatches.correctBatch(tenant.runtimeDataSource, actorId, device.id, original.id, {
+        expected_version: '2', correction_reason: 'Ortiqcha M olib tashlandi', ish_soni: 125,
+        rang: 'Qora', device_id: device.id,
+        size_distribution: [
+          { razmer: 'S', patta_count: 1, sort_order: 0 },
+          { razmer: 'M', patta_count: 1, sort_order: 1 },
+        ],
+      });
+      expect(sizeDown.pattas.find(({ patta_number }) => patta_number === firstCorrectionNumber)?.status).toBe('VOID');
+
+      const sizeRestored = await feature.printBatches.correctBatch(tenant.runtimeDataSource, actorId, device.id, original.id, {
+        expected_version: '3', correction_reason: 'M taqsimoti qayta tasdiqlandi', ish_soni: 125,
+        rang: 'Qora', device_id: device.id,
+        size_distribution: [
+          { razmer: 'S', patta_count: 1, sort_order: 0 },
+          { razmer: 'M', patta_count: 2, sort_order: 1 },
+        ],
+      });
+      expect(sizeRestored.pattas.map(({ patta_number, status }) => [patta_number, status])).toEqual([
+        [original.pattas[0]?.patta_number, 'ACTIVE'],
+        [original.pattas[1]?.patta_number, 'ACTIVE'],
+        [firstCorrectionNumber, 'VOID'],
+        [(BigInt(firstCorrectionNumber) + 1n).toString(), 'ACTIVE'],
+      ]);
+      expect(sizeRestored).toMatchObject({ version: '4', revision: 4 });
+      const sequence: Array<{ next_number: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "next_number"::text AS "next_number" FROM "patta_number_sequence" WHERE "id" = 1`,
+      );
+      expect(sequence).toEqual([{ next_number: (BigInt(firstCorrectionNumber) + 2n).toString() }]);
+      const correctionLedger: Array<{ reason: string; from_revision: number; to_revision: number }> =
+        await tenant.runtimeDataSource.query(
+          `SELECT "reason", "from_revision", "to_revision" FROM "patta_print_batch_corrections"
+           WHERE "batch_id" = $1 ORDER BY "to_revision"`,
+          [original.id],
+        );
+      expect(correctionLedger.map(({ reason, from_revision, to_revision }) => [reason, from_revision, to_revision])).toEqual([
+        ['Yana bir M razmer kerak', 1, 2],
+        ['Ortiqcha M olib tashlandi', 2, 3],
+        ['M taqsimoti qayta tasdiqlandi', 3, 4],
+      ]);
+      const latestBatchChange: Array<{ projection: { pattas: Array<{ version: string }> } }> =
+        await tenant.runtimeDataSource.query(
+          `SELECT "payload_json" -> 'data' AS "projection" FROM "server_change_log"
+           WHERE "entity_type" = 'patta_print_batches' AND "entity_id" = $1
+           ORDER BY "sequence_id" DESC LIMIT 1`,
+          [original.id],
+        );
+      expect(latestBatchChange[0]?.projection.pattas.map(({ version }) => version)).toEqual(['4', '4', '2', '1']);
+
+      const failingAudit = { append: async () => { throw new Error('injected correction audit failure'); } };
+      const failingCorrectionService = new PattaPrintBatchesService(
+        failingAudit as unknown as AuditService,
+        feature.prices,
+        TEST_PATTA_CONFIGURATION,
+        new SyncChangeRecorder(),
+        feature.blocks,
+        feature.partiyaBlocks,
+        feature.offline,
+      );
+      await expect(failingCorrectionService.correctBatch(tenant.runtimeDataSource, actorId, device.id, original.id, {
+        expected_version: '4', correction_reason: 'Rollback sinovi', ish_soni: 125,
+        rang: 'Qora', device_id: device.id,
+        size_distribution: [
+          { razmer: 'S', patta_count: 1, sort_order: 0 },
+          { razmer: 'M', patta_count: 2, sort_order: 1 },
+        ],
+      })).rejects.toThrow('injected correction audit failure');
+      const postRollbackBatch: Array<{ version: string; revision: number }> = await tenant.runtimeDataSource.query(
+        `SELECT "version"::text AS "version", "revision" FROM "patta_print_batches" WHERE "id" = $1`,
+        [original.id],
+      );
+      const postRollbackSequence: Array<{ next_number: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "next_number"::text AS "next_number" FROM "patta_number_sequence" WHERE "id" = 1`,
+      );
+      expect(postRollbackBatch).toEqual([{ version: '4', revision: 4 }]);
+      expect(postRollbackSequence).toEqual([{ next_number: (BigInt(firstCorrectionNumber) + 2n).toString() }]);
+      const correctionCount: Array<{ count: string }> = await tenant.runtimeDataSource.query(
+        `SELECT count(*)::text AS "count" FROM "patta_print_batch_corrections" WHERE "batch_id" = $1`,
+        [original.id],
+      );
+      expect(correctionCount).toEqual([{ count: '3' }]);
+    }, 30_000);
+
+    it('applies an offline correction with the device block, client UUIDs and immutable operation price snapshots', async () => {
+      const tenant = tenants[0];
+      if (!tenant) throw new Error('Tenant A fixture was not initialized');
+      const actorId = await createActor(tenant.runtimeDataSource);
+      await grantTenantPermission(tenant.runtimeDataSource, actorId, 'patta.chiqarish.correct');
+      const feature = featureServices();
+      const device = await new DeviceAccessService(masterDataSource).assertActiveDevice(tenant.companyId, deviceA);
+      const model = await feature.models.create(tenant.runtimeDataSource, actorId, {
+        name: `Offline correction model ${randomUUID()}`,
+      });
+      const operation = await feature.operations.create(tenant.runtimeDataSource, model.id, actorId, {
+        name: 'Tikish', price: '37.00', sort_order: 0,
+      });
+      const batch = await feature.printBatches.create(tenant.runtimeDataSource, actorId, device.id, {
+        model_id: model.id, ish_soni: 125, rang: 'Qora', device_id: device.id,
+        size_distribution: [{ razmer: 'S', patta_count: 1, sort_order: 0 }],
+      });
+      const oldPatta = batch.pattas[0];
+      if (!oldPatta) throw new Error('Online Patta batch did not include its Patta');
+      const oldSize = batch.size_distribution[0];
+      if (!oldSize) throw new Error('Online Patta batch did not include its size row');
+      const block = await feature.blocks.allocate(tenant.runtimeDataSource, actorId, device.id);
+      const occurredAt = await futureTimestamp(tenant.runtimeDataSource, '0 seconds');
+      const eventId = randomUUID();
+      const newPattaId = randomUUID();
+      const newSnapshotId = randomUUID();
+      const corrected = await tenant.runtimeDataSource.transaction((manager) =>
+        feature.printBatches.registerOfflineBatchCorrection(manager, actorId, device.id, {
+          event_id: eventId,
+          entity_type: 'patta_print_batch',
+          entity_id: batch.id,
+          operation: 'UPDATE',
+          base_version: '1',
+          client_created_at: occurredAt,
+          occurred_at: occurredAt,
+          reference_cursor: '0',
+          payload: {
+            model_id: batch.model_id,
+            model_name_snapshot: batch.model_name_snapshot,
+            partiya_block_id: batch.partiya_block_id,
+            partiya_number: batch.partiya_number,
+            ish_soni: 125,
+            rang: 'Qora',
+            correction_reason: 'Pachka soni qayta aniqlandi',
+            size_distribution: [{
+              id: oldSize.id,
+              razmer: 'S', patta_count: 2, sort_order: 0,
+            }],
+            pattas: [
+              {
+                id: oldPatta.id,
+                patta_number: oldPatta.patta_number,
+                block_id: oldPatta.created_from_block_id,
+                razmer: 'S',
+                operation_snapshots: oldPatta.operations.map((snapshot) => ({
+                  id: snapshot.id,
+                  operation_id: snapshot.operation_id,
+                  operation_name_snapshot: snapshot.operation_name_snapshot,
+                  unit_price_snapshot: snapshot.unit_price_snapshot,
+                  sort_order: snapshot.sort_order,
+                })),
+              },
+              {
+                id: newPattaId,
+                patta_number: block.range_start,
+                block_id: block.id,
+                razmer: 'S',
+                operation_snapshots: [{
+                  id: newSnapshotId,
+                  operation_id: operation.id,
+                  operation_name_snapshot: operation.name,
+                  unit_price_snapshot: '37.00',
+                  sort_order: 0,
+                }],
+              },
+            ],
+            depends_on_event_ids: [],
+          },
+        }),
+      );
+
+      expect(corrected.batch).toMatchObject({ version: '2', revision: 2 });
+      expect(corrected.batch.pattas.map(({ id, patta_number }) => [id, patta_number])).toEqual([
+        [oldPatta.id, oldPatta.patta_number], [newPattaId, block.range_start],
+      ]);
+      expect(corrected.batch.pattas[1]?.operations).toMatchObject([{
+        id: newSnapshotId, operation_id: operation.id, unit_price_snapshot: '37.00',
+      }]);
+      const attribution: Array<{ created_from_block_id: string; created_device_id: string }> =
+        await tenant.runtimeDataSource.query(
+          `SELECT "created_from_block_id"::text AS "created_from_block_id",
+                  "created_device_id"::text AS "created_device_id"
+           FROM "patta_hisob" WHERE "id" = $1`,
+          [newPattaId],
+        );
+      expect(attribution).toEqual([{ created_from_block_id: block.id, created_device_id: device.id }]);
+      const correctionLedger: Array<{ event_id: string | null; reason: string }> =
+        await tenant.runtimeDataSource.query(
+          `SELECT "event_id"::text AS "event_id", "reason" FROM "patta_print_batch_corrections"
+           WHERE "batch_id" = $1 AND "to_revision" = 2`,
+          [batch.id],
+        );
+      expect(correctionLedger).toEqual([{ event_id: eventId, reason: 'Pachka soni qayta aniqlandi' }]);
+    }, 30_000);
+
+    it('enforces Patta Sheet parent, snapshot, row, quantity, and Korzinka purge constraints', async () => {
       const tenant = tenants[0];
       if (!tenant) throw new Error('Tenant A fixture was not initialized');
       const actorId = await createActor(tenant.runtimeDataSource);
       const feature = featureServices();
       const model = await feature.models.create(tenant.runtimeDataSource, actorId, {
-        name: `Patta Atlas ${randomUUID()}`,
+        name: `Sheet constraints model ${randomUUID()}`,
       });
-      const operation = await feature.operations.create(
-        tenant.runtimeDataSource,
-        model.id,
-        actorId,
-        { name: '  Yeng\t tikish ', price: '1000.00', sort_order: 4 },
-      );
-      const template = await feature.templates.create(tenant.runtimeDataSource, actorId, {
-        name: `Atlas template ${randomUUID()}`,
-        model_id: model.id,
-        konveyer: '2-konveyer',
-        razmer: '42',
-        rang: 'Ko‘k',
+      const operationA = await feature.operations.create(tenant.runtimeDataSource, model.id, actorId, {
+        name: 'Tikish', price: '10.00', sort_order: 0,
       });
-      expect(template).toMatchObject({ model_id: model.id, version: '1', status: 'ACTIVE' });
-      const templateChangeRows: Array<{ entity_version: string; data: { name: string } }> =
-        await tenant.runtimeDataSource.query(
-          `SELECT "entity_version", "payload_json" -> 'data' AS "data"
-           FROM "server_change_log"
-           WHERE "entity_type" = 'patta_templates' AND "entity_id" = $1`,
-          [template.id],
-        );
-      expect(templateChangeRows).toEqual([{
-        entity_version: '1',
-        data: expect.objectContaining({ id: template.id, name: template.name }),
-      }]);
-      await expect(feature.templates.getById(tenant.runtimeDataSource, template.id))
-        .resolves.toMatchObject({ id: template.id, name: template.name });
-      await expect(feature.templates.list(tenant.runtimeDataSource, { status: 'ACTIVE' }))
-        .resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: template.id })]));
-      await expect(feature.templates.create(tenant.runtimeDataSource, actorId, {
-        name: `  ${template.name}\t`,
-        model_id: model.id,
-        konveyer: '1',
-      })).rejects.toMatchObject({ response: { code: 'PATTA_TEMPLATE_NAME_CONFLICT' } });
-
+      const operationB = await feature.operations.create(tenant.runtimeDataSource, model.id, actorId, {
+        name: 'Qadoqlash', price: '5.00', sort_order: 1,
+      });
       const device = await new DeviceAccessService(masterDataSource).assertActiveDevice(tenant.companyId, deviceA);
-      const first = await feature.pattas.generate(tenant.runtimeDataSource, actorId, device.id, {
-        partiya_number: ' 25/09-3 ',
-        model_id: model.id,
-        template_id: template.id,
-        count: 2,
+      const batch = await feature.printBatches.create(tenant.runtimeDataSource, actorId, device.id, {
+        model_id: model.id, ish_soni: 125, rang: 'Qora', device_id: device.id,
+        size_distribution: [{ razmer: 'S', patta_count: 1, sort_order: 0 }],
       });
-      const firstPatta = first[0];
-      if (!firstPatta) throw new Error('Patta generation returned no record');
-      expect(first).toHaveLength(2);
-      expect(first[1]?.created_at).toBe(firstPatta.created_at);
-      expect(first[1]?.patta_number).toBe((BigInt(firstPatta.patta_number) + 1n).toString());
-      expect(firstPatta).toMatchObject({
-        partiya_number: '25/09-3',
-        model_name_snapshot: model.name,
-        konveyer_snapshot: '2-konveyer',
-        razmer: '42',
-        rang: 'Ko‘k',
-        ish_soni: 1,
-        operations: [{
-          operation_id: operation.id,
-          operation_name_snapshot: 'Yeng tikish',
-          unit_price_snapshot: '1000.00',
-          sort_order: 4,
+      const patta = batch.pattas[0];
+      const pattaSnapshotA = patta?.operations.find(({ operation_id }) => operation_id === operationA.id);
+      const pattaSnapshotB = patta?.operations.find(({ operation_id }) => operation_id === operationB.id);
+      if (!patta || !pattaSnapshotA || !pattaSnapshotB) throw new Error('Patta operation history was not returned');
+      const workerRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
+        `INSERT INTO "workers" ("full_name") VALUES ('Sheet Worker') RETURNING "id"::text AS "id"`,
+      );
+      const workerId = workerRows[0]?.id;
+      if (!workerId) throw new Error('Sheet test worker was not created');
+      const enteredAt = await futureTimestamp(tenant.runtimeDataSource, '12 hours');
+      const companyTimezones: Array<{ timezone: string }> = await masterDataSource.query(
+        `SELECT "timezone" FROM "companies" WHERE "id" = $1`, [tenant.companyId],
+      );
+      const timezone = companyTimezones[0]?.timezone;
+      if (!timezone) throw new Error('Tenant company timezone was not returned');
+      const businessDates: Array<{ business_date: string }> = await tenant.runtimeDataSource.query(
+        `SELECT (($1::timestamptz AT TIME ZONE $2::text)::date)::text AS "business_date"`,
+        [enteredAt, timezone],
+      );
+      const businessDate = businessDates[0]?.business_date;
+      if (!businessDate) throw new Error('Tenant local business date was not derived');
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "worker_badge_history" ("badge_number", "worker_id", "valid_from", "created_by")
+         VALUES ('0007', $1::bigint, $2::timestamptz - interval '1 hour', $3)`,
+        [workerId, enteredAt, actorId],
+      );
+      const snapshotAId = randomUUID();
+      const snapshotBId = randomUUID();
+      const rowId = randomUUID();
+      const sheet = await feature.sheets.create(tenant.runtimeDataSource, {
+        actorUserId: actorId, validatedDeviceId: device.id, timezone,
+      }, {
+        id: randomUUID(), patta_hisob_id: patta.id, entered_at: enteredAt,
+        business_date: businessDate, conveyor_snapshot: null, device_id: device.id,
+        operation_snapshots: [
+          {
+            id: snapshotAId, model_operation_id: operationA.id, source_type: 'PATTA',
+            source_patta_operation_snapshot_id: pattaSnapshotA.id,
+            operation_name_snapshot: pattaSnapshotA.operation_name_snapshot,
+            unit_price_snapshot: pattaSnapshotA.unit_price_snapshot, sort_order: pattaSnapshotA.sort_order,
+          },
+          {
+            id: snapshotBId, model_operation_id: operationB.id, source_type: 'PATTA',
+            source_patta_operation_snapshot_id: pattaSnapshotB.id,
+            operation_name_snapshot: pattaSnapshotB.operation_name_snapshot,
+            unit_price_snapshot: pattaSnapshotB.unit_price_snapshot, sort_order: pattaSnapshotB.sort_order,
+          },
+        ],
+        rows: [{
+          id: rowId, patta_sheet_operation_snapshot_id: snapshotAId,
+          worker_id: workerId, quantity_snapshot: 125, nuqson: false,
+          entered_badge_number: '0007',
         }],
+        depends_on_event_ids: [],
       });
-      const onlineBlockRows: Array<{ created_from_block_id: string | null; created_device_id: string }> =
-        await tenant.runtimeDataSource.query(
-          `SELECT "created_from_block_id", "created_device_id" FROM "patta_hisob" WHERE "id" = $1`,
-          [firstPatta.id],
-        );
-      expect(onlineBlockRows).toEqual([{ created_from_block_id: null, created_device_id: deviceA }]);
-      const createAudit: Array<{ entity_key: string; after_json: Record<string, unknown> }> =
-        await tenant.runtimeDataSource.query(
-          `SELECT "entity_key", "after_json" FROM "audit_log"
-           WHERE "entity_type" = 'patta' AND "action" = 'patta.create' AND "entity_key" = $1`,
-          [firstPatta.id],
-        );
-      expect(createAudit[0]).toMatchObject({
-        entity_key: firstPatta.id,
-        after_json: {
-          partiya_number: '25/09-3',
-          patta_number: firstPatta.patta_number,
-          model_id: model.id,
-          model_name_snapshot: model.name,
-          device_id: deviceA,
-          block_id: null,
-          source: 'ONLINE',
-        },
-      });
-      const firstPattaIds = first.map(({ id }) => id);
-      const firstPattaAndSnapshotChanges: Array<{
-        sequence_id: string;
-        entity_type: string;
-        entity_id: string;
-        parent_id: string | null;
-      }> = await tenant.runtimeDataSource.query(
-        `SELECT change."sequence_id"::text AS "sequence_id",
-                change."entity_type", change."entity_id",
-                change."payload_json" #>> '{data,patta_hisob_id}' AS "parent_id"
-         FROM "server_change_log" AS change
-         WHERE (change."entity_type" = 'patta_hisob'
-                AND change."entity_id" = ANY($1::varchar[]))
-            OR (change."entity_type" = 'patta_operation_snapshots'
-                AND change."payload_json" #>> '{data,patta_hisob_id}' = ANY($1::varchar[]))
-         ORDER BY change."sequence_id"`,
-        [firstPattaIds],
+      const sheetId = sheet.id;
+
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `INSERT INTO "patta_sheets" ("id", "patta_hisob_id", "entered_at", "business_date", "created_by")
+           VALUES ($1, $2, $3::timestamptz, $4::date, $5)`,
+          [randomUUID(), patta.id, enteredAt, businessDate, actorId],
+        ),
+        'uq_patta_sheets_patta',
       );
-      expect(firstPattaAndSnapshotChanges.map(({ entity_type, entity_id, parent_id }) =>
-        entity_type === 'patta_hisob' ? entity_id : parent_id,
-      )).toEqual([first[0]?.id, first[0]?.id, first[1]?.id, first[1]?.id]);
-      expect(firstPattaAndSnapshotChanges.map(({ entity_type }) => entity_type)).toEqual([
-        'patta_hisob',
-        'patta_operation_snapshots',
-        'patta_hisob',
-        'patta_operation_snapshots',
-      ]);
-      expect(firstPattaAndSnapshotChanges[1]?.entity_id).toMatch(/^[0-9a-f-]{36}$/i);
-      expect(firstPattaAndSnapshotChanges[3]?.entity_id).toMatch(/^[0-9a-f-]{36}$/i);
-
-      await feature.models.update(tenant.runtimeDataSource, actorId, model.id, {
-        name: 'Renamed Atlas model',
-        expected_version: '1',
-      });
-      await feature.operations.update(tenant.runtimeDataSource, actorId, operation.id, {
-        name: 'Yangi yeng tikish',
-        expected_version: '1',
-      });
-      const second = await feature.pattas.generate(tenant.runtimeDataSource, actorId, device.id, {
-        partiya_number: '25/09-3',
-        model_id: model.id,
-        template_id: template.id,
-        rang: null,
-        count: 1,
-      });
-      expect(second[0]).toMatchObject({
-        model_name_snapshot: 'Renamed Atlas model',
-        rang: null,
-        operations: [{ operation_name_snapshot: 'Yangi yeng tikish', unit_price_snapshot: '1000.00' }],
-      });
-
-      const futurePriceAt = await futureTimestamp(tenant.runtimeDataSource, '2 seconds');
-      await feature.prices.changePrice(tenant.runtimeDataSource, {
-        operationId: operation.id,
-        actorUserId: actorId,
-        price: '1200.00',
-        effectiveFrom: futurePriceAt,
-        expectedVersion: '2',
-      });
-      const beforeFuture = await feature.pattas.generate(tenant.runtimeDataSource, actorId, device.id, {
-        partiya_number: '25/09-3',
-        model_id: model.id,
-        template_id: template.id,
-        count: 1,
-      });
-      expect(beforeFuture[0]?.operations[0]?.unit_price_snapshot).toBe('1000.00');
-      await tenant.runtimeDataSource.query("SELECT pg_sleep(2.2)");
-      const afterFuture = await feature.pattas.generate(tenant.runtimeDataSource, actorId, device.id, {
-        partiya_number: '25/09-3',
-        model_id: model.id,
-        template_id: template.id,
-        count: 1,
-      });
-      expect(afterFuture[0]?.operations[0]?.unit_price_snapshot).toBe('1200.00');
-
-      const firstPage = await feature.pattas.list(tenant.runtimeDataSource, {
-        partiya_number: '25/09-3',
-        page: 1,
-        limit: 2,
-      });
-      expect(firstPage).toMatchObject({ total: '5', page: 1, limit: 2 });
-      expect(firstPage.items).toHaveLength(2);
-      const secondPage = await feature.pattas.list(tenant.runtimeDataSource, {
-        partiya_number: '25/09-3',
-        page: 2,
-        limit: 2,
-      });
-      expect(secondPage.items).toHaveLength(2);
-
-      const historical = await feature.pattas.lookup(
-        tenant.runtimeDataSource,
-        ' 25/09-3 ',
-        firstPatta.patta_number,
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `UPDATE "patta_sheets" SET "entered_at" = "entered_at" + interval '1 day', "version" = "version" + 1
+           WHERE "id" = $1`, [sheetId],
+        ),
+        'trg_patta_sheets_immutable_identity',
       );
-      expect(historical).toMatchObject({
-        model: { id: model.id, name: model.name },
-        model_name_snapshot: model.name,
-        operations: [{ operation_name_snapshot: 'Yeng tikish', unit_price_snapshot: '1000.00' }],
-      });
-      const historyCount: Array<{ count: string }> = await tenant.runtimeDataSource.query(
-        `SELECT count(*)::text AS "count" FROM "patta_operation_snapshots" WHERE "patta_hisob_id" = $1`,
-        [firstPatta.id],
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `UPDATE "patta_sheet_operation_snapshots" SET "operation_name_snapshot" = 'Changed' WHERE "id" = $1`,
+          [snapshotAId],
+        ),
+        'trg_patta_sheet_operation_snapshots_immutable',
       );
-      expect(historyCount[0]?.count).toBe('1');
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `INSERT INTO "patta_sheet_rows"
+            ("id", "patta_sheet_id", "patta_sheet_operation_snapshot_id", "worker_id", "quantity_snapshot", "nuqson")
+           VALUES ($1, $2, $3, $4::bigint, 124, false)`,
+          [randomUUID(), sheetId, snapshotBId, workerId],
+        ),
+        'ck_patta_sheet_row_quantity_matches_patta',
+      );
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `DELETE FROM "patta_sheet_rows" WHERE "id" = $1`, [rowId],
+        ),
+        'trg_patta_sheet_children_purge_only',
+      );
 
-      const zeroOperationModel = await feature.models.create(tenant.runtimeDataSource, actorId, {
-        name: `Zero operation ${randomUUID()}`,
-      });
-      await expect(feature.pattas.generate(tenant.runtimeDataSource, actorId, device.id, {
-        partiya_number: 'NO-OPS',
-        model_id: zeroOperationModel.id,
-        konveyer: '1',
-        count: 1,
-      })).rejects.toMatchObject({ response: { code: 'PATTA_MODEL_HAS_NO_OPERATIONS' } });
-
-      const inactiveModel = await feature.models.create(tenant.runtimeDataSource, actorId, {
-        name: `Inactive Patta model ${randomUUID()}`,
-      });
-      await feature.operations.create(tenant.runtimeDataSource, inactiveModel.id, actorId, {
-        name: 'Inactive model operation', price: '10.00', sort_order: 0,
-      });
-      await feature.models.update(tenant.runtimeDataSource, actorId, inactiveModel.id, {
-        status: 'INACTIVE', expected_version: '1',
-      });
-      await expect(feature.pattas.generate(tenant.runtimeDataSource, actorId, device.id, {
-        partiya_number: 'INACTIVE-MODEL',
-        model_id: inactiveModel.id,
-        konveyer: '1',
-        count: 1,
-      })).rejects.toMatchObject({ response: { code: 'MODEL_INACTIVE' } });
-
-      await feature.templates.update(tenant.runtimeDataSource, actorId, template.id, {
-        status: 'INACTIVE',
-        expected_version: '1',
-      });
-      const templateVersions: Array<{ entity_version: string; status: string }> =
-        await tenant.runtimeDataSource.query(
-          `SELECT "entity_version", "payload_json" #>> '{data,status}' AS "status"
-           FROM "server_change_log"
-           WHERE "entity_type" = 'patta_templates' AND "entity_id" = $1
-           ORDER BY "sequence_id"`,
-          [template.id],
-        );
-      expect(templateVersions).toEqual([
-        { entity_version: '1', status: 'ACTIVE' },
-        { entity_version: '2', status: 'INACTIVE' },
-      ]);
-      await expect(feature.templates.list(tenant.runtimeDataSource))
-        .resolves.not.toEqual(expect.arrayContaining([expect.objectContaining({ id: template.id })]));
-      await expect(feature.templates.list(tenant.runtimeDataSource, { status: 'INACTIVE' }))
-        .resolves.toEqual(expect.arrayContaining([expect.objectContaining({ id: template.id })]));
-      await expect(feature.pattas.generate(tenant.runtimeDataSource, actorId, device.id, {
-        partiya_number: 'INACTIVE-TEMPLATE',
-        model_id: model.id,
-        template_id: template.id,
-        count: 1,
-      })).rejects.toMatchObject({ response: { code: 'PATTA_TEMPLATE_INACTIVE' } });
+      await tenant.runtimeDataSource.query(
+        `UPDATE "patta_sheets" SET "deleted_at" = transaction_timestamp(), "deleted_by" = $2,
+          "version" = "version" + 1, "updated_at" = transaction_timestamp() WHERE "id" = $1`,
+        [sheetId, actorId],
+      );
+      await tenant.runtimeDataSource.query('DELETE FROM "patta_sheet_rows" WHERE "id" = $1', [rowId]);
+      await tenant.runtimeDataSource.query('DELETE FROM "patta_sheet_operation_snapshots" WHERE "patta_sheet_id" = $1', [sheetId]);
+      await tenant.runtimeDataSource.query('DELETE FROM "patta_sheets" WHERE "id" = $1', [sheetId]);
+      const pattaStillExists: Array<{ id: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "id" FROM "patta_hisob" WHERE "id" = $1`, [patta.id],
+      );
+      expect(pattaStillExists).toEqual([{ id: patta.id }]);
+      await expect(tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_sheets" ("id", "patta_hisob_id", "entered_at", "business_date", "created_by")
+         VALUES ($1, $2, $3::timestamptz, $4::date, $5) RETURNING "id"`,
+        [randomUUID(), patta.id, enteredAt, businessDate, actorId],
+      )).resolves.toHaveLength(1);
     }, 30_000);
 
     it('registers offline Patta IDs and historical snapshots only against matching references', async () => {
@@ -852,6 +1484,7 @@ integrationDescribe(
         occurred_at: occurredAt,
         reference_cursor: referenceCursor,
         payload: {
+          ish_soni: 125,
           partiya_number: 'OFFLINE-1',
           patta_number: block.range_start,
           model_id: model.id,
@@ -1064,14 +1697,15 @@ integrationDescribe(
         .assertActiveDevice(tenant.companyId, deviceA);
 
       const [renameRace] = await Promise.all([
-        feature.pattas.generate(tenant.runtimeDataSource, actorId, validatedDevice.id, {
-          partiya_number: 'RACE-RENAME', model_id: model.id, konveyer: '1', count: 1,
+        feature.printBatches.create(tenant.runtimeDataSource, actorId, validatedDevice.id, {
+          model_id: model.id, ish_soni: 125, rang: 'Qora', device_id: validatedDevice.id,
+          size_distribution: [{ razmer: 'S', patta_count: 1, sort_order: 0 }],
         }),
         feature.operations.update(tenant.runtimeDataSource, actorId, operation.id, {
           name: 'Concurrent new name', expected_version: '1',
         }),
       ]);
-      const renamedRacePatta = renameRace[0];
+      const renamedRacePatta = renameRace.pattas[0];
       if (!renamedRacePatta) throw new Error('Concurrent rename Patta was not created');
       expect(['Concurrent old name', 'Concurrent new name'])
         .toContain(renamedRacePatta.operations[0]?.operation_name_snapshot);
@@ -1083,30 +1717,33 @@ integrationDescribe(
         { name: 'Concurrent added operation', price: '300.00', sort_order: 1 },
       );
       const [deactivateRace] = await Promise.all([
-        feature.pattas.generate(tenant.runtimeDataSource, actorId, validatedDevice.id, {
-          partiya_number: 'RACE-DEACTIVATE', model_id: model.id, konveyer: '1', count: 1,
+        feature.printBatches.create(tenant.runtimeDataSource, actorId, validatedDevice.id, {
+          model_id: model.id, ish_soni: 125, rang: 'Qora', device_id: validatedDevice.id,
+          size_distribution: [{ razmer: 'M', patta_count: 1, sort_order: 0 }],
         }),
         feature.operations.update(tenant.runtimeDataSource, actorId, newOperation.id, {
           status: 'INACTIVE', expected_version: '1',
         }),
       ]);
-      const deactivationPatta = deactivateRace[0];
+      const deactivationPatta = deactivateRace.pattas[0];
       if (!deactivationPatta) throw new Error('Concurrent deactivation Patta was not created');
       const deactivationSnapshotRows: Array<{ operation_id: string }> = await tenant.runtimeDataSource.query(
         `SELECT "operation_id" FROM "patta_operation_snapshots"
          WHERE "patta_hisob_id" = $1 ORDER BY "operation_id"`,
         [deactivationPatta.id],
       );
-      expect(deactivationPatta.ish_soni).toBe(deactivationSnapshotRows.length);
+      expect(deactivationPatta.ish_soni).toBe(125);
+      expect([1, 2]).toContain(deactivationSnapshotRows.length);
       expect(deactivationSnapshotRows.map(({ operation_id }) => operation_id)).toEqual(
         expect.arrayContaining([operation.id]),
       );
       expect(deactivationSnapshotRows.some(({ operation_id }) => operation_id === newOperation.id))
-        .toBe(deactivationPatta.ish_soni === 2);
+        .toBe(deactivationSnapshotRows.length === 2);
 
       const [priceRace] = await Promise.all([
-        feature.pattas.generate(tenant.runtimeDataSource, actorId, validatedDevice.id, {
-          partiya_number: 'RACE-PRICE', model_id: model.id, konveyer: '1', count: 1,
+        feature.printBatches.create(tenant.runtimeDataSource, actorId, validatedDevice.id, {
+          model_id: model.id, ish_soni: 125, rang: 'Qora', device_id: validatedDevice.id,
+          size_distribution: [{ razmer: 'L', patta_count: 1, sort_order: 0 }],
         }),
         feature.prices.changePrice(tenant.runtimeDataSource, {
           operationId: operation.id,
@@ -1115,7 +1752,7 @@ integrationDescribe(
           expectedVersion: '2',
         }),
       ]);
-      const priceRacePatta = priceRace[0];
+      const priceRacePatta = priceRace.pattas[0];
       if (!priceRacePatta) throw new Error('Concurrent price Patta was not created');
       const storedPrice = priceRacePatta.operations.find(({ operation_id }) => operation_id === operation.id)
         ?.unit_price_snapshot;
@@ -1142,41 +1779,46 @@ integrationDescribe(
       const modelB = await featureB.models.create(otherTenant.runtimeDataSource, actorB, {
         name: `Same tenant-isolated model`,
       });
-      const operationA = await featureA.operations.create(tenant.runtimeDataSource, modelA.id, actorA, {
+      await featureA.operations.create(tenant.runtimeDataSource, modelA.id, actorA, {
         name: 'Same operation', price: '500.00', sort_order: 0,
       });
-      const operationB = await featureB.operations.create(otherTenant.runtimeDataSource, modelB.id, actorB, {
+      await featureB.operations.create(otherTenant.runtimeDataSource, modelB.id, actorB, {
         name: 'Same operation', price: '700.00', sort_order: 0,
       });
       const validDeviceA = await new DeviceAccessService(masterDataSource).assertActiveDevice(tenant.companyId, localDeviceA);
       const validDeviceB = await new DeviceAccessService(masterDataSource).assertActiveDevice(otherTenant.companyId, localDeviceB);
-      const generatedA = await featureA.pattas.generate(tenant.runtimeDataSource, actorA, validDeviceA.id, {
-        partiya_number: 'A-125', model_id: modelA.id, konveyer: '1', count: 1,
+      const generatedA = await featureA.printBatches.create(tenant.runtimeDataSource, actorA, validDeviceA.id, {
+        model_id: modelA.id, ish_soni: 125, rang: 'Qora', device_id: validDeviceA.id,
+        size_distribution: [{ razmer: 'S', patta_count: 1, sort_order: 0 }],
       });
-      const generatedB = await featureB.pattas.generate(otherTenant.runtimeDataSource, actorB, validDeviceB.id, {
-        partiya_number: 'A-125', model_id: modelB.id, konveyer: '1', count: 1,
+      const generatedB = await featureB.printBatches.create(otherTenant.runtimeDataSource, actorB, validDeviceB.id, {
+        model_id: modelB.id, ish_soni: 125, rang: 'Qora', device_id: validDeviceB.id,
+        size_distribution: [{ razmer: 'S', patta_count: 1, sort_order: 0 }],
       });
-      expect(generatedA[0]?.patta_number).toBe(generatedB[0]?.patta_number);
+      const generatedPattaA = generatedA.pattas[0];
+      const generatedPattaB = generatedB.pattas[0];
+      if (!generatedPattaA || !generatedPattaB) throw new Error('Tenant-isolated print batch did not return its Patta');
+      expect(generatedPattaA.patta_number).toBe(generatedPattaB.patta_number);
       await featureA.offline.assertBusinessKeyAvailable(
         tenant.runtimeDataSource,
-        ' A-125 ',
-        BigInt(generatedA[0]?.patta_number ?? '1') + 1n,
+        generatedA.partiya_number,
+        BigInt(generatedPattaA.patta_number) + 1n,
       );
       await expect(featureA.offline.assertBusinessKeyAvailable(
         tenant.runtimeDataSource,
-        'A-125',
-        BigInt(generatedA[0]?.patta_number ?? '1'),
+        generatedA.partiya_number,
+        BigInt(generatedPattaA.patta_number),
       )).rejects.toMatchObject({ response: { code: 'PATTA_ALREADY_EXISTS' } });
       await expect(featureA.pattas.lookup(
         tenant.runtimeDataSource,
-        'A-125',
-        generatedB[0]?.patta_number ?? '1',
-      )).resolves.toMatchObject({ model: { id: modelA.id }, operations: [{ operation_id: operationA.id }] });
+        generatedA.partiya_number,
+        generatedPattaA.patta_number,
+      )).rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
       await expect(featureB.pattas.lookup(
         otherTenant.runtimeDataSource,
-        'A-125',
-        generatedA[0]?.patta_number ?? '1',
-      )).resolves.toMatchObject({ model: { id: modelB.id }, operations: [{ operation_id: operationB.id }] });
+        generatedB.partiya_number,
+        generatedPattaB.patta_number,
+      )).rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
 
       const duplicateNumber = '9000000000000001';
       await tenant.runtimeDataSource.query(
@@ -1205,8 +1847,7 @@ integrationDescribe(
       expect(rejectedPairRace?.status === 'rejected' ? rejectedPairRace.reason : undefined)
         .toMatchObject({ driverError: { constraint: 'uq_patta_hisob_partiya_patta' } });
 
-      const pattaId = generatedA[0]?.id;
-      if (!pattaId) throw new Error('Generated Patta ID is missing');
+      const pattaId = generatedPattaA.id;
       const historyTemplate = await featureA.templates.create(tenant.runtimeDataSource, actorA, {
         name: `Protected template ${randomUUID()}`,
         model_id: modelA.id,
@@ -1227,10 +1868,10 @@ integrationDescribe(
         ),
         'trg_patta_operation_snapshots_immutable',
       );
-      await expectConstraintViolation(
-        tenant.migrationDataSource.undoLastMigration({ transaction: 'all' }),
-        'ck_sync_schema_empty_before_revert',
-      );
+        await expectConstraintViolation(
+          tenant.migrationDataSource.undoLastMigration({ transaction: 'all' }),
+          'ck_patta_sheets_empty_before_revert',
+        );
       const stillApplied: Array<{ name: string }> = await tenant.migrationDataSource.query(
         `SELECT "name" FROM "tenant_typeorm_migrations" WHERE "name" = $1`,
         [SYNC_MIGRATION_NAME],
@@ -1253,7 +1894,16 @@ integrationDescribe(
         [`Rollback template ${randomUUID()}`, modelId],
       );
 
-      await rollbackTenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      let rollbackMigrations: Array<{ name: string }> = await rollbackTenant.migrationDataSource.query(
+        'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"',
+      );
+      while (rollbackMigrations.at(-1)?.name !== PATTA_MIGRATION_NAME) {
+        if (!rollbackMigrations.at(-1)?.name) throw new Error('Patta foundation migration is missing');
+        await rollbackTenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+        rollbackMigrations = await rollbackTenant.migrationDataSource.query(
+          'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"',
+        );
+      }
       await expectConstraintViolation(
         rollbackTenant.migrationDataSource.undoLastMigration({ transaction: 'all' }),
         'ck_patta_foundation_empty_before_revert',
@@ -1269,6 +1919,7 @@ integrationDescribe(
       if (!tenant) throw new Error('Tenant B fixture was not initialized');
       const actorId = await createActor(tenant.runtimeDataSource);
       const feature = featureServices();
+      const deviceId = await createMasterDevice(tenant.companyId, 'ACTIVE');
       const model = await feature.models.create(tenant.runtimeDataSource, actorId, {
         name: `Rollback model ${randomUUID()}`,
       });
@@ -1279,6 +1930,10 @@ integrationDescribe(
         `SELECT "next_number"::text AS "next_number", "version"::text AS "version"
          FROM "patta_number_sequence" WHERE "id" = 1`,
       );
+      const beforePartiyaSequence: Array<{ next_number: string; version: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "next_number"::text AS "next_number", "version"::text AS "version"
+         FROM "patta_partiya_number_sequence" WHERE "id" = 1`,
+      );
       const beforeSnapshotCount: Array<{ count: string }> = await tenant.runtimeDataSource.query(
         'SELECT count(*)::text AS "count" FROM "patta_operation_snapshots"',
       );
@@ -1286,7 +1941,7 @@ integrationDescribe(
         CREATE FUNCTION "reject_test_patta_audit"()
         RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN
-          IF NEW."action" = 'patta.create' THEN
+          IF NEW."action" = 'patta_print_batch.create' THEN
             RAISE EXCEPTION 'test Patta audit failure' USING ERRCODE = 'P0001';
           END IF;
           RETURN NEW;
@@ -1297,8 +1952,12 @@ integrationDescribe(
         BEFORE INSERT ON "audit_log" FOR EACH ROW EXECUTE FUNCTION "reject_test_patta_audit"()
       `);
       try {
-        await expect(feature.pattas.generate(tenant.runtimeDataSource, actorId, deviceB, {
-          partiya_number: 'ROLLBACK-PATTA', model_id: model.id, konveyer: '1', count: 2,
+        await expect(feature.printBatches.create(tenant.runtimeDataSource, actorId, deviceId, {
+          model_id: model.id,
+          ish_soni: 125,
+          rang: 'Qora',
+          device_id: deviceId,
+          size_distribution: [{ razmer: 'S', patta_count: 2, sort_order: 0 }],
         })).rejects.toThrow(/test Patta audit failure/);
       } finally {
         await tenant.migrationDataSource.query('DROP TRIGGER "trg_test_patta_audit_failure" ON "audit_log"');
@@ -1309,8 +1968,15 @@ integrationDescribe(
          FROM "patta_number_sequence" WHERE "id" = 1`,
       );
       expect(afterSequence).toEqual(beforeSequence);
+      const afterPartiyaSequence: Array<{ next_number: string; version: string }> = await tenant.runtimeDataSource.query(
+        `SELECT "next_number"::text AS "next_number", "version"::text AS "version"
+         FROM "patta_partiya_number_sequence" WHERE "id" = 1`,
+      );
+      expect(afterPartiyaSequence).toEqual(beforePartiyaSequence);
       const noPatta: Array<{ count: string }> = await tenant.runtimeDataSource.query(
-        `SELECT count(*)::text AS "count" FROM "patta_hisob" WHERE "partiya_number" = 'ROLLBACK-PATTA'`,
+        `SELECT count(*)::text AS "count" FROM "patta_hisob"
+         WHERE "model_id" = $1 AND "partiya_number" = '1'`,
+        [model.id],
       );
       expect(noPatta[0]?.count).toBe('0');
       const noSnapshots: Array<{ count: string }> = await tenant.runtimeDataSource.query(
@@ -1319,8 +1985,9 @@ integrationDescribe(
       expect(noSnapshots).toEqual(beforeSnapshotCount);
       const noPattaAudit: Array<{ count: string }> = await tenant.runtimeDataSource.query(
         `SELECT count(*)::text AS "count" FROM "audit_log"
-         WHERE "entity_type" = 'patta' AND "action" = 'patta.create'
-           AND "after_json"->>'partiya_number' = 'ROLLBACK-PATTA'`,
+         WHERE "entity_type" = 'patta_print_batch' AND "action" = 'patta_print_batch.create'
+           AND "after_json"->>'model_id' = $1`,
+        [model.id],
       );
       expect(noPattaAudit[0]?.count).toBe('0');
     }, 30_000);
