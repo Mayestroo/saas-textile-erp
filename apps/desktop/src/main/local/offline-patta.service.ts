@@ -42,6 +42,7 @@ export interface PattaCreateEventFactory {
 
 export interface CreateOfflinePattaInput extends LocalPattaReferenceInput {
   partiya_number: string
+  ish_soni: number
 }
 
 export interface OfflinePattaCreateResult {
@@ -72,6 +73,7 @@ export class DefaultPattaCreateEventFactory implements PattaCreateEventFactory {
   }): OfflinePattaCreateEvent {
     const { patta } = input
     const payload: SyncPattaCreatePayload = {
+      ish_soni: patta.ish_soni,
       partiya_number: patta.partiya_number,
       patta_number: patta.patta_number,
       model_id: patta.model_id,
@@ -153,6 +155,11 @@ export class OfflinePattaService {
 
   create(input: CreateOfflinePattaInput): OfflinePattaCreateResult {
     const partiyaNumber = canonicalPartiyaNumber(input.partiya_number)
+    if (!Number.isSafeInteger(input.ish_soni) || input.ish_soni <= 0) {
+      throw new LocalDomainError('PATTA_QUANTITY_INVALID', 'Ish soni 0 dan katta butun son bo‘lishi kerak', {
+        field: 'ish_soni'
+      })
+    }
     const occurredAt = assertTimestamp(input.occurred_at, 'occurred_at')
     const clientCreatedAt = assertTimestamp(
       this.dependencies.clock.nowIsoUtc(),
@@ -226,7 +233,7 @@ export class OfflinePattaService {
         konveyer_snapshot: currentSnapshot.konveyer,
         razmer: currentSnapshot.razmer,
         rang: currentSnapshot.rang,
-        ish_soni: operations.length,
+        ish_soni: input.ish_soni,
         created_device_id: this.dependencies.deviceId,
         created_from_block_id: allocation.blockId,
         created_at: clientCreatedAt,

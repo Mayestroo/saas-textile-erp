@@ -2,6 +2,7 @@ import type {
   AuthenticatedHttpClient,
   AuthenticatedHttpRequest
 } from './authenticated-sync-transport'
+import { fetchWithLocalTenantFallback } from '../auth/local-tenant-host'
 
 export interface AuthenticatedSessionProvider {
   accessToken(): Promise<string | null>
@@ -92,8 +93,8 @@ export class FetchAuthenticatedHttpClient implements AuthenticatedHttpClient {
     return body
   }
 
-  private send(request: AuthenticatedHttpRequest, accessToken: string): Promise<Response> {
-    return this.fetcher(request.url, {
+  private async send(request: AuthenticatedHttpRequest, accessToken: string): Promise<Response> {
+    const options: RequestInit = {
       method: request.method,
       headers: {
         Accept: 'application/json',
@@ -105,6 +106,7 @@ export class FetchAuthenticatedHttpClient implements AuthenticatedHttpClient {
       credentials: 'omit',
       redirect: 'error',
       signal: AbortSignal.timeout(15_000)
-    })
+    }
+    return fetchWithLocalTenantFallback(this.fetcher, request.url, options)
   }
 }

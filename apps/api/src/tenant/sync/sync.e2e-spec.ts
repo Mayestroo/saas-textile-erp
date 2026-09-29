@@ -35,7 +35,7 @@ const foreignDeviceId = '77777777-7777-4777-8777-777777777777';
 
 const permissionByUser = new Map<string, Set<string>>([
   [viewUserId, new Set(['sync.pull'])],
-  [syncUserId, new Set(['sync.pull', 'sync.push', 'patta.chiqarish.create'])],
+    [syncUserId, new Set(['sync.pull', 'sync.push'])],
   [pushOnlyUserId, new Set(['sync.push'])],
 ]);
 
@@ -180,7 +180,7 @@ describe('Tenant sync API (e2e)', () => {
     expect(connectionManager.getDataSource).not.toHaveBeenCalled();
   });
 
-  it('requires sync permissions and additionally requires Patta creation permission for push', async () => {
+  it('enforces route-level sync permissions while event permissions remain a domain check', async () => {
     const viewToken = await issueToken('tenant', viewUserId);
     await request(app.getHttpServer())
       .post('/api/v1/sync/push')
@@ -195,8 +195,13 @@ describe('Tenant sync API (e2e)', () => {
       .set('Host', 'atlas-textile.erp.example.test')
       .set('Authorization', `Bearer ${pushOnlyToken}`)
       .send({ device_id: deviceId, events: [] })
-      .expect(403);
-    expect(syncService.push).not.toHaveBeenCalled();
+      .expect(200);
+    expect(syncService.push).toHaveBeenCalledWith(
+      expect.objectContaining({ dataSource: tenantDataSource, actorUserId: pushOnlyUserId }),
+      deviceId,
+      [],
+      1,
+    );
   });
 
   it('validates and authorizes a device before push and pull service calls', async () => {
@@ -234,6 +239,7 @@ describe('Tenant sync API (e2e)', () => {
       tenantDataSource,
       '0',
       10,
+      1,
     );
   });
 
@@ -252,7 +258,7 @@ describe('Tenant sync API (e2e)', () => {
       .post('/api/v1/sync/push')
       .set('Host', 'atlas-textile.erp.example.test')
       .set('Authorization', `Bearer ${token}`)
-      .send({ device_id: deviceId, events: [{}, {}, {}] })
+      .send({ device_id: deviceId, protocol_version: 2, events: [{}, {}, {}] })
       .expect(200);
     expect(response.body).toEqual(outcomes);
     expect(syncService.push).toHaveBeenCalledOnce();
@@ -284,10 +290,10 @@ describe('Tenant sync API (e2e)', () => {
       .post('/api/v1/sync/bootstrap')
       .set('Host', host)
       .set('Authorization', `Bearer ${token}`)
-      .send({ device_id: deviceId })
+      .send({ device_id: deviceId, protocol_version: 1 })
       .expect(201);
     expect(created.body).toMatchObject({ id: sessionIdValue, watermark: '12840' });
-    expect(syncBootstrapService.create).toHaveBeenCalledWith(tenantDataSource, deviceId);
+    expect(syncBootstrapService.create).toHaveBeenCalledWith(tenantDataSource, deviceId, 1);
 
     const page = await request(app.getHttpServer())
       .get(`/api/v1/sync/bootstrap/${sessionIdValue}`)
@@ -302,6 +308,7 @@ describe('Tenant sync API (e2e)', () => {
       sessionIdValue,
       '9007199254740992',
       10,
+      1,
     );
 
     const completed = await request(app.getHttpServer())

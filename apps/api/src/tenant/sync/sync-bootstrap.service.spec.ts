@@ -31,12 +31,13 @@ function bootstrapSessionQueryRow(overrides: Record<string, unknown> = {}) {
     device_id: deviceId,
     watermark: '12840',
     status: 'ACTIVE',
+    protocol_version: 1,
     is_expired: false,
     ...overrides,
   };
 }
 
-function queryRunnerHarness() {
+function queryRunnerHarness(pattaDataPresent = false) {
   const commands: string[] = [];
   const query = vi.fn(async (sql: string, parameters: unknown[] = []) => {
     commands.push(sql);
@@ -55,6 +56,7 @@ function queryRunnerHarness() {
     if (sql.includes('SELECT "id"::text AS "id" FROM "bootstrap_sessions"')) {
       return [];
     }
+    if (sql.includes('AS "present"')) return [{ present: pattaDataPresent }];
     return [];
   });
   const runner = {
@@ -65,7 +67,7 @@ function queryRunnerHarness() {
     commitTransaction: vi.fn(async () => undefined),
     rollbackTransaction: vi.fn(async () => undefined),
     release: vi.fn(async () => undefined),
-    isTransactionActive: false,
+    isTransactionActive: true,
   } as unknown as QueryRunner;
   const dataSource = { createQueryRunner: vi.fn(() => runner) } as unknown as DataSource;
   return { commands, dataSource, query, runner };
@@ -130,6 +132,61 @@ describe('SyncBootstrapService', () => {
 
     await expect(service.page(dataSource, foreignDeviceId, sessionId, null, 2))
       .rejects.toBeInstanceOf(ForbiddenException);
+  });
+
+  it('materializes only non-Patta references for the default v1 bootstrap protocol', async () => {
+    const harness = queryRunnerHarness();
+    const service = new SyncBootstrapService(loadSyncConfiguration({}));
+
+    await expect(service.create(harness.dataSource, deviceId)).resolves.toMatchObject({
+      status: 'ACTIVE',
+      device_id: deviceId,
+    });
+    const materialize = harness.query.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO "bootstrap_items"'));
+    expect(materialize?.[0]).toContain('NOT LIKE \'patta%\'');
+    expect(harness.runner.commitTransaction).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a v1 bootstrap that would omit existing Patta data', async () => {
+    const harness = queryRunnerHarness(true);
+    const service = new SyncBootstrapService(loadSyncConfiguration({}));
+
+    await expect(service.create(harness.dataSource, deviceId))
+      .rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
+    expect(harness.runner.rollbackTransaction).toHaveBeenCalledOnce();
+    expect(harness.runner.commitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('materializes v2 Patta projections in addition to non-Patta references', async () => {
+    const harness = queryRunnerHarness();
+    const service = new SyncBootstrapService(loadSyncConfiguration({}));
+
+    await service.create(harness.dataSource, deviceId, 2);
+    const materializationCalls = harness.query.mock.calls.filter(([sql]) =>
+      String(sql).includes('INSERT INTO "bootstrap_items"'),
+    );
+    expect(materializationCalls).toHaveLength(2);
+    expect(String(materializationCalls[0]?.[0])).toContain('NOT LIKE \'patta%\'');
+    expect(String(materializationCalls[1]?.[0])).toContain("'patta_print_batches'");
+  });
+
+  it('returns a structured upgrade error when a v1 bootstrap page would expose Patta data', async () => {
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes('FROM "bootstrap_sessions"')) return [bootstrapSessionQueryRow()];
+      if (sql.includes('FROM "bootstrap_items"')) return [{
+        order_key: '1',
+        entity_type: 'patta_print_batches',
+        entity_id: '77777777-7777-4777-8777-777777777777',
+        projection_version: 2,
+        payload_json: {},
+      }];
+      return [];
+    });
+    const service = new SyncBootstrapService(loadSyncConfiguration({}));
+    const dataSource = { query } as unknown as DataSource;
+
+    await expect(service.page(dataSource, deviceId, sessionId, null, 50))
+      .rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
   });
 
   it('requires a new session after expiry or terminal staging cleanup', async () => {

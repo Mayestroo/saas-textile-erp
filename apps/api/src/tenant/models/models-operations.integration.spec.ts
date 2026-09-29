@@ -45,6 +45,7 @@ const provisionerCredentials = configuredVariables.length === TEST_DATABASE_VARI
 const MIGRATION_NAME = 'AddModelsOperationsAndPriceHistory20260926000300';
 const PATTA_MIGRATION_NAME = 'AddPattaFoundation20260926000500';
 const SYNC_MIGRATION_NAME = 'AddOfflineSyncInfrastructure20260926000600';
+const SHEET_MIGRATION_NAME = 'AddPattaSheets20260928001100';
 
 interface ConstraintError {
   driverError?: {
@@ -209,7 +210,7 @@ integrationDescribe(
       const migrations: Array<{ name: string }> = await tenant.migrationDataSource.query(
         `SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"`,
       );
-      expect(migrations.at(-1)?.name).toBe(SYNC_MIGRATION_NAME);
+      expect(migrations.at(-1)?.name).toBe(SHEET_MIGRATION_NAME);
       expect(migrations.map(({ name }) => name)).toContain(MIGRATION_NAME);
       expect(migrations.map(({ name }) => name)).toContain(PATTA_MIGRATION_NAME);
 
@@ -801,6 +802,11 @@ integrationDescribe(
         'trg_audit_log_append_only',
       );
 
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
       await expect(
         tenant.migrationDataSource.undoLastMigration({ transaction: 'all' }),
       ).rejects.toThrow('cannot revert sync schema');

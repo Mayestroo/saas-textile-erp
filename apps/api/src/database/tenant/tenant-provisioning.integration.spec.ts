@@ -366,7 +366,7 @@ integrationDescribe(
         provisioningStatus: 'ACTIVE',
         failureStep: null,
         failureReason: null,
-        schemaVersion: 'AddOfflineSyncInfrastructure20260926000600',
+        schemaVersion: 'AddPattaSheets20260928001100',
       });
       expect(JSON.stringify(result)).not.toContain(admin.password);
       await expect(
@@ -402,9 +402,19 @@ integrationDescribe(
           'model_operations',
           'models',
           'patta_hisob',
+          'patta_legacy_quantity_corrections',
           'patta_number_blocks',
           'patta_number_sequence',
           'patta_operation_snapshots',
+          'patta_partiya_number_blocks',
+          'patta_partiya_number_sequence',
+          'patta_print_batch_corrections',
+          'patta_print_batch_sizes',
+          'patta_print_batches',
+          'patta_print_events',
+          'patta_sheet_operation_snapshots',
+          'patta_sheet_rows',
+          'patta_sheets',
           'patta_templates',
           'permissions',
           'processed_sync_events',
@@ -417,6 +427,11 @@ integrationDescribe(
           'workers',
         ]);
 
+        await migrationDataSource.undoLastMigration({ transaction: 'all' });
+        await migrationDataSource.undoLastMigration({ transaction: 'all' });
+        await migrationDataSource.undoLastMigration({ transaction: 'all' });
+        await migrationDataSource.undoLastMigration({ transaction: 'all' });
+        await migrationDataSource.undoLastMigration({ transaction: 'all' });
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
@@ -444,10 +459,16 @@ integrationDescribe(
           'AddWorkersAndBadgeHistory20260926000400',
           'AddPattaFoundation20260926000500',
           'AddOfflineSyncInfrastructure20260926000600',
+          'CorrectPattaQuantitySemantics20260928000700',
+          'AddPattaPrintBatches20260928000800',
+          'AddSyncProtocolV2Sessions20260928000900',
+          'AddPattaPrintBatchCorrections20260928001000',
+          'AddPattaSheets20260928001100',
         ]);
         await new PattaSequenceInitializer().initialize(
           migrationDataSource,
           loadPattaConfiguration(process.env).numberStart,
+          loadPattaConfiguration(process.env).partiyaNumberStart,
         );
         await tenantDatabaseManager.grantRuntimePrivileges(
           result.companyId,
@@ -716,6 +737,11 @@ integrationDescribe(
           'AddWorkersAndBadgeHistory20260926000400',
           'AddPattaFoundation20260926000500',
           'AddOfflineSyncInfrastructure20260926000600',
+          'CorrectPattaQuantitySemantics20260928000700',
+          'AddPattaPrintBatches20260928000800',
+          'AddSyncProtocolV2Sessions20260928000900',
+          'AddPattaPrintBatchCorrections20260928001000',
+          'AddPattaSheets20260928001100',
         ]);
         const userCount: Array<{ count: string }> =
           await migrationDataSource.query(
@@ -760,6 +786,11 @@ integrationDescribe(
           'AddWorkersAndBadgeHistory20260926000400',
           'AddPattaFoundation20260926000500',
           'AddOfflineSyncInfrastructure20260926000600',
+          'CorrectPattaQuantitySemantics20260928000700',
+          'AddPattaPrintBatches20260928000800',
+          'AddSyncProtocolV2Sessions20260928000900',
+          'AddPattaPrintBatchCorrections20260928001000',
+          'AddPattaSheets20260928001100',
         ]);
       } finally {
         await migrationDataSource.destroy();
@@ -1031,11 +1062,16 @@ integrationDescribe(
           access_token: string;
           refresh_token: string;
           user: { id: string };
-          company: { id: string; slug: string };
+          company: { id: string; slug: string; timezone: string };
         };
+        const timezoneRows: Array<{ timezone: string }> = await masterDataSource.query(
+          `SELECT "timezone" FROM "companies" WHERE "id" = $1`,
+          [companyA.companyId],
+        );
         expect(tenantTokens.company).toEqual({
           id: companyA.companyId,
           slug: companyASlug,
+          timezone: timezoneRows[0]?.timezone,
         });
         expect(JSON.stringify(tenantLogin.body)).not.toContain(
           tenantAdminPassword,
@@ -1163,6 +1199,7 @@ integrationDescribe(
           .set('Host', `${companyASlug}.erp.example.test`)
           .send({ refresh_token: tenantTokens.refresh_token })
           .expect(200);
+        expect(tenantRotation.body.company).toEqual(tenantTokens.company);
         expect(tenantRotation.body.refresh_token).not.toBe(
           tenantTokens.refresh_token,
         );

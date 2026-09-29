@@ -15,7 +15,7 @@ export interface LocalPattaRecord {
   model_id: string
   model_name_snapshot: string
   template_id: string | null
-  konveyer_snapshot: string
+  konveyer_snapshot: string | null
   razmer: string | null
   rang: string | null
   ish_soni: number
@@ -38,7 +38,15 @@ export interface PersistedLocalPatta extends Omit<
   | 'version'
   | 'created_from_block_id'
   | 'ownership_state'
+  | 'ish_soni'
+  | 'konveyer_snapshot'
 > {
+  ish_soni: number | null
+  legacy_operation_count: number | null
+  status: 'ACTIVE' | 'VOID'
+  print_batch_id: string | null
+  printed_at: string | null
+  konveyer_snapshot: string | null
   created_from_block_id: string | null
   version: string
   ownership_state: LocalPattaOwnershipState

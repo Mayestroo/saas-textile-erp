@@ -2,12 +2,15 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openSqliteDatabase } from '../database/sqlite-database'
 import { LocalUnitOfWork } from '../local/local-unit-of-work'
 import { PattaLocalRepository } from '../local/patta-local.repository'
+import type { DesktopSyncRuntime } from '../sync/create-sync-runtime'
+import type { DesktopPattaPrintBatchInput } from '../../preload/erp-api'
+import type { PattaPrintBatchProjection } from '@textile/sync-protocol'
 import type { DesktopAuthStatus, DesktopIpcChannel, DesktopSafeSession } from '../../preload/erp-api'
-import { createErpApi } from '../../preload/erp-api'
+import { createErpApi, createNarrowIpcInvoker } from '../../preload/erp-api'
 import { createMainProcessIpcServices, registerIpcHandlers } from './register-ipc-handlers'
 import type { IpcHandler, MainProcessIpcDependencies } from './register-ipc-handlers'
 
@@ -36,7 +39,8 @@ function createAuthService(
     },
     company: initialState === 'SIGNED_OUT' ? null : {
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      slug: 'atlas'
+      slug: 'atlas',
+      timezone: 'Asia/Tashkent'
     },
     tenant_host: initialState === 'SIGNED_OUT' ? null : 'atlas.example.test'
   }
@@ -52,7 +56,7 @@ function createAuthService(
           email: 'operator@example.test',
           full_name: 'Operator One'
         },
-        company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'atlas' },
+        company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'atlas', timezone: 'Asia/Tashkent' },
         tenant_host: 'atlas.example.test'
       }
       return status
@@ -67,7 +71,8 @@ function createAuthService(
 }
 
 function createTenantRuntime(
-  pattaRepository: PattaLocalRepository
+  pattaRepository: PattaLocalRepository,
+  syncRuntime: DesktopSyncRuntime | null = null
 ): MainProcessIpcDependencies['tenantRuntime'] {
   return {
     getSyncStatus: (state: DesktopAuthStatus['state']) => ({
@@ -83,7 +88,8 @@ function createTenantRuntime(
       pushed: 0,
       pulled: 0
     }),
-    activePattaRepository: () => pattaRepository
+    activePattaRepository: () => pattaRepository,
+    activeSyncRuntime: () => syncRuntime
   }
 }
 
@@ -97,6 +103,24 @@ afterEach(() => {
 })
 
 describe('narrow renderer IPC bridge', () => {
+  it('omits undefined payloads so main handlers receive only their invocation event', async () => {
+    const calls: Array<{ channel: string; args: unknown[] }> = []
+    const invoker = createNarrowIpcInvoker({
+      invoke: async (channel, ...args) => {
+        calls.push({ channel, args })
+        return null
+      }
+    })
+
+    await invoker.invoke('auth:status')
+    await invoker.invoke('patta:lookup', { partiyaNumber: '1', pattaNumber: '2' })
+
+    expect(calls).toEqual([
+      { channel: 'auth:status', args: [] },
+      { channel: 'patta:lookup', args: [{ partiyaNumber: '1', pattaNumber: '2' }] }
+    ])
+  })
+
   it('exposes only typed fixed operations and sends validated lookup arguments', async () => {
     const calls: Array<{ channel: DesktopIpcChannel; payload: unknown }> = []
     const api = createErpApi({
@@ -129,39 +153,82 @@ describe('narrow renderer IPC bridge', () => {
               email: 'operator@example.test',
               full_name: 'Operator One'
             },
-            company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'atlas' },
+            company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'atlas', timezone: 'Asia/Tashkent' },
             tenant_host: 'atlas.example.test'
           }
         }
-        return {
+        if (channel === 'patta:lookup') return {
+          id: 'patta-1',
           partiya_number: 'PARTIYA-1',
           patta_number: '100',
+          model_id: 'model-1',
           model_name_snapshot: 'Atlas',
+          template_id: null,
+          print_batch_id: null,
+          printed_at: null,
           konveyer_snapshot: 'Line A',
           razmer: null,
           rang: null,
-          ish_soni: 1,
+          ish_soni: 125,
+          legacy_operation_count: null,
+          status: 'ACTIVE',
           created_at: timestamp,
           operations: [
             {
+              id: 'snapshot-1',
+              operation_id: 'operation-1',
               operation_name_snapshot: 'Sewing',
               unit_price_snapshot: '12.50',
               sort_order: 0
             }
           ]
         }
+        if (channel === 'patta-print:models') return [{ id: 'model-1', name: 'Atlas' }]
+        if (channel === 'patta-print:get-batch') return null
+        if (channel === 'patta-print:record-event') return {
+          id: 'event-1', batch_id: 'batch-1', revision: 1, kind: 'INITIAL', outcome: 'SUCCEEDED',
+          actor_user_id: null, device_id: 'device-1', created_at: timestamp, printed_at: timestamp
+        }
+        if (channel === 'patta-print:create-batch' || channel === 'patta-print:correct-batch') return {
+          id: 'batch-1', model_id: 'model-1', model_name_snapshot: 'Atlas', partiya_number: '1',
+          partiya_block_id: 'partiya-block', ish_soni: 125, rang: 'Qora', status: 'ACTIVE',
+          version: '0', revision: 1, corrected_from_batch_id: null, created_by: null,
+          created_device_id: 'device-1', created_at: timestamp, updated_at: timestamp, printed_at: null,
+          size_distribution: [{ id: 'size-1', print_batch_id: 'batch-1', razmer: 'S', patta_count: 1, sort_order: 0 }],
+          pattas: [{
+            id: 'patta-1', partiya_number: '1', patta_number: '1', model_id: 'model-1',
+            model_name_snapshot: 'Atlas', template_id: null, print_batch_id: 'batch-1', printed_at: null,
+            konveyer_snapshot: null, razmer: 'S', rang: 'Qora', ish_soni: 125,
+            legacy_operation_count: null, status: 'ACTIVE', created_at: timestamp, operations: []
+          }]
+        }
+        return null
       }
     })
 
-    expect(Object.keys(api).sort()).toEqual(['app', 'auth', 'patta', 'sync'])
+    expect(Object.keys(api).sort()).toEqual(['app', 'auth', 'modelAccount', 'patta', 'pattaPrint', 'pattaSheet', 'sync'])
     expect(await api.app.getVersion()).toBe('1.2.3')
     expect(await api.sync.status()).toMatchObject({ unsyncedCount: 2, conflictCount: 1 })
     expect(await api.sync.run()).toMatchObject({ status: 'COMPLETED', pulled: 4 })
     expect(await api.patta.lookup('PARTIYA-1', '100')).toMatchObject({
       partiya_number: 'PARTIYA-1',
       patta_number: '100',
+      ish_soni: 125,
       operations: [{ unit_price_snapshot: '12.50' }]
     })
+    expect(await api.pattaPrint.models()).toEqual([{ id: 'model-1', name: 'Atlas' }])
+    expect(await api.pattaPrint.createBatch({
+      model_id: 'model-1', ish_soni: 125, rang: 'Qora',
+      size_distribution: [{ razmer: 'S', patta_count: 1, sort_order: 0 }]
+    })).toMatchObject({ id: 'batch-1', pattas: [{ ish_soni: 125 }] })
+    expect(await api.pattaPrint.correctBatch({
+      batch_id: 'batch-1', expected_version: '1', correction_reason: 'Razmer aniqlandi',
+      ish_soni: 125, rang: 'Qora', size_distribution: [{ razmer: 'S', patta_count: 1, sort_order: 0 }]
+    })).toMatchObject({ id: 'batch-1', pattas: [{ ish_soni: 125 }] })
+    expect(await api.pattaPrint.getBatch('batch-1')).toBeNull()
+    expect(await api.pattaPrint.recordEvent({
+      batch_id: 'batch-1', revision: 1, kind: 'INITIAL', outcome: 'SUCCEEDED'
+    })).toMatchObject({ id: 'event-1', outcome: 'SUCCEEDED' })
     expect(await api.auth.login({
       tenantUrl: 'atlas.example.test',
       email: 'operator@example.test',
@@ -175,12 +242,17 @@ describe('narrow renderer IPC bridge', () => {
       'sync:status',
       'sync:run',
       'patta:lookup',
+      'patta-print:models',
+      'patta-print:create-batch',
+      'patta-print:correct-batch',
+      'patta-print:get-batch',
+      'patta-print:record-event',
       'auth:login',
       'auth:status',
       'auth:session',
       'auth:logout'
     ])
-    expect(calls.at(4)?.payload).toEqual({
+    expect(calls.at(9)?.payload).toEqual({
       tenantUrl: 'atlas.example.test',
       email: 'operator@example.test',
       password: 'password-value'
@@ -234,6 +306,103 @@ describe('narrow renderer IPC bridge', () => {
 })
 
 describe('main-process IPC handlers', () => {
+  it('exposes validated local print batches through narrow main-process services', () => {
+    const database = createDatabase()
+    const batch = {
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      model_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      model_name_snapshot: 'Atlas',
+      partiya_number: '1',
+      partiya_block_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      ish_soni: 125,
+      rang: 'Qora',
+      status: 'ACTIVE' as const,
+      version: '0',
+      revision: 1,
+      corrected_from_batch_id: null,
+      created_by: null,
+      created_device_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      created_at: timestamp,
+      updated_at: timestamp,
+      printed_at: null,
+      size_distribution: [{
+        id: '11111111-1111-4111-8111-111111111111',
+        print_batch_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        razmer: 'S', patta_count: 1, sort_order: 0
+      }],
+      pattas: []
+    }
+    const createBatch = (
+      input: DesktopPattaPrintBatchInput
+    ): { batch: PattaPrintBatchProjection; should_prefetch: boolean } => {
+      expect(input).toEqual({
+        model_id: batch.model_id,
+        ish_soni: 125,
+        rang: 'Qora',
+        size_distribution: [{ razmer: 'S', patta_count: 1, sort_order: 0 }]
+      })
+      return { batch, should_prefetch: false }
+    }
+    const correctBatch = vi.fn((input: {
+      batch_id: string; expected_version: string; correction_reason: string; ish_soni: number;
+      rang: string; size_distribution: readonly { razmer: string; patta_count: number; sort_order: number }[]
+    }) => {
+      expect(input).toEqual({
+        batch_id: batch.id, expected_version: '1', correction_reason: 'Rang qayta tekshirildi',
+        ish_soni: 125, rang: 'Qora', size_distribution: [{ razmer: 'S', patta_count: 1, sort_order: 0 }]
+      })
+      return { batch: { ...batch, version: '1', revision: 2 }, should_prefetch: false }
+    })
+    const printEvent = {
+      id: '22222222-2222-4222-8222-222222222222', batch_id: batch.id, revision: 1,
+      kind: 'INITIAL' as const, outcome: 'SUCCEEDED' as const, actor_user_id: null,
+      device_id: batch.created_device_id, created_at: timestamp, printed_at: timestamp
+    }
+    const printRuntime = {
+      pattaPrintService: { createBatch, correctBatch, recordPrintEvent: () => printEvent },
+      repositories: {
+        models: { listActiveModels: () => [{ id: batch.model_id, name: 'Atlas' }] },
+        printBatches: { getById: () => batch }
+      }
+    } as unknown as DesktopSyncRuntime
+    const services = createMainProcessIpcServices({
+      appVersion: () => '1.2.3',
+      authService: createAuthService('OFFLINE_SESSION_PENDING'),
+      tenantRuntime: {
+        ...createTenantRuntime(new PattaLocalRepository(database)),
+        activeSyncRuntime: () => printRuntime
+      }
+    })
+
+    expect(services.listPattaPrintModels()).toEqual([{ id: batch.model_id, name: 'Atlas' }])
+    expect(services.createPattaPrintBatch({
+      model_id: batch.model_id,
+      ish_soni: 125,
+      rang: 'Qora',
+      size_distribution: [{ razmer: 'S', patta_count: 1, sort_order: 0 }]
+    })).toMatchObject({ id: batch.id, partiya_number: '1', ish_soni: 125 })
+    expect(services.correctPattaPrintBatch({
+      batch_id: batch.id.toUpperCase(), expected_version: '1', correction_reason: ' Rang   qayta tekshirildi ',
+      ish_soni: 125, rang: 'Qora', size_distribution: [{ razmer: 'S', patta_count: 1, sort_order: 0 }]
+    })).toMatchObject({ id: batch.id, revision: 2 })
+    expect(correctBatch).toHaveBeenCalledOnce()
+    expect(() => services.correctPattaPrintBatch({
+      batch_id: batch.id, expected_version: '1', correction_reason: 'Sabab', ish_soni: 125,
+      rang: 'Qora', size_distribution: [{ razmer: 'S', patta_count: 1, sort_order: 0 }], unexpected: true
+    })).toThrow('Patta tuzatish ma’lumoti yaroqsiz')
+    expect(services.getPattaPrintBatch(batch.id)).toMatchObject({ id: batch.id })
+    expect(services.recordPattaPrintEvent({
+      batch_id: batch.id, revision: 1, kind: 'INITIAL', outcome: 'SUCCEEDED'
+    })).toEqual(printEvent)
+    expect(() => services.createPattaPrintBatch({
+      model_id: batch.model_id,
+      ish_soni: 125,
+      rang: 'Qora',
+      size_distribution: [{ razmer: 'S', patta_count: 1, sort_order: 0 }],
+      company_id: 'not-authority'
+    })).toThrow('Patta bosma to‘plami ma’lumoti yaroqsiz')
+  })
+
   it('registers only the approved auth, version, sync, and sanitized local Patta handlers', async () => {
     const database = createDatabase()
     const pattaRepository = new PattaLocalRepository(database)
@@ -253,8 +422,24 @@ describe('main-process IPC handlers', () => {
       'app:get-version',
       'auth:login',
       'auth:logout',
-      'auth:session',
-      'auth:status',
+        'auth:session',
+        'auth:status',
+        'model-account:get',
+        'patta-print:correct-batch',
+      'patta-print:create-batch',
+      'patta-print:get-batch',
+      'patta-print:models',
+      'patta-print:print-batch',
+      'patta-print:record-event',
+        'patta-sheet:create',
+        'patta-sheet:history',
+        'patta-sheet:lookup',
+        'patta-sheet:models',
+        'patta-sheet:purge',
+        'patta-sheet:resolve-badge',
+        'patta-sheet:restore',
+        'patta-sheet:trash',
+        'patta-sheet:update',
       'patta:lookup',
       'sync:run',
       'sync:status'
@@ -271,6 +456,9 @@ describe('main-process IPC handlers', () => {
       pulled: 0
     })
     expect(await handlers.get('auth:status')?.({})).toEqual({
+      state: 'SIGNED_OUT', errorCode: null, message: null
+    })
+    await expect(handlers.get('auth:status')?.({}, undefined)).resolves.toEqual({
       state: 'SIGNED_OUT', errorCode: null, message: null
     })
     expect(await handlers.get('auth:session')?.({})).toEqual({
@@ -290,7 +478,7 @@ describe('main-process IPC handlers', () => {
     })).resolves.toMatchObject({ state: 'AUTHENTICATED' })
     expect(await handlers.get('auth:session')?.({})).toMatchObject({
       state: 'AUTHENTICATED',
-      company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'atlas' }
+      company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'atlas', timezone: 'Asia/Tashkent' }
     })
     expect(await handlers.get('auth:logout')?.({})).toMatchObject({ state: 'SIGNED_OUT' })
     expect(
@@ -311,6 +499,73 @@ describe('main-process IPC handlers', () => {
         }
       )
     ).rejects.toThrow('Patta raqami yaroqsiz')
+    await expect(handlers.get('patta-print:models')?.({}, 'extra'))
+      .rejects.toThrow('Model ro‘yxati so‘rovi yaroqsiz')
+  })
+
+  it('records local print attempts around main-process printing without changing batch identity', async () => {
+    const database = createDatabase()
+    const batch = {
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      model_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      model_name_snapshot: 'Atlas',
+      partiya_number: '1',
+      partiya_block_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      ish_soni: 125,
+      rang: 'Qora',
+      status: 'ACTIVE' as const,
+      version: '0',
+      revision: 1,
+      corrected_from_batch_id: null,
+      created_by: null,
+      created_device_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      created_at: timestamp,
+      updated_at: timestamp,
+      printed_at: null,
+      size_distribution: [],
+      pattas: []
+    }
+    const events: Array<{ outcome: string; kind: string }> = []
+    const printRuntime = {
+      pattaPrintService: {
+        createBatch: () => ({ batch, should_prefetch: false }),
+        recordPrintEvent: (input: { outcome: string; kind: string }) => {
+          events.push(input)
+          return {
+            id: '11111111-1111-4111-8111-111111111111',
+            batch_id: batch.id,
+            revision: 1,
+            kind: input.kind,
+            outcome: input.outcome,
+            actor_user_id: null,
+            device_id: batch.created_device_id,
+            created_at: timestamp,
+            printed_at: input.outcome === 'SUCCEEDED' ? timestamp : null
+          }
+        }
+      },
+      repositories: {
+        models: { listActiveModels: () => [{ id: batch.model_id, name: batch.model_name_snapshot }] },
+        printBatches: { getById: () => batch }
+      }
+    } as unknown as DesktopSyncRuntime
+    let printedHtmlPayload: unknown
+    const services = createMainProcessIpcServices({
+      appVersion: () => '1.2.3',
+      authService: createAuthService('OFFLINE_SESSION_PENDING'),
+      tenantRuntime: {
+        ...createTenantRuntime(new PattaLocalRepository(database)),
+        activeSyncRuntime: () => printRuntime
+      },
+      printPattaBatch: async (printedBatch) => { printedHtmlPayload = printedBatch }
+    })
+
+    const result = await services.printPattaBatch(batch.id)
+    expect(printedHtmlPayload).toEqual(batch)
+    expect(events).toEqual([
+      { batch_id: batch.id, revision: 1, outcome: 'SUCCEEDED', kind: 'INITIAL' }
+    ])
+    expect(result).toMatchObject({ batch: { id: batch.id, partiya_number: '1' }, event: { outcome: 'SUCCEEDED' } })
   })
 
   it('removes tenant/device identifiers and internal row fields from Patta lookup results', () => {
@@ -371,13 +626,22 @@ describe('main-process IPC handlers', () => {
       partiya_number: 'PARTIYA-1',
       patta_number: '100',
       model_name_snapshot: 'Atlas',
+      id: 'patta-1',
+      model_id: 'model-1',
+      template_id: null,
+      print_batch_id: null,
+      printed_at: null,
       konveyer_snapshot: 'Line A',
       razmer: null,
       rang: null,
       ish_soni: 1,
+      legacy_operation_count: null,
+      status: 'ACTIVE',
       created_at: timestamp,
       operations: [
         {
+          id: 'snapshot-1',
+          operation_id: 'operation-1',
           operation_name_snapshot: 'Sewing',
           unit_price_snapshot: '12.50',
           sort_order: 0

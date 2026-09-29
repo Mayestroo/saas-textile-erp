@@ -5,6 +5,8 @@ import type Database from 'better-sqlite3'
 import { afterEach, describe, expect, it } from 'vitest'
 import type {
   OfflinePattaCreateEvent,
+  PattaPrintBatchSyncEvent,
+  PattaV2LookupMirror,
   SyncConflict,
   SyncChange,
   SyncBootstrapPage,
@@ -18,6 +20,7 @@ import { ReferenceMirrorRepository } from './reference-mirror.repository'
 import { SyncConflictRepository } from './sync-conflict.repository'
 import { SyncQueueRepository } from './sync-queue.repository'
 import { SyncStateRepository } from './sync-state.repository'
+import { PattaLocalRepository } from './patta-local.repository'
 
 const temporaryDirectories: string[] = []
 const openDatabases: Database.Database[] = []
@@ -51,6 +54,7 @@ function makePattaEvent(): OfflinePattaCreateEvent {
     occurred_at: timestamp,
     reference_cursor: '7',
     payload: {
+      ish_soni: 125,
       partiya_number: 'PARTIYA-1',
       patta_number: '100',
       model_id: 'model-1',
@@ -65,6 +69,69 @@ function makePattaEvent(): OfflinePattaCreateEvent {
     }
   }
 }
+
+describe('Patta v2 fallback mirror', () => {
+  it('persists a fetched legacy Patta and operation snapshots without aliasing legacy count to quantity', () => {
+    const database = createDatabase()
+    const unitOfWork = new LocalUnitOfWork(database)
+    const staging = new BootstrapStagingRepository(database, unitOfWork)
+    const mirrors = new ReferenceMirrorRepository(unitOfWork, staging, new SyncStateRepository(database))
+    const pattaId = '77777777-7777-4777-8777-777777777777'
+    const operationSnapshotId = '88888888-8888-4888-8888-888888888888'
+    database.prepare(`
+      INSERT INTO models (id, name, status, version, created_at, updated_at)
+      VALUES ('model-1', 'Atlas', 'ACTIVE', '1', ?, ?)
+    `).run(timestamp, timestamp)
+    database.prepare(`
+      INSERT INTO model_operations (id, model_id, name, sort_order, status, version, created_at, updated_at)
+      VALUES ('operation-1', 'model-1', 'Tikish', 0, 'ACTIVE', '1', ?, ?)
+    `).run(timestamp, timestamp)
+    const mirror: PattaV2LookupMirror = {
+      server_sequence: '17',
+      batch: null,
+      patta: {
+        id: pattaId,
+        partiya_number: 'LEGACY-1',
+        patta_number: '15',
+        model_id: 'model-1',
+        model_name_snapshot: 'Atlas',
+        template_id: null,
+        konveyer_snapshot: null,
+        razmer: 'S',
+        rang: 'Qora',
+        ish_soni: null,
+        legacy_operation_count: 1,
+        status: 'ACTIVE',
+        version: '1',
+        print_batch_id: null,
+        created_device_id: 'device-1',
+        created_from_block_id: null,
+        created_at: timestamp,
+        client_created_at: null,
+        occurred_at: null,
+        operations: [{
+          id: operationSnapshotId,
+          patta_hisob_id: pattaId,
+          operation_id: 'operation-1',
+          operation_name_snapshot: 'Tikish',
+          unit_price_snapshot: '37.00',
+          sort_order: 0,
+          created_at: timestamp
+        }]
+      }
+    }
+
+    mirrors.applyPattaV2LookupMirror(mirror)
+
+    expect(new PattaLocalRepository(database).findByBusinessKey('LEGACY-1', '15')).toMatchObject({
+      id: pattaId,
+      ish_soni: null,
+      legacy_operation_count: 1,
+      operations: [{ id: operationSnapshotId, operation_id: 'operation-1', unit_price_snapshot: '37.00' }]
+    })
+    expect(new SyncStateRepository(database).lastServerCursor()).toBeNull()
+  })
+})
 
 function makeProjections(): readonly SyncProjection[] {
   return [
@@ -371,6 +438,70 @@ function repositories(database: Database.Database): {
 }
 
 describe('local sync repositories', () => {
+  it('keeps batch queue IDs stable, blocks dependents until prerequisites sync, and refreshes only never-sent cursors', () => {
+    const database = createDatabase()
+    const queue = new SyncQueueRepository(database)
+    const prerequisite: PattaPrintBatchSyncEvent = {
+      event_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      entity_type: 'patta_print_batch',
+      entity_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      operation: 'CREATE',
+      base_version: '0',
+      client_created_at: timestamp,
+      occurred_at: timestamp,
+      reference_cursor: '7',
+      payload: {
+        model_id: 'model-1',
+        model_name_snapshot: 'Atlas',
+        partiya_block_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        partiya_number: '1',
+        ish_soni: 125,
+        rang: 'Qora',
+        size_distribution: [{ id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', razmer: 'S', patta_count: 1, sort_order: 0 }],
+        pattas: [{
+          id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+          patta_number: '1',
+          block_id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+          razmer: 'S',
+          operation_snapshots: [{
+            id: '99999999-9999-4999-8999-999999999999',
+            operation_id: '88888888-8888-4888-8888-888888888888',
+            operation_name_snapshot: 'Tikish',
+            unit_price_snapshot: '12.50',
+            sort_order: 0
+          }]
+        }],
+        depends_on_event_ids: []
+      }
+    }
+    const dependent = {
+      ...prerequisite,
+      event_id: '77777777-7777-4777-8777-777777777777',
+      entity_id: '66666666-6666-4666-8666-666666666666',
+      reference_cursor: '7',
+      payload: { ...prerequisite.payload, depends_on_event_ids: [prerequisite.event_id] }
+    } satisfies PattaPrintBatchSyncEvent
+
+    queue.enqueue(prerequisite)
+    queue.enqueue(dependent)
+    queue.enqueue(dependent)
+    expect(queue.pendingBatch(10, timestamp).map(({ event_id }) => event_id)).toEqual([prerequisite.event_id])
+    const originalPayload = database.prepare('SELECT payload_json FROM sync_queue WHERE event_id = ?')
+      .get(dependent.event_id) as { payload_json: string }
+    database.prepare(`UPDATE sync_queue SET status = 'SYNCED', ever_sent = 1, updated_at = ? WHERE event_id = ?`)
+      .run('2026-09-26T09:00:00.000Z', prerequisite.event_id)
+
+    expect(queue.pendingBatch(10, timestamp).map(({ event_id }) => event_id)).toEqual([dependent.event_id])
+    expect(queue.refreshPendingDependentCursors('12841', timestamp)).toBe(1)
+    expect(database.prepare('SELECT reference_cursor, payload_json, ever_sent FROM sync_queue WHERE event_id = ?')
+      .get(dependent.event_id)).toEqual({ reference_cursor: '12841', payload_json: originalPayload.payload_json, ever_sent: 0 })
+    expect(queue.cleanupSyncedOlderThan(timestamp)).toBe(0)
+
+    database.prepare('DELETE FROM sync_event_dependencies WHERE event_id = ?').run(dependent.event_id)
+    expect(queue.cleanupSyncedOlderThan(timestamp)).toBe(1)
+    expect(database.prepare('SELECT event_id FROM sync_queue WHERE event_id = ?').get(prerequisite.event_id)).toBeUndefined()
+  })
+
   it('rolls back the business row and queue insertion together', () => {
     const database = createDatabase()
     const unitOfWork = new LocalUnitOfWork(database)

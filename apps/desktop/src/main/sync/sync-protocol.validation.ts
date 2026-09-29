@@ -1,11 +1,14 @@
 import { z } from 'zod'
 import type {
   PattaNumberBlockProjection,
+  PattaPartiyaNumberBlockProjection,
+  PattaV2LookupMirror,
   SyncBootstrapCompleteResponse,
   SyncBootstrapPage,
   SyncBootstrapSession,
   SyncChange,
   SyncProjection,
+  SyncProjectionV2,
   SyncPullResponse,
   SyncPushResponse
 } from '@textile/sync-protocol'
@@ -25,7 +28,14 @@ const entityTypeSchema = z.enum([
   'patta_templates',
   'patta_hisob',
   'patta_operation_snapshots',
-  'patta_number_blocks'
+  'patta_number_blocks',
+  'patta_partiya_number_blocks',
+  'patta_print_batches',
+  'patta_print_batch_sizes',
+  'patta_print_events',
+  'patta_sheets',
+  'patta_sheet_operation_snapshots',
+  'patta_sheet_rows'
 ])
 
 const workerDataSchema = z
@@ -145,7 +155,161 @@ const pattaNumberBlockDataSchema = z
   })
   .strict()
 
-const projectionSchema = z
+const pattaV2DataSchema = z
+  .object({
+    id: nonEmptyStringSchema,
+    partiya_number: nonEmptyStringSchema,
+    patta_number: positiveDecimalSchema,
+    model_id: nonEmptyStringSchema,
+    model_name_snapshot: nonEmptyStringSchema,
+    template_id: nonEmptyStringSchema.nullable(),
+    konveyer_snapshot: nonEmptyStringSchema.nullable(),
+    razmer: nonEmptyStringSchema.nullable(),
+    rang: nonEmptyStringSchema.nullable(),
+    ish_soni: z.number().int().positive().nullable(),
+    legacy_operation_count: z.number().int().positive().nullable(),
+    status: z.enum(['ACTIVE', 'VOID']),
+    print_batch_id: nonEmptyStringSchema.nullable(),
+    created_device_id: nonEmptyStringSchema,
+    created_from_block_id: nonEmptyStringSchema.nullable(),
+    created_at: timestampSchema,
+    client_created_at: timestampSchema.nullable(),
+    occurred_at: timestampSchema.nullable()
+  })
+  .strict()
+
+const operationSnapshotV2Schema = z
+  .object({
+    id: nonEmptyStringSchema,
+    patta_hisob_id: nonEmptyStringSchema,
+    operation_id: nonEmptyStringSchema,
+    operation_name_snapshot: nonEmptyStringSchema,
+    unit_price_snapshot: priceSchema,
+    sort_order: z.number().int().nonnegative(),
+    created_at: timestampSchema
+  })
+  .strict()
+
+const pattaPrintBatchSizeSchema = z
+  .object({
+    id: nonEmptyStringSchema,
+    print_batch_id: nonEmptyStringSchema,
+    razmer: nonEmptyStringSchema,
+    patta_count: z.number().int().positive(),
+    sort_order: z.number().int().nonnegative()
+  })
+  .strict()
+
+const pattaPrintBatchPattaSchema = pattaV2DataSchema.extend({
+  version: positiveDecimalSchema,
+  operations: z.array(operationSnapshotV2Schema).min(1)
+}).strict()
+
+const pattaPrintBatchDataSchema = z
+  .object({
+    id: nonEmptyStringSchema,
+    model_id: nonEmptyStringSchema,
+    model_name_snapshot: nonEmptyStringSchema,
+    partiya_number: positiveDecimalSchema,
+    partiya_block_id: nonEmptyStringSchema.nullable(),
+    ish_soni: z.number().int().positive(),
+    rang: nonEmptyStringSchema,
+    status: z.enum(['ACTIVE', 'VOID', 'SUPERSEDED']),
+    version: positiveDecimalSchema,
+    revision: z.number().int().positive(),
+    corrected_from_batch_id: nonEmptyStringSchema.nullable(),
+    created_by: nonEmptyStringSchema.nullable(),
+    created_device_id: nonEmptyStringSchema,
+    created_at: timestampSchema,
+    updated_at: timestampSchema,
+    printed_at: timestampSchema.nullable(),
+    size_distribution: z.array(pattaPrintBatchSizeSchema).min(1),
+    pattas: z.array(pattaPrintBatchPattaSchema).min(1)
+  })
+  .strict()
+
+const pattaV2LookupMirrorSchema = z.object({
+  server_sequence: decimalCursorSchema,
+  patta: pattaPrintBatchPattaSchema,
+  batch: pattaPrintBatchDataSchema.nullable()
+}).strict().superRefine((mirror, context) => {
+  if (mirror.batch && !mirror.batch.pattas.some((patta) => patta.id === mirror.patta.id)) {
+    context.addIssue({ code: 'custom', message: 'Lookup Patta is absent from its batch projection' })
+  }
+  if (mirror.patta.print_batch_id !== (mirror.batch?.id ?? null)) {
+    context.addIssue({ code: 'custom', message: 'Lookup Patta batch identity does not match the batch projection' })
+  }
+})
+
+const partiyaNumberBlockDataSchema = z
+  .object({
+    id: nonEmptyStringSchema,
+    device_id: nonEmptyStringSchema,
+    range_start: positiveDecimalSchema,
+    range_end: positiveDecimalSchema,
+    reported_used_count: decimalCursorSchema,
+    status: z.enum(['ACTIVE', 'EXHAUSTED', 'CANCELLED']),
+    allocated_at: timestampSchema,
+    exhausted_at: timestampSchema.nullable()
+  })
+  .strict()
+
+const pattaPrintEventDataSchema = z
+  .object({
+    id: nonEmptyStringSchema,
+    batch_id: nonEmptyStringSchema,
+    revision: z.number().int().positive(),
+    kind: z.enum(['INITIAL', 'REPRINT', 'CORRECTED_REPRINT']),
+    outcome: z.enum(['REQUESTED', 'SUCCEEDED', 'FAILED']),
+    actor_user_id: nonEmptyStringSchema.nullable(),
+    device_id: nonEmptyStringSchema,
+    created_at: timestampSchema,
+    printed_at: timestampSchema.nullable()
+  })
+  .strict()
+
+const pattaSheetOperationSnapshotSchema = z.object({
+  id: nonEmptyStringSchema,
+  patta_sheet_id: nonEmptyStringSchema,
+  model_operation_id: nonEmptyStringSchema,
+  source_type: z.enum(['PATTA', 'CUSTOM']),
+  source_patta_operation_snapshot_id: nonEmptyStringSchema.nullable(),
+  operation_name_snapshot: nonEmptyStringSchema,
+  unit_price_snapshot: priceSchema,
+  sort_order: z.number().int().nonnegative(),
+  created_at: timestampSchema
+}).strict()
+
+const pattaSheetRowSchema = z.object({
+  id: nonEmptyStringSchema,
+  patta_sheet_id: nonEmptyStringSchema,
+  patta_sheet_operation_snapshot_id: nonEmptyStringSchema,
+  worker_id: positiveDecimalSchema,
+  quantity_snapshot: z.number().int().positive(),
+  nuqson: z.boolean(),
+  deleted_at: timestampSchema.nullable(),
+  deleted_by: nonEmptyStringSchema.nullable(),
+  created_at: timestampSchema,
+  updated_at: timestampSchema
+}).strict()
+
+const pattaSheetDataSchema = z.object({
+  id: nonEmptyStringSchema,
+  patta_hisob_id: nonEmptyStringSchema,
+  entered_at: timestampSchema,
+  business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  conveyor_snapshot: nonEmptyStringSchema.nullable(),
+  version: positiveDecimalSchema,
+  created_by: nonEmptyStringSchema.nullable(),
+  created_at: timestampSchema,
+  updated_at: timestampSchema,
+  deleted_at: timestampSchema.nullable(),
+  deleted_by: nonEmptyStringSchema.nullable(),
+  operation_snapshots: z.array(pattaSheetOperationSnapshotSchema).min(1),
+  rows: z.array(pattaSheetRowSchema)
+}).strict()
+
+const projectionV1Schema = z
   .discriminatedUnion('entity_type', [
     z
       .object({
@@ -238,6 +402,55 @@ const projectionSchema = z
     }
   })
 
+const projectionV2Schema = z.discriminatedUnion('entity_type', [
+  z.object({
+    projection_version: z.literal(2), entity_type: z.literal('patta_hisob'),
+    entity_id: nonEmptyStringSchema, entity_version: positiveDecimalSchema, data: pattaV2DataSchema
+  }).strict(),
+  z.object({
+    projection_version: z.literal(2), entity_type: z.literal('patta_operation_snapshots'),
+    entity_id: nonEmptyStringSchema, entity_version: z.null(), data: operationSnapshotV2Schema
+  }).strict(),
+  z.object({
+    projection_version: z.literal(2), entity_type: z.literal('patta_partiya_number_blocks'),
+    entity_id: nonEmptyStringSchema, entity_version: z.null(), data: partiyaNumberBlockDataSchema
+  }).strict(),
+  z.object({
+    projection_version: z.literal(2), entity_type: z.literal('patta_print_batches'),
+    entity_id: nonEmptyStringSchema, entity_version: positiveDecimalSchema, data: pattaPrintBatchDataSchema
+  }).strict(),
+  z.object({
+    projection_version: z.literal(2), entity_type: z.literal('patta_print_batch_sizes'),
+    entity_id: nonEmptyStringSchema, entity_version: z.null(), data: pattaPrintBatchSizeSchema
+  }).strict(),
+  z.object({
+    projection_version: z.literal(2), entity_type: z.literal('patta_print_events'),
+    entity_id: nonEmptyStringSchema, entity_version: z.null(), data: pattaPrintEventDataSchema
+  }).strict(),
+  z.object({
+    projection_version: z.literal(2), entity_type: z.literal('patta_sheets'),
+    entity_id: nonEmptyStringSchema, entity_version: positiveDecimalSchema, data: pattaSheetDataSchema
+  }).strict(),
+  z.object({
+    projection_version: z.literal(2), entity_type: z.literal('patta_sheet_operation_snapshots'),
+    entity_id: nonEmptyStringSchema, entity_version: z.null(), data: pattaSheetOperationSnapshotSchema
+  }).strict(),
+  z.object({
+    projection_version: z.literal(2), entity_type: z.literal('patta_sheet_rows'),
+    entity_id: nonEmptyStringSchema, entity_version: z.null(), data: pattaSheetRowSchema
+  }).strict(),
+  z.object({
+    projection_version: z.literal(2), entity_type: z.literal('model_operations'),
+    entity_id: nonEmptyStringSchema, entity_version: positiveDecimalSchema, data: operationDataSchema
+  }).strict()
+]).superRefine((projection, context) => {
+  if (projection.entity_id !== projection.data.id) {
+    context.addIssue({ code: 'custom', message: 'Projection entity ID does not match its data ID' })
+  }
+})
+
+const projectionSchema = z.union([projectionV1Schema, projectionV2Schema])
+
 const changeSchema = z
   .object({
     sequence_id: positiveDecimalSchema,
@@ -245,7 +458,7 @@ const changeSchema = z
     entity_id: nonEmptyStringSchema,
     operation: z.enum(['UPSERT', 'DELETE']),
     entity_version: positiveDecimalSchema.nullable(),
-    projection_version: z.literal(1),
+    projection_version: z.union([z.literal(1), z.literal(2)]),
     payload: projectionSchema.nullable(),
     changed_at: timestampSchema
   })
@@ -257,7 +470,8 @@ const changeSchema = z
     if (
       change.payload !== null &&
       (change.payload.entity_id !== change.entity_id ||
-        change.payload.entity_type !== change.entity_type)
+        change.payload.entity_type !== change.entity_type ||
+        change.payload.projection_version !== change.projection_version)
     ) {
       context.addIssue({ code: 'custom', message: 'Change identity does not match its projection' })
     }
@@ -269,7 +483,7 @@ const pushResultSchema = z.discriminatedUnion('status', [
       event_id: z.string().uuid(),
       status: z.literal('SYNCED'),
       entity_version: positiveDecimalSchema.nullable(),
-      projection: projectionSchema,
+      projection: projectionSchema.nullable(),
       change_sequence: positiveDecimalSchema
     })
     .strict(),
@@ -412,8 +626,8 @@ function validated<T>(schema: z.ZodType<T>, input: unknown, label: string): T {
   return result.data
 }
 
-export function parseSyncProjection(input: unknown): SyncProjection {
-  return validated(projectionSchema, input, 'projection') as SyncProjection
+export function parseSyncProjection(input: unknown): SyncProjection | SyncProjectionV2 {
+  return validated(projectionSchema, input, 'projection') as SyncProjection | SyncProjectionV2
 }
 
 export function parseSyncChange(input: unknown): SyncChange {
@@ -451,6 +665,14 @@ export function parseSyncBootstrapComplete(input: unknown): SyncBootstrapComplet
 
 export function parsePattaNumberBlock(input: unknown): PattaNumberBlockProjection {
   return validated(numberBlockSchema, input, 'Patta number block') as PattaNumberBlockProjection
+}
+
+export function parsePattaPartiyaNumberBlock(input: unknown): PattaPartiyaNumberBlockProjection {
+  return validated(numberBlockSchema, input, 'Partiya number block') as PattaPartiyaNumberBlockProjection
+}
+
+export function parsePattaV2LookupMirror(input: unknown): PattaV2LookupMirror {
+  return validated(pattaV2LookupMirrorSchema, input, 'Patta v2 lookup mirror') as PattaV2LookupMirror
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

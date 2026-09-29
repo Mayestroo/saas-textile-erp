@@ -16,6 +16,7 @@ export interface TenantCompanyContext {
   companyId: string;
   slug: string;
   databaseName: string;
+  timezone: string;
 }
 
 export interface OfflineCapabilityClaims {

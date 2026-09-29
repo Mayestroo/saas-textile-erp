@@ -1,6 +1,7 @@
 import type { SyncConflict, SyncPushResult } from '@textile/sync-protocol'
 import type { BootstrapStagingRepository } from '../local/bootstrap-staging.repository'
 import type { PattaNumberBlockRepository } from '../local/patta-number-block.repository'
+import type { PattaPartiyaNumberBlockRepository } from '../local/patta-partiya-number-block.repository'
 import { LocalDomainError } from '../local/local-errors'
 import { LocalUnitOfWork } from '../local/local-unit-of-work'
 import type { ReferenceMirrorRepository } from '../local/reference-mirror.repository'
@@ -40,6 +41,7 @@ export interface SyncEngineDependencies {
     | 'markSynced'
     | 'markFailed'
     | 'cleanupSyncedOlderThan'
+    | 'refreshPendingDependentCursors'
   >
   stateRepository: Pick<
     SyncStateRepository,
@@ -53,6 +55,10 @@ export interface SyncEngineDependencies {
   mirrorRepository: Pick<ReferenceMirrorRepository, 'finalizeBootstrap' | 'applyPullPage'>
   blockRepository: Pick<
     PattaNumberBlockRepository,
+    'pendingUsageReports' | 'shouldPrefetchNextBlock' | 'storeAllocatedBlock' | 'applyReportedUsage'
+  >
+  partiyaBlockRepository?: Pick<
+    PattaPartiyaNumberBlockRepository,
     'pendingUsageReports' | 'shouldPrefetchNextBlock' | 'storeAllocatedBlock' | 'applyReportedUsage'
   >
   networkStatus: NetworkStatusService
@@ -240,6 +246,16 @@ export class SyncEngine {
         hasMore = page.has_more
       }
 
+      const referenceCursor = this.dependencies.stateRepository.lastServerCursor()
+      if (referenceCursor !== null) {
+        this.dependencies.unitOfWork.transaction(() => {
+          this.dependencies.queueRepository.refreshPendingDependentCursors(
+            referenceCursor,
+            this.dependencies.clock.nowIsoUtc()
+          )
+        })
+      }
+
       await this.synchronizeNumberBlocks()
       this.cleanupSyncedQueue(this.dependencies.clock.nowIsoUtc())
       await this.retryBootstrapCompletion()
@@ -409,6 +425,23 @@ export class SyncEngine {
       this.dependencies.unitOfWork.transaction(() => {
         this.dependencies.blockRepository.storeAllocatedBlock(allocated)
       })
+    }
+
+    const partiyaBlocks = this.dependencies.partiyaBlockRepository
+    const reportPartiyaUsage = this.dependencies.transport.reportPattaPartiyaBlockUsage
+    const allocatePartiyaBlock = this.dependencies.transport.allocatePattaPartiyaNumberBlock
+    if (!partiyaBlocks || !reportPartiyaUsage || !allocatePartiyaBlock) return
+    for (const report of partiyaBlocks.pendingUsageReports()) {
+      const updated = await reportPartiyaUsage.call(
+        this.dependencies.transport,
+        report.blockId,
+        report.reportedUsedCount
+      )
+      this.dependencies.unitOfWork.transaction(() => partiyaBlocks.applyReportedUsage(updated))
+    }
+    if (partiyaBlocks.shouldPrefetchNextBlock()) {
+      const allocated = await allocatePartiyaBlock.call(this.dependencies.transport)
+      this.dependencies.unitOfWork.transaction(() => partiyaBlocks.storeAllocatedBlock(allocated))
     }
   }
 

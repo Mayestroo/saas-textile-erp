@@ -1,5 +1,7 @@
 import type {
   PattaNumberBlockProjection,
+  PattaPartiyaNumberBlockProjection,
+  PattaV2LookupMirror,
   SyncBootstrapPage,
   SyncBootstrapSession,
   SyncPullRequest,
@@ -34,4 +36,10 @@ export interface AuthenticatedSyncTransport {
     blockId: string,
     reportedUsedCount: string
   ): Promise<PattaNumberBlockProjection>
+  allocatePattaPartiyaNumberBlock?(): Promise<PattaPartiyaNumberBlockProjection>
+  reportPattaPartiyaBlockUsage?(
+    blockId: string,
+    reportedUsedCount: string
+  ): Promise<PattaPartiyaNumberBlockProjection>
+  lookupPattaV2?(partiyaNumber: string, pattaNumber: string): Promise<PattaV2LookupMirror>
 }

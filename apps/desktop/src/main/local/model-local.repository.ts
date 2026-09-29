@@ -16,7 +16,7 @@ interface ModelRow {
 interface TemplateRow {
   id: string
   model_id: string
-  konveyer: string
+  konveyer: string | null
   razmer: string | null
   rang: string | null
   status: 'ACTIVE' | 'INACTIVE'
@@ -56,12 +56,17 @@ export interface LocalPattaReferenceSnapshot {
   model_version: string
   template_id: string | null
   template_version: string | null
-  konveyer: string
+  konveyer: string | null
   razmer: string | null
   rang: string | null
   template_overrides?: SyncPattaCreatePayload['template_overrides']
   reference_versions: SyncPattaCreatePayload['reference_versions']
   operations: readonly LocalOperationReference[]
+}
+
+export interface LocalModelOption {
+  id: string
+  name: string
 }
 
 function canonicalize(value: string): string {
@@ -93,6 +98,32 @@ function notFound(code: string, message: string, id: string): LocalDomainError {
 
 export class ModelLocalRepository {
   constructor(private readonly database: Database.Database) {}
+
+  listActiveModels(): readonly LocalModelOption[] {
+    return this.database.prepare(`
+      SELECT model.id, model.name FROM models AS model
+      WHERE model.status = 'ACTIVE'
+        AND NOT EXISTS (
+          SELECT 1 FROM sync_tombstones tombstone
+          WHERE tombstone.entity_type = 'models' AND tombstone.entity_id = model.id
+        )
+      ORDER BY model.name COLLATE NOCASE, model.id
+    `).all() as LocalModelOption[]
+  }
+
+  listModelsWithPattaHistory(): readonly LocalModelOption[] {
+    return this.database.prepare(`
+      SELECT model.id, model.name FROM models AS model
+      WHERE NOT EXISTS (
+          SELECT 1 FROM sync_tombstones tombstone
+          WHERE tombstone.entity_type = 'models' AND tombstone.entity_id = model.id
+        )
+        AND (model.status = 'ACTIVE' OR EXISTS (
+          SELECT 1 FROM patta_hisob patta WHERE patta.model_id = model.id
+        ))
+      ORDER BY model.name COLLATE NOCASE, model.id
+    `).all() as LocalModelOption[]
+  }
 
   snapshotAt(input: LocalPattaReferenceInput): LocalPattaReferenceSnapshot {
     let occurredAt: string
@@ -143,9 +174,6 @@ export class ModelLocalRepository {
       input.konveyer === undefined
         ? (template?.konveyer ?? null)
         : requiredCanonical(input.konveyer, 'Konveyer')
-    if (conveyor === null) {
-      throw new LocalDomainError('PATTA_KONVEYER_REQUIRED', 'Patta yaratish uchun konveyer tanlang')
-    }
     const size = optionalCanonical(input.razmer, template?.razmer ?? null)
     const color = optionalCanonical(input.rang, template?.rang ?? null)
     const templateOverrides = template

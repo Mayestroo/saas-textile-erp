@@ -1,5 +1,5 @@
 import { Transform } from 'class-transformer';
-import { IsInt, IsOptional, IsString, IsUUID, Matches, Min } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, Min } from 'class-validator';
 
 const DECIMAL_CURSOR_PATTERN = /^(0|[1-9][0-9]*)$/;
 
@@ -12,6 +12,11 @@ function integerQueryValue(value: unknown): unknown {
 export class SyncPullQueryDto {
   @IsUUID()
   device_id!: string;
+
+  @IsOptional()
+  @Transform(({ value }) => integerQueryValue(value))
+  @IsIn([1, 2])
+  protocol_version?: 1 | 2;
 
   @IsOptional()
   @IsString()

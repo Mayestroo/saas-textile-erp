@@ -13,7 +13,7 @@ import {
 import type { SecureSessionPayload } from './secure-session-store'
 
 const SESSION: SecureSessionPayload = {
-  version: 1,
+  version: 2,
   refreshToken: 'refresh-secret-1',
   tenantOrigin: 'https://atlas.example.test',
   tenantHost: 'atlas.example.test',
@@ -21,7 +21,8 @@ const SESSION: SecureSessionPayload = {
   companySlug: 'atlas',
   userId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
   email: 'operator@example.test',
-  fullName: 'Operator One'
+  fullName: 'Operator One',
+  timezone: 'Asia/Tashkent'
 }
 
 const temporaryDirectories: string[] = []
@@ -140,6 +141,27 @@ describe('Electron secure session store', () => {
 
     fileSystem.files.set('session.bin', Buffer.from('{not-json'))
     await expect(store.load()).rejects.toMatchObject({ code: 'SECURE_SESSION_CORRUPT' })
+  })
+
+  it('upgrades a valid legacy encrypted session without inventing a tenant timezone', async () => {
+    const cipher = new TestSafeStorage()
+    const fileSystem = new MemorySessionFileSystem()
+    const store = new ElectronSecureSessionStore(cipher, fileSystem, 'session.bin', () => 'tmp-1')
+    const legacy = {
+      version: 1,
+      refreshToken: SESSION.refreshToken,
+      tenantOrigin: SESSION.tenantOrigin,
+      tenantHost: SESSION.tenantHost,
+      companyId: SESSION.companyId,
+      companySlug: SESSION.companySlug,
+      userId: SESSION.userId,
+      email: SESSION.email,
+      fullName: SESSION.fullName
+    }
+    const encrypted = cipher.encryptString(JSON.stringify(legacy)).toString('base64')
+    fileSystem.files.set('session.bin', Buffer.from(JSON.stringify({ version: 1, encrypted_payload: encrypted })))
+
+    await expect(store.load()).resolves.toMatchObject({ version: 2, timezone: null, companyId: SESSION.companyId })
   })
 
   it('keeps the prior encrypted session if atomic replacement fails', async () => {

@@ -51,6 +51,7 @@ const localEvent: OfflinePattaCreateEvent = {
   occurred_at: LOCAL_TIME,
   reference_cursor: '9',
   payload: {
+    ish_soni: 125,
     partiya_number: 'PARTIYA-1',
     patta_number: '100',
     model_id: MODEL_ID,

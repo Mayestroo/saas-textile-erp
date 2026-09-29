@@ -8,13 +8,18 @@ import {
 import type {
   SyncBootstrapPage,
   SyncBootstrapSession,
+  SyncProtocolVersion,
   SyncProjection,
+  SyncProjectionV2,
 } from '@textile/sync-protocol';
 import type { DataSource, QueryRunner } from 'typeorm';
 import { SYNC_CONFIGURATION } from './sync.config.js';
 import type { SyncConfiguration } from './sync.config.js';
 import { SYNC_CHANGE_LOCK_KEY } from './sync-change-recorder.js';
-import { MATERIALIZE_BOOTSTRAP_ITEMS_SQL } from './sync-bootstrap-projections.js';
+import {
+  MATERIALIZE_BOOTSTRAP_ITEMS_SQL,
+  MATERIALIZE_PATTA_V2_BOOTSTRAP_ITEMS_SQL,
+} from './sync-bootstrap-projections.js';
 
 const DEVICE_BOOTSTRAP_LOCK_CLASS = 1_398_365_763;
 const MAX_POSTGRES_BIGINT = 9_223_372_036_854_775_807n;
@@ -29,6 +34,13 @@ const SYNC_ENTITY_TYPES: ReadonlySet<string> = new Set([
   'patta_hisob',
   'patta_operation_snapshots',
   'patta_number_blocks',
+  'patta_partiya_number_blocks',
+  'patta_print_batches',
+  'patta_print_batch_sizes',
+  'patta_print_events',
+  'patta_sheets',
+  'patta_sheet_operation_snapshots',
+  'patta_sheet_rows',
 ]);
 
 interface BootstrapSessionRow {
@@ -36,6 +48,7 @@ interface BootstrapSessionRow {
   device_id: string;
   watermark: string;
   status: 'ACTIVE' | 'COMPLETED' | 'EXPIRED';
+  protocol_version: SyncProtocolVersion;
   expires_at?: string;
   is_expired?: boolean;
 }
@@ -84,6 +97,14 @@ function invalidPageLimit(maximum: number): ConflictException {
   });
 }
 
+function pattaProtocolUpgradeRequired(): ConflictException {
+  return new ConflictException({
+    code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED',
+    message: 'Patta ma’lumotlarini sinxronlash uchun dastur versiyasini yangilang',
+    details: {},
+  });
+}
+
 function validateCursor(value: string): bigint {
   if (!CURSOR_PATTERN.test(value)) throw invalidCursor();
   const parsed = BigInt(value);
@@ -91,11 +112,15 @@ function validateCursor(value: string): bigint {
   return parsed;
 }
 
-function validateProjection(row: BootstrapItemRow): SyncProjection {
+function validateProjection(
+  row: BootstrapItemRow,
+  protocolVersion: SyncProtocolVersion,
+): SyncProjection | SyncProjectionV2 {
   if (
     !SYNC_ENTITY_TYPES.has(row.entity_type) ||
     !Number.isSafeInteger(row.projection_version) ||
-    row.projection_version !== 1 ||
+    (row.projection_version !== 1 && row.projection_version !== 2) ||
+    (row.projection_version === 2 && protocolVersion !== 2) ||
     typeof row.payload_json !== 'object' ||
     row.payload_json === null ||
     Array.isArray(row.payload_json)
@@ -113,7 +138,7 @@ function validateProjection(row: BootstrapItemRow): SyncProjection {
   if (!CURSOR_PATTERN.test(row.order_key)) {
     throw new Error('Materialized bootstrap order key is not a decimal string');
   }
-  return projection as unknown as SyncProjection;
+  return projection as unknown as SyncProjection | SyncProjectionV2;
 }
 
 @Injectable()
@@ -122,7 +147,11 @@ export class SyncBootstrapService {
     @Inject(SYNC_CONFIGURATION) private readonly configuration: SyncConfiguration,
   ) {}
 
-  async create(dataSource: DataSource, validatedDeviceId: string): Promise<SyncBootstrapSession> {
+  async create(
+    dataSource: DataSource,
+    validatedDeviceId: string,
+    protocolVersion: SyncProtocolVersion = 1,
+  ): Promise<SyncBootstrapSession> {
     const queryRunner = dataSource.createQueryRunner();
     let deviceLockHeld = false;
     let changeLogLockHeld = false;
@@ -170,18 +199,36 @@ export class SyncBootstrapService {
 
       const sessionId = randomUUID();
       const sessionRows: BootstrapSessionRow[] = await queryRunner.query(
-        `INSERT INTO "bootstrap_sessions" ("id", "device_id", "watermark", "expires_at")
+        `INSERT INTO "bootstrap_sessions" ("id", "device_id", "watermark", "expires_at", "protocol_version")
          VALUES ($1::uuid, $2::uuid, $3::bigint,
-                 transaction_timestamp() + make_interval(mins => $4::integer))
+                 transaction_timestamp() + make_interval(mins => $4::integer), $5::smallint)
          RETURNING "id"::text AS "id", "device_id"::text AS "device_id",
                    "watermark"::text AS "watermark", "status",
+                   "protocol_version",
                    to_char("expires_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS "expires_at"`,
-        [sessionId, validatedDeviceId, watermark, this.configuration.bootstrapSessionTtlMinutes],
+        [sessionId, validatedDeviceId, watermark, this.configuration.bootstrapSessionTtlMinutes, protocolVersion],
       );
       const session = sessionRows[0];
       if (!session) throw new Error('Bootstrap session insert did not return a session');
 
-      await queryRunner.query(MATERIALIZE_BOOTSTRAP_ITEMS_SQL, [sessionId]);
+      await queryRunner.query(MATERIALIZE_BOOTSTRAP_ITEMS_SQL, [sessionId, protocolVersion]);
+      if (protocolVersion === 2) {
+        await queryRunner.query(MATERIALIZE_PATTA_V2_BOOTSTRAP_ITEMS_SQL, [sessionId]);
+      } else {
+        const pattaData: Array<{ present: boolean }> = await queryRunner.query(
+          `SELECT EXISTS (SELECT 1 FROM "patta_templates")
+            OR EXISTS (SELECT 1 FROM "patta_operation_snapshots")
+            OR EXISTS (SELECT 1 FROM "patta_hisob")
+            OR EXISTS (SELECT 1 FROM "patta_number_blocks")
+            OR EXISTS (SELECT 1 FROM "patta_partiya_number_blocks")
+            OR EXISTS (SELECT 1 FROM "patta_print_batches")
+            OR EXISTS (SELECT 1 FROM "patta_print_events")
+            OR EXISTS (SELECT 1 FROM "patta_sheets")
+            OR EXISTS (SELECT 1 FROM "patta_sheet_operation_snapshots")
+            OR EXISTS (SELECT 1 FROM "patta_sheet_rows") AS "present"`,
+        );
+        if (pattaData[0]?.present === true) throw pattaProtocolUpgradeRequired();
+      }
       await queryRunner.commitTransaction();
       transactionStarted = false;
       return {
@@ -219,6 +266,7 @@ export class SyncBootstrapService {
     sessionId: string,
     after: string | null,
     limitInput: number | undefined,
+    protocolVersion: SyncProtocolVersion = 1,
   ): Promise<SyncBootstrapPage> {
     const afterValue = after ?? '0';
     const cursor = validateCursor(afterValue);
@@ -229,7 +277,7 @@ export class SyncBootstrapService {
 
     const sessionRows: BootstrapSessionRow[] = await dataSource.query(
       `SELECT "id"::text AS "id", "device_id"::text AS "device_id",
-              "watermark"::text AS "watermark", "status",
+              "watermark"::text AS "watermark", "status", "protocol_version",
               "expires_at" <= transaction_timestamp() AS "is_expired"
        FROM "bootstrap_sessions" WHERE "id" = $1::uuid`,
       [sessionId],
@@ -237,6 +285,7 @@ export class SyncBootstrapService {
     const session = sessionRows[0];
     if (!session) throw expiredSession();
     if (session.device_id !== validatedDeviceId) throw sessionDeviceMismatch();
+    if (session.protocol_version !== protocolVersion) throw invalidCursor();
     if (session.status !== 'ACTIVE' || session.is_expired === true) {
       if (session.status === 'ACTIVE' && session.is_expired === true) {
         await dataSource.query(
@@ -259,9 +308,12 @@ export class SyncBootstrapService {
     );
     const hasMore = rows.length > limit;
     const pageItems = hasMore ? rows.slice(0, limit) : rows;
+    if (protocolVersion === 1 && pageItems.some((row) => row.entity_type.startsWith('patta') || row.projection_version !== 1)) {
+      throw pattaProtocolUpgradeRequired();
+    }
     const items = pageItems.map((row) => ({
       order_key: row.order_key,
-      projection: validateProjection(row),
+      projection: validateProjection(row, protocolVersion),
     }));
     return {
       session_id: session.id,

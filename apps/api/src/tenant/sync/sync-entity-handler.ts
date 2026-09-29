@@ -1,5 +1,6 @@
 import type { EntityManager } from 'typeorm';
 import type {
+  SyncProtocolVersion,
   SyncEvent,
   SyncMutationOperation,
   SyncProjection,
@@ -9,11 +10,13 @@ export interface SyncApplyContext {
   actorUserId: string;
   companyId: string;
   validatedDeviceId: string;
+  protocolVersion?: SyncProtocolVersion;
+  timezone?: string;
 }
 
 export interface SyncHandlerResult {
   entityVersion: string | null;
-  projection: SyncProjection;
+  projection: SyncProjection | import('@textile/sync-protocol').SyncProjectionV2 | null;
   changeSequence: string;
 }
 

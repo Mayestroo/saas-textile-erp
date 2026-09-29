@@ -29,6 +29,7 @@ describe('AuditService', () => {
       expect.stringContaining('"entity_id", "entity_key"'),
       [
         actorUserId,
+        null,
         'model',
         '22222222-2222-4222-8222-222222222222',
         '22222222-2222-4222-8222-222222222222',
@@ -47,7 +48,20 @@ describe('AuditService', () => {
 
     expect(manager.query).toHaveBeenCalledWith(
       expect.stringContaining('"entity_id", "entity_key"'),
-      [actorUserId, 'worker', null, '18', 'worker.create', null, JSON.stringify({ id: '18' })],
+      [actorUserId, null, 'worker', null, '18', 'worker.create', null, JSON.stringify({ id: '18' })],
     );
+  });
+
+  it('stores the validated workstation ID when a mutation supplies it', async () => {
+    const manager = { query: vi.fn(async () => undefined) };
+    const service = new AuditService();
+    await service.append(manager as unknown as EntityManager, {
+      ...event('22222222-2222-4222-8222-222222222222', 'model', 'model.create'),
+      deviceId: '33333333-3333-4333-8333-333333333333',
+    });
+
+    expect(manager.query.mock.calls[0]?.[1]?.slice(0, 3)).toEqual([
+      actorUserId, '33333333-3333-4333-8333-333333333333', 'model',
+    ]);
   });
 });

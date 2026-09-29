@@ -1,11 +1,14 @@
 import type {
   OfflinePattaCreateEvent,
+  PattaPrintBatchSyncEvent,
   PattaNumberBlockProjection,
   SyncBootstrapPage,
   SyncConflict,
   SyncErrorCode,
   SyncEvent,
   SyncProjection,
+  SyncProjectionV2,
+  SyncPushRequest,
   SyncPullResponse,
   SyncPushResponse,
   SyncPushResult,
@@ -39,6 +42,7 @@ const event: OfflinePattaCreateEvent = {
   occurred_at: '2026-09-26T00:00:00.000Z',
   reference_cursor: '12840',
   payload: {
+    ish_soni: 125,
     partiya_number: 'A-1',
     patta_number: '1000',
     model_id: '77777777-7777-4777-8777-777777777777',
@@ -59,6 +63,45 @@ const event: OfflinePattaCreateEvent = {
   },
 };
 const genericEvent: SyncEvent = event;
+
+const v2BatchEvent: PattaPrintBatchSyncEvent = {
+  event_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  entity_type: 'patta_print_batch',
+  entity_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+  operation: 'CREATE',
+  base_version: '0',
+  client_created_at: '2026-09-28T10:00:00.000Z',
+  occurred_at: '2026-09-28T10:00:00.000Z',
+  reference_cursor: '12841',
+  payload: {
+    model_id: '77777777-7777-4777-8777-777777777777',
+    model_name_snapshot: 'Atlas',
+    partiya_block_id: '33333333-3333-4333-8333-333333333333',
+    partiya_number: '1',
+    ish_soni: 125,
+    rang: 'Qora',
+    size_distribution: [{ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', razmer: 'S', patta_count: 1, sort_order: 0 }],
+    pattas: [{
+      id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      patta_number: '1',
+      block_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      razmer: 'S',
+      operation_snapshots: [{
+        id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        operation_id: '88888888-8888-4888-8888-888888888888',
+        operation_name_snapshot: 'Tikish',
+        unit_price_snapshot: '1200.00',
+        sort_order: 0,
+      }],
+    }],
+    depends_on_event_ids: [],
+  },
+};
+const v2PushRequest: SyncPushRequest = {
+  device_id: '66666666-6666-4666-8666-666666666666',
+  protocol_version: 2,
+  events: [v2BatchEvent],
+};
 
 const success: SyncPushResult = {
   event_id: event.event_id,
@@ -105,4 +148,31 @@ const block: PattaNumberBlockProjection = {
   exhausted_at: null,
 };
 
-void [genericEvent, pushResponse, pullResponse, bootstrapPage, block];
+const v2PattaProjection: SyncProjectionV2 = {
+  projection_version: 2,
+  entity_type: 'patta_hisob',
+  entity_id: '99999999-9999-4999-8999-999999999999',
+  entity_version: '1',
+  data: {
+    id: '99999999-9999-4999-8999-999999999999',
+    partiya_number: '1',
+    patta_number: '1',
+    model_id: '77777777-7777-4777-8777-777777777777',
+    model_name_snapshot: 'Atlas',
+    template_id: null,
+    konveyer_snapshot: null,
+    razmer: 'S',
+    rang: 'Qora',
+    ish_soni: 125,
+    legacy_operation_count: null,
+    status: 'ACTIVE',
+    print_batch_id: v2BatchEvent.entity_id,
+    created_device_id: '66666666-6666-4666-8666-666666666666',
+    created_from_block_id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+    created_at: '2026-09-28T10:00:00.000Z',
+    client_created_at: null,
+    occurred_at: null,
+  },
+};
+
+void [genericEvent, v2PushRequest, v2PattaProjection, pushResponse, pullResponse, bootstrapPage, block];

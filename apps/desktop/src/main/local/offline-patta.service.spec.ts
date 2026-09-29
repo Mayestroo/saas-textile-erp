@@ -372,6 +372,7 @@ describe('offline Patta creation', () => {
 
     const result = service.create({
       partiya_number: '  PARTY   1  ',
+      ish_soni: 125,
       template_id: 'template-1',
       konveyer: 'Line B',
       razmer: null,
@@ -391,6 +392,7 @@ describe('offline Patta creation', () => {
       created_device_id: 'device-1',
       ownership_state: 'LOCAL_PENDING'
     })
+    expect(result.patta.ish_soni).toBe(125)
     expect(result.patta.operations.map(({ unit_price_snapshot }) => unit_price_snapshot)).toEqual([
       '12.50',
       '20.00'
@@ -402,6 +404,7 @@ describe('offline Patta creation', () => {
       base_version: '0',
       reference_cursor: '77',
       payload: {
+        ish_soni: 125,
         block_id: 'block-1',
         template_overrides: { konveyer: 'Line B', razmer: null },
         reference_versions: {
@@ -448,6 +451,7 @@ describe('offline Patta creation', () => {
     expect(() =>
       service.create({
         partiya_number: 'PARTY-1',
+        ish_soni: 125,
         model_id: 'model-1',
         konveyer: 'Line A',
         occurred_at: instant

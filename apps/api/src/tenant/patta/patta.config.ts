@@ -4,6 +4,7 @@ export const PATTA_CONFIGURATION = Symbol('PATTA_CONFIGURATION');
 
 export interface PattaConfiguration {
   numberStart: bigint;
+  partiyaNumberStart: bigint;
   blockSize: bigint;
   maxActiveBlocksPerDevice: number;
   maxBatchSize: number;
@@ -11,6 +12,7 @@ export interface PattaConfiguration {
 
 const DEFAULTS = {
   PATTA_NUMBER_START: '1',
+  PARTIYA_NUMBER_START: '1',
   PATTA_NUMBER_BLOCK_SIZE: '1000',
   PATTA_MAX_ACTIVE_BLOCKS_PER_DEVICE: '2',
   PATTA_MAX_BATCH_SIZE: '100',
@@ -32,7 +34,7 @@ function environmentValue(
 
 function positiveBigInt(config: Record<string, unknown>, key: keyof Pick<
   typeof DEFAULTS,
-  'PATTA_NUMBER_START' | 'PATTA_NUMBER_BLOCK_SIZE'
+  'PATTA_NUMBER_START' | 'PARTIYA_NUMBER_START' | 'PATTA_NUMBER_BLOCK_SIZE'
 >): bigint {
   const raw = environmentValue(config, key);
   if (!POSITIVE_DECIMAL_PATTERN.test(raw)) {
@@ -63,6 +65,7 @@ function positiveSafeInteger(config: Record<string, unknown>, key: keyof Pick<
 export function loadPattaConfiguration(config: Record<string, unknown>): PattaConfiguration {
   return {
     numberStart: positiveBigInt(config, 'PATTA_NUMBER_START'),
+    partiyaNumberStart: positiveBigInt(config, 'PARTIYA_NUMBER_START'),
     blockSize: positiveBigInt(config, 'PATTA_NUMBER_BLOCK_SIZE'),
     maxActiveBlocksPerDevice: positiveSafeInteger(config, 'PATTA_MAX_ACTIVE_BLOCKS_PER_DEVICE'),
     maxBatchSize: positiveSafeInteger(config, 'PATTA_MAX_BATCH_SIZE'),

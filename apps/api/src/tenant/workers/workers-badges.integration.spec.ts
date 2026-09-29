@@ -40,9 +40,21 @@ const masterOptions = configuredVariables.length === TEST_DATABASE_VARIABLES.len
 const provisionerCredentials = configuredVariables.length === TEST_DATABASE_VARIABLES.length
   ? createTestTenantProvisionerCredentials(process.env)
   : undefined;
+const MODEL_MIGRATION_NAME = 'AddModelsOperationsAndPriceHistory20260926000300';
 const MIGRATION_NAME = 'AddWorkersAndBadgeHistory20260926000400';
 const PATTA_MIGRATION_NAME = 'AddPattaFoundation20260926000500';
 const SYNC_MIGRATION_NAME = 'AddOfflineSyncInfrastructure20260926000600';
+const SHEET_MIGRATION_NAME = 'AddPattaSheets20260928001100';
+const TENANT_MIGRATION_NAMES = [
+  MIGRATION_NAME,
+  PATTA_MIGRATION_NAME,
+  SYNC_MIGRATION_NAME,
+  'CorrectPattaQuantitySemantics20260928000700',
+  'AddPattaPrintBatches20260928000800',
+  'AddSyncProtocolV2Sessions20260928000900',
+  'AddPattaPrintBatchCorrections20260928001000',
+  SHEET_MIGRATION_NAME,
+];
 
 interface DriverError {
   message?: string;
@@ -161,6 +173,22 @@ integrationDescribe(
       return fixture;
     }
 
+    async function undoUntilMigrationIsLatest(
+      dataSource: DataSource,
+      migrationName: string,
+    ): Promise<void> {
+      let rows: Array<{ name: string }> = await dataSource.query(
+        'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp" DESC',
+      );
+      while (rows[0]?.name !== migrationName) {
+        if (!rows[0]?.name) throw new Error(`Tenant migration ${migrationName} was not found`);
+        await dataSource.undoLastMigration({ transaction: 'all' });
+        rows = await dataSource.query(
+          'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp" DESC',
+        );
+      }
+    }
+
     async function createActor(dataSource: DataSource): Promise<string> {
       const roleRows: Array<{ id: string }> = await dataSource.query(
         `INSERT INTO "roles" ("name") VALUES ($1) RETURNING "id"`,
@@ -199,7 +227,7 @@ integrationDescribe(
       const rows: Array<{ name: string }> = await tenantA.migrationDataSource.query(
         `SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp"`,
       );
-      expect(rows.at(-1)?.name).toBe(SYNC_MIGRATION_NAME);
+      expect(rows.at(-1)?.name).toBe(SHEET_MIGRATION_NAME);
 
       const schemaRows: Array<{ table_name: string }> = await tenantA.runtimeDataSource.query(
         `SELECT "table_name" FROM "information_schema"."tables"
@@ -317,9 +345,7 @@ integrationDescribe(
 
     it('backfills UUID audit keys and supports only lossless empty/UUID-compatible rollback', async () => {
       const tenant = await createTenant();
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await undoUntilMigrationIsLatest(tenant.migrationDataSource, MODEL_MIGRATION_NAME);
       const actorUserId = await createActor(tenant.runtimeDataSource);
       const entityId = randomUUID();
       const auditRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
@@ -335,11 +361,7 @@ integrationDescribe(
       }
 
       const reapplied = await tenant.migrationDataSource.runMigrations({ transaction: 'all' });
-      expect(reapplied.map(({ name }) => name)).toEqual([
-        MIGRATION_NAME,
-        PATTA_MIGRATION_NAME,
-        SYNC_MIGRATION_NAME,
-      ]);
+      expect(reapplied.map(({ name }) => name)).toEqual(TENANT_MIGRATION_NAMES);
       await new PattaSequenceInitializer().initialize(tenant.migrationDataSource, 1n);
       const backfilled: Array<{ entity_key: string; entity_id: string }> = await tenant.runtimeDataSource.query(
         'SELECT "entity_key", "entity_id"::text AS "entity_id" FROM "audit_log" WHERE "id" = $1',
@@ -347,20 +369,14 @@ integrationDescribe(
       );
       expect(backfilled[0]).toEqual({ entity_key: entityId, entity_id: entityId });
 
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await undoUntilMigrationIsLatest(tenant.migrationDataSource, MODEL_MIGRATION_NAME);
       const legacyAfterDown: Array<{ entity_id: string }> = await tenant.runtimeDataSource.query(
         'SELECT "entity_id"::text AS "entity_id" FROM "audit_log" WHERE "id" = $1',
         [auditId],
       );
       expect(legacyAfterDown[0]?.entity_id).toBe(entityId);
       const finalReapply = await tenant.migrationDataSource.runMigrations({ transaction: 'all' });
-      expect(finalReapply.map(({ name }) => name)).toEqual([
-        MIGRATION_NAME,
-        PATTA_MIGRATION_NAME,
-        SYNC_MIGRATION_NAME,
-      ]);
+      expect(finalReapply.map(({ name }) => name)).toEqual(TENANT_MIGRATION_NAMES);
       await new PattaSequenceInitializer().initialize(tenant.migrationDataSource, 1n);
       await tenantDatabaseManager.grantRuntimePrivileges(tenant.companyId, tenant.databaseName,
         tenantDatabaseManager.createSecret(tenant.companyId));
@@ -376,8 +392,7 @@ integrationDescribe(
         [actorUserId],
       );
 
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await undoUntilMigrationIsLatest(tenant.migrationDataSource, MIGRATION_NAME);
       await expectMigrationRefusal(tenant.migrationDataSource, 'ck_audit_log_entity_key_reversible');
       const remaining: Array<{ entity_key: string; entity_id: string | null }> =
         await tenant.runtimeDataSource.query(
@@ -402,8 +417,7 @@ integrationDescribe(
         [actorUserId, entityId],
       );
 
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await undoUntilMigrationIsLatest(tenant.migrationDataSource, MIGRATION_NAME);
       await expectMigrationRefusal(tenant.migrationDataSource, 'ck_audit_log_legacy_values');
       const remains: Array<{ entity_type: string; action: string; entity_key: string }> =
         await tenant.runtimeDataSource.query(
@@ -733,11 +747,17 @@ integrationDescribe(
     it('serializes concurrent first assignments for the same badge', async () => {
       const actorUserId = await createActor(tenantA.runtimeDataSource);
       const feature = services();
+      const firstWorker = await feature.workers.create(tenantA.runtimeDataSource, actorUserId, {
+        full_name: 'Concurrent badge worker A',
+      });
+      const secondWorker = await feature.workers.create(tenantA.runtimeDataSource, actorUserId, {
+        full_name: 'Concurrent badge worker B',
+      });
       const results = await Promise.allSettled([
-        feature.badges.assign(tenantA.runtimeDataSource, actorUserId, '1', {
+        feature.badges.assign(tenantA.runtimeDataSource, actorUserId, firstWorker.id, {
           badge_number: 'RACE-125',
         }),
-        feature.badges.assign(tenantA.runtimeDataSource, actorUserId, '47', {
+        feature.badges.assign(tenantA.runtimeDataSource, actorUserId, secondWorker.id, {
           badge_number: 'RACE-125',
         }),
       ]);
@@ -755,10 +775,8 @@ integrationDescribe(
     }, 30_000);
 
     it('refuses to revert sync history after worker/badge changes are recorded', async () => {
-      await expectMigrationRefusal(
-        tenantA.migrationDataSource,
-        'ck_sync_schema_empty_before_revert',
-      );
+      await undoUntilMigrationIsLatest(tenantA.migrationDataSource, SYNC_MIGRATION_NAME);
+      await expectMigrationRefusal(tenantA.migrationDataSource, 'ck_sync_schema_empty_before_revert');
       const migrations: Array<{ name: string }> = await tenantA.migrationDataSource.query(
         'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp" DESC LIMIT 1',
       );

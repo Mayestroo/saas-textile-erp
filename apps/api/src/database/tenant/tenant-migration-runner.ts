@@ -24,6 +24,7 @@ export class TenantMigrationRunner {
       await this.pattaSequenceInitializer.initialize(
         dataSource,
         this.pattaConfiguration.numberStart,
+        this.pattaConfiguration.partiyaNumberStart,
       );
       const rows: Array<{ name: string }> = await dataSource.query(
         `SELECT "name" FROM "${TENANT_MIGRATIONS_TABLE}" ORDER BY "timestamp" DESC LIMIT 1`,

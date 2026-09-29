@@ -14,8 +14,11 @@ interface SnapshotRow {
 
 const PATTA_COLUMNS = `
   id, partiya_number, patta_number, model_id, model_name_snapshot, template_id,
-  konveyer_snapshot, razmer, rang, ish_soni, created_device_id, created_from_block_id,
-  created_at, client_created_at, occurred_at, version, ownership_state, server_sequence
+  konveyer_snapshot, razmer, rang, ish_soni, legacy_operation_count, status, print_batch_id,
+  created_device_id, created_from_block_id,
+  created_at, client_created_at, occurred_at, version, ownership_state, server_sequence,
+  (SELECT batch.printed_at FROM patta_print_batches AS batch
+   WHERE batch.id = patta_hisob.print_batch_id) AS printed_at
 `
 
 export class PattaLocalRepository {
@@ -30,10 +33,11 @@ export class PattaLocalRepository {
         `
       INSERT INTO patta_hisob (
         id, partiya_number, patta_number, model_id, model_name_snapshot, template_id,
-        konveyer_snapshot, razmer, rang, ish_soni, created_device_id,
+        konveyer_snapshot, razmer, rang, ish_soni, legacy_operation_count, status, print_batch_id,
+        created_device_id,
         created_from_block_id, created_at, client_created_at, occurred_at,
         version, ownership_state
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'LOCAL_PENDING')
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'ACTIVE', NULL, ?, ?, ?, ?, ?, ?, 'LOCAL_PENDING')
     `
       )
       .run(
@@ -83,6 +87,10 @@ export class PattaLocalRepository {
       razmer: patta.razmer,
       rang: patta.rang,
       ish_soni: patta.ish_soni,
+      legacy_operation_count: null,
+      status: 'ACTIVE',
+      print_batch_id: null,
+      printed_at: null,
       created_device_id: patta.created_device_id,
       created_from_block_id: patta.created_from_block_id,
       created_at: patta.created_at,

@@ -4,7 +4,7 @@ import type { DataSource, EntityManager } from 'typeorm';
 import type { OfflinePattaCreateEvent } from '@textile/sync-protocol';
 import { canonicalizeBusinessName } from '../models/business-name.js';
 import { PattaNumberBlocksService } from './patta-number-blocks.service.js';
-import { pattaAlreadyExists } from './patta-errors.js';
+import { pattaAlreadyExists, pattaProtocolUpgradeRequired } from './patta-errors.js';
 
 export interface OfflineOperationSnapshotInput {
   id: string;
@@ -15,7 +15,7 @@ export interface OfflineOperationSnapshotInput {
 }
 
 export interface OfflineSnapshotPayload {
-  ish_soni?: number;
+  ish_soni: number;
   operations: readonly OfflineOperationSnapshotInput[];
 }
 
@@ -29,6 +29,7 @@ export interface ValidatedOfflineOperationSnapshot {
 
 export interface ValidatedOfflineSnapshotPayload {
   ish_soni: number;
+  operation_count: number;
   operations: ValidatedOfflineOperationSnapshot[];
 }
 
@@ -39,7 +40,7 @@ export interface ValidatedOfflinePattaRegistration {
   model_id: string;
   model_name_snapshot: string;
   template_id: string | null;
-  konveyer_snapshot: string;
+  konveyer_snapshot: string | null;
   razmer: string | null;
   rang: string | null;
   block_id: string;
@@ -54,6 +55,7 @@ export interface ValidatedOfflinePattaRegistration {
   reference_cursor: string;
   reference_versions: OfflinePattaCreateEvent['payload']['reference_versions'];
   ish_soni: number;
+  operation_count: number;
   operations: ValidatedOfflineOperationSnapshot[];
 }
 
@@ -218,6 +220,9 @@ export class PattaOfflineRegistrationValidator {
       throw invalidEvent('Patta ma’lumoti obyekt bo‘lishi kerak', 'payload');
     }
     const payload = rawPayload as Record<string, unknown>;
+    if (payload['ish_soni'] === undefined) {
+      throw pattaProtocolUpgradeRequired();
+    }
     const allowedPayloadFields = new Set([
       'partiya_number',
       'patta_number',
@@ -230,6 +235,7 @@ export class PattaOfflineRegistrationValidator {
       'block_id',
       'template_overrides',
       'reference_versions',
+      'ish_soni',
       'operations',
     ]);
     if (Object.keys(payload).some((field) => !allowedPayloadFields.has(field))) {
@@ -255,7 +261,7 @@ export class PattaOfflineRegistrationValidator {
     const templateId = templateIdValue === null
       ? null
       : requireUuid(templateIdValue, 'template_id');
-    const conveyor = canonicalRequired(payload['konveyer_snapshot'], 'konveyer_snapshot');
+    const conveyor = canonicalOptional(payload['konveyer_snapshot'], 'konveyer_snapshot');
     const size = canonicalOptional(payload['razmer'], 'razmer');
     const color = canonicalOptional(payload['rang'], 'rang');
     const blockId = requireUuid(payload['block_id'], 'block_id');
@@ -316,7 +322,10 @@ export class PattaOfflineRegistrationValidator {
       throw invalidEvent('Qolip ID va versiyasi bir vaqtda yuborilishi kerak', 'reference_versions.template');
     }
 
-    const snapshot = this.validateSnapshotPayload({ operations: payload['operations'] });
+    const snapshot = this.validateSnapshotPayload({
+      ish_soni: payload['ish_soni'] as number,
+      operations: payload['operations'] as OfflineOperationSnapshotInput[],
+    });
     const snapshotOperationIds = new Set(snapshot.operations.map(({ operation_id }) => operation_id));
     if (
       snapshotOperationIds.size !== Object.keys(versions).length ||
@@ -352,6 +361,7 @@ export class PattaOfflineRegistrationValidator {
         ),
       },
       ish_soni: snapshot.ish_soni,
+      operation_count: snapshot.operation_count,
       operations: snapshot.operations,
     };
   }
@@ -366,10 +376,10 @@ export class PattaOfflineRegistrationValidator {
       throw invalidSnapshot('Patta snapshotida kamida bitta operatsiya bo‘lishi kerak', 'operations');
     }
     if (
-      reportedCount !== undefined &&
-      (!Number.isSafeInteger(reportedCount) || reportedCount !== rawOperations.length)
+      !Number.isSafeInteger(reportedCount) ||
+      (reportedCount as number) <= 0
     ) {
-      throw invalidSnapshot('Ish soni snapshot operatsiyalari soniga teng bo‘lishi kerak', 'ish_soni');
+      throw invalidSnapshot('Ish soni 0 dan katta butun son bo‘lishi kerak', 'ish_soni');
     }
 
     const seenOperationIds = new Set<string>();
@@ -448,6 +458,6 @@ export class PattaOfflineRegistrationValidator {
       };
     });
 
-    return { ish_soni: operations.length, operations };
+    return { ish_soni: reportedCount as number, operation_count: operations.length, operations };
   }
 }

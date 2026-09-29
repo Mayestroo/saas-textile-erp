@@ -1,5 +1,10 @@
 # Patta Generation and Accounting Foundation Design
 
+> **Superseded:** This September 26 design describes the original Patta
+> generation contract. Its quantity, numbering and v1 API rules are historical;
+> follow `docs/superpowers/specs/2026-09-28-patta-print-and-sheet-redesign.md`
+> for the approved print-batch and product-quantity contract.
+
 ## Goal and scope
 
 Implement the tenant-side Patta foundation: templates, a PostgreSQL-backed
@@ -175,13 +180,11 @@ that mutation lock ordering and add DB concurrency tests. Never use
 `model_operations.price` for effective or snapshot prices.
 
 If the ACTIVE operation set is empty, reject with
-`PATTA_MODEL_HAS_NO_OPERATIONS`. Insert Patta rows and their snapshots; compute
-`ish_soni` from the number of inserted snapshots rather than request input. The
-online batch allocates its sequence range in this transaction and records no
-desktop block ID. Append one `patta.create` audit event per Patta in the same
-transaction, keyed by immutable `patta_hisob.id`. Audit metadata includes
-partiya/Patta number, model ID/name snapshot, validated device, block/source,
-and generation context without copying every operation snapshot into JSON.
+`PATTA_MODEL_HAS_NO_OPERATIONS`. In the original implementation, `ish_soni` was
+computed from operation snapshot count. The approved redesign replaces that
+behavior: product quantity is provided explicitly and operation count remains
+independent. Current route, audit and batch rules are documented in the
+September 28 redesign and `docs/database.md`.
 
 ## Blocks, lookup, and list APIs
 

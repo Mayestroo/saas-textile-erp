@@ -24,6 +24,7 @@
     "db:master:revert": "npm run build && node dist/database/master/master-database.cli.js revert",
     "db:master:show": "npm run build && node dist/database/master/master-database.cli.js show",
     "db:master:seed": "npm run build && node dist/database/master/master-database.cli.js seed",
+    "dev:bootstrap-tenant": "npm run db:master:migrate && node --env-file=.env dist/master/provisioning/local-dev-tenant-bootstrap.cli.js",
     "test:master-db": "vitest run src/database/master/master-database.integration.spec.ts",
     "test:tenant-provisioning": "vitest run src/database/tenant/tenant-provisioning.integration.spec.ts",
     "test:models-operations": "vitest run src/tenant/models/models-operations.integration.spec.ts",

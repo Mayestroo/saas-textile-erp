@@ -1,9 +1,15 @@
 import type Database from 'better-sqlite3'
-import type { SyncChange, SyncEntityType, SyncProjection } from '@textile/sync-protocol'
+import type {
+  SyncChange,
+  SyncProjection,
+  SyncProjectionV2,
+  PattaV2LookupMirror
+} from '@textile/sync-protocol'
 import { assertPostgresBigint, compareDecimalStrings, parsePostgresBigint } from './decimal-string'
 import type { BootstrapStagingRepository } from './bootstrap-staging.repository'
 import { LocalUnitOfWork } from './local-unit-of-work'
 import { SyncStateRepository } from './sync-state.repository'
+import { LocalDomainError } from './local-errors'
 
 interface ExistingBlockState {
   local_next_number: string | null
@@ -31,7 +37,7 @@ interface CompletedBootstrap {
 }
 
 const SERVER_MIRRORS: readonly {
-  entityType: SyncEntityType
+  entityType: SyncChange['entity_type']
   table: string
   onlyServerOwned: boolean
 }[] = [
@@ -47,7 +53,14 @@ const SERVER_MIRRORS: readonly {
     table: 'patta_operation_snapshots',
     onlyServerOwned: true
   },
-  { entityType: 'patta_number_blocks', table: 'patta_number_blocks', onlyServerOwned: false }
+  { entityType: 'patta_number_blocks', table: 'patta_number_blocks', onlyServerOwned: false },
+  { entityType: 'patta_partiya_number_blocks', table: 'patta_partiya_number_blocks', onlyServerOwned: false },
+  { entityType: 'patta_print_batches', table: 'patta_print_batches', onlyServerOwned: true },
+  { entityType: 'patta_print_batch_sizes', table: 'patta_print_batch_sizes', onlyServerOwned: true },
+  { entityType: 'patta_print_events', table: 'patta_print_events', onlyServerOwned: false },
+  { entityType: 'patta_sheets', table: 'patta_sheets', onlyServerOwned: true },
+  { entityType: 'patta_sheet_operation_snapshots', table: 'patta_sheet_operation_snapshots', onlyServerOwned: true },
+  { entityType: 'patta_sheet_rows', table: 'patta_sheet_rows', onlyServerOwned: true }
 ]
 
 function matchesLocalPatta(
@@ -71,7 +84,7 @@ function matchesLocalPatta(
         model_id: string
         model_name_snapshot: string
         template_id: string | null
-        konveyer_snapshot: string
+        konveyer_snapshot: string | null
         razmer: string | null
         rang: string | null
         ish_soni: number
@@ -131,7 +144,7 @@ function matchesLocalSnapshot(
 
 function currentServerSequence(
   database: Database.Database,
-  entityType: SyncEntityType,
+  entityType: SyncChange['entity_type'],
   entityId: string
 ): string | null {
   const mirror = SERVER_MIRRORS.find(({ entityType: candidate }) => candidate === entityType)
@@ -143,7 +156,11 @@ function currentServerSequence(
   `
     )
     .get(entityId) as StoredSequenceRow | undefined
-  return row?.server_sequence ?? null
+  if (row?.server_sequence !== null && row?.server_sequence !== undefined) return row.server_sequence
+  const tombstone = database.prepare(`
+    SELECT server_sequence FROM sync_tombstones WHERE entity_type = ? AND entity_id = ?
+  `).get(entityType, entityId) as StoredSequenceRow | undefined
+  return tombstone?.server_sequence ?? null
 }
 
 function applyTombstone(database: Database.Database, change: SyncChange): boolean {
@@ -161,14 +178,21 @@ function applyTombstone(database: Database.Database, change: SyncChange): boolea
   }
   database
     .prepare(
-      `
-    INSERT INTO sync_tombstones (entity_type, entity_id, server_sequence, deleted_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(entity_type, entity_id) DO UPDATE SET
-      server_sequence = excluded.server_sequence, deleted_at = excluded.deleted_at
-  `
+      `INSERT INTO sync_tombstones (entity_type, entity_id, server_sequence, deleted_at)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+         server_sequence = excluded.server_sequence, deleted_at = excluded.deleted_at`,
     )
     .run(change.entity_type, change.entity_id, change.sequence_id, change.changed_at)
+  if (change.entity_type === 'patta_sheet_rows') {
+    database.prepare('DELETE FROM patta_sheet_rows WHERE id = ?').run(change.entity_id)
+  } else if (change.entity_type === 'patta_sheet_operation_snapshots') {
+    database.prepare('DELETE FROM patta_sheet_operation_snapshots WHERE id = ?').run(change.entity_id)
+  } else if (change.entity_type === 'patta_sheets') {
+    database.prepare('DELETE FROM patta_sheet_rows WHERE patta_sheet_id = ?').run(change.entity_id)
+    database.prepare('DELETE FROM patta_sheet_operation_snapshots WHERE patta_sheet_id = ?').run(change.entity_id)
+    database.prepare('DELETE FROM patta_sheets WHERE id = ?').run(change.entity_id)
+  }
   return true
 }
 
@@ -196,10 +220,14 @@ function validateBlockNumbers(
 
 function applyProjection(
   database: Database.Database,
-  projection: SyncProjection,
+  projection: SyncProjection | SyncProjectionV2,
   sequence: string,
   mode: 'BOOTSTRAP' | 'PULL'
 ): void {
+  if (projection.projection_version === 2) {
+    applyProjectionV2(database, projection, sequence)
+    return
+  }
   database
     .prepare(
       `
@@ -276,6 +304,11 @@ function applyProjection(
     }
     case 'model_operations': {
       const row = projection.data
+      const pendingCreate = database.prepare(`
+        SELECT 1 FROM sync_queue WHERE entity_type = 'model_operation' AND entity_id = ?
+          AND operation = 'CREATE' AND status IN ('PENDING', 'SYNCING', 'CONFLICT', 'FAILED')
+      `).get(row.id)
+      if (pendingCreate) return
       database
         .prepare(
           `
@@ -303,6 +336,25 @@ function applyProjection(
     }
     case 'model_operation_prices': {
       const row = projection.data
+      const localPrice = database.prepare(`
+        SELECT id, price FROM model_operation_prices
+        WHERE operation_id = ? AND valid_from = ?
+        ORDER BY id LIMIT 1
+      `).get(row.operation_id, row.valid_from) as { id: string; price: string } | undefined
+      const customCreate = database.prepare(`
+        SELECT status FROM sync_queue WHERE entity_type = 'model_operation' AND entity_id = ?
+          AND operation = 'CREATE' ORDER BY created_at DESC LIMIT 1
+      `).get(row.operation_id) as { status: string } | undefined
+      if (localPrice && customCreate?.status === 'SYNCED') {
+        if (localPrice.price !== row.price) {
+          throw new LocalDomainError('MODEL_OPERATION_PRICE_MISMATCH', 'Sinxronlangan yangi operatsiya narxi mahalliy yozuvga mos emas')
+        }
+        database.prepare(`
+          UPDATE model_operation_prices SET id = ?, price = ?, valid_to = ?, created_at = ?, server_sequence = ?
+          WHERE id = ?
+        `).run(row.id, row.price, row.valid_to, row.created_at, sequence, localPrice.id)
+        return
+      }
       database
         .prepare(
           `
@@ -575,12 +627,351 @@ function applyProjection(
   }
 }
 
+function applyProjectionV2(
+  database: Database.Database,
+  projection: SyncProjectionV2,
+  sequence: string
+): void {
+  if (projection.entity_type === 'patta_sheets') {
+    const pendingPurge = database.prepare(`
+      SELECT 1 FROM sync_queue WHERE entity_type = 'patta_sheet' AND entity_id = ?
+        AND operation = 'DELETE' AND status IN ('PENDING', 'SYNCING', 'CONFLICT', 'FAILED')
+    `).get(projection.entity_id)
+    if (pendingPurge) return
+  }
+  database.prepare('DELETE FROM sync_tombstones WHERE entity_type = ? AND entity_id = ?')
+    .run(projection.entity_type, projection.entity_id)
+
+  switch (projection.entity_type) {
+    case 'model_operations': {
+      const row = projection.data
+      const pendingCreate = database.prepare(`
+        SELECT 1 FROM sync_queue WHERE entity_type = 'model_operation' AND entity_id = ?
+          AND operation = 'CREATE' AND status IN ('PENDING', 'SYNCING', 'CONFLICT', 'FAILED')
+      `).get(row.id)
+      if (pendingCreate) return
+      database.prepare(`
+        INSERT INTO model_operations (
+          id, model_id, name, sort_order, status, version, created_at, updated_at, server_sequence
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET model_id = excluded.model_id, name = excluded.name,
+          sort_order = excluded.sort_order, status = excluded.status, version = excluded.version,
+          created_at = excluded.created_at, updated_at = excluded.updated_at,
+          server_sequence = excluded.server_sequence
+      `).run(row.id, row.model_id, row.name, row.sort_order, row.status, row.version,
+        row.created_at, row.updated_at, sequence)
+      return
+    }
+    case 'patta_hisob': {
+      const row = projection.data
+      const current = database.prepare('SELECT ownership_state FROM patta_hisob WHERE id = ?')
+        .get(row.id) as LocalOwnershipState | undefined
+      if (current && current.ownership_state !== 'SERVER_SYNCED') return
+      database.prepare(`
+        INSERT INTO patta_hisob (
+          id, partiya_number, patta_number, model_id, model_name_snapshot, template_id,
+          konveyer_snapshot, razmer, rang, ish_soni, legacy_operation_count, status, print_batch_id,
+          created_device_id, created_from_block_id, created_at, client_created_at, occurred_at,
+          version, ownership_state, server_sequence
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SERVER_SYNCED', ?)
+        ON CONFLICT(id) DO UPDATE SET partiya_number = excluded.partiya_number,
+          patta_number = excluded.patta_number, model_id = excluded.model_id,
+          model_name_snapshot = excluded.model_name_snapshot, template_id = excluded.template_id,
+          konveyer_snapshot = excluded.konveyer_snapshot, razmer = excluded.razmer,
+          rang = excluded.rang, ish_soni = excluded.ish_soni,
+          legacy_operation_count = excluded.legacy_operation_count, status = excluded.status,
+          print_batch_id = excluded.print_batch_id, created_device_id = excluded.created_device_id,
+          created_from_block_id = excluded.created_from_block_id, created_at = excluded.created_at,
+          client_created_at = excluded.client_created_at, occurred_at = excluded.occurred_at,
+          version = excluded.version, ownership_state = 'SERVER_SYNCED',
+          server_sequence = excluded.server_sequence
+      `).run(
+        row.id, row.partiya_number, row.patta_number, row.model_id, row.model_name_snapshot,
+        row.template_id, row.konveyer_snapshot, row.razmer, row.rang, row.ish_soni,
+        row.legacy_operation_count, row.status, row.print_batch_id, row.created_device_id,
+        row.created_from_block_id, row.created_at, row.client_created_at, row.occurred_at,
+        projection.entity_version, sequence
+      )
+      return
+    }
+    case 'patta_operation_snapshots': {
+      const row = projection.data
+      const parent = database.prepare('SELECT ownership_state FROM patta_hisob WHERE id = ?')
+        .get(row.patta_hisob_id) as LocalOwnershipState | undefined
+      if (parent && parent.ownership_state !== 'SERVER_SYNCED') return
+      database.prepare(`
+        INSERT INTO patta_operation_snapshots (
+          id, patta_hisob_id, operation_id, operation_name_snapshot, unit_price_snapshot,
+          sort_order, created_at, ownership_state, server_sequence
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'SERVER_SYNCED', ?)
+        ON CONFLICT(id) DO UPDATE SET patta_hisob_id = excluded.patta_hisob_id,
+          operation_id = excluded.operation_id, operation_name_snapshot = excluded.operation_name_snapshot,
+          unit_price_snapshot = excluded.unit_price_snapshot, sort_order = excluded.sort_order,
+          created_at = excluded.created_at, ownership_state = 'SERVER_SYNCED',
+          server_sequence = excluded.server_sequence
+      `).run(row.id, row.patta_hisob_id, row.operation_id, row.operation_name_snapshot,
+        row.unit_price_snapshot, row.sort_order, row.created_at, sequence)
+      return
+    }
+    case 'patta_partiya_number_blocks': {
+      const row = projection.data
+      const numbers = validateBlockNumbers(row.range_start, row.range_end, row.reported_used_count, row.status)
+      const current = database.prepare(`
+        SELECT local_next_number, local_consumed_count, local_role
+        FROM patta_partiya_number_blocks WHERE id = ?
+      `).get(row.id) as ExistingBlockState | undefined
+      const serverNext = numbers.rangeStart + numbers.reportedUsedCount
+      const previousNext = current?.local_next_number == null
+        ? numbers.rangeStart
+        : parsePostgresBigint(current.local_next_number, 'Local Partiya block next number')
+      const next = previousNext > serverNext ? previousNext : serverNext
+      const previousConsumed = current
+        ? parsePostgresBigint(current.local_consumed_count, 'Local Partiya block usage')
+        : 0n
+      const consumed = [previousConsumed, numbers.reportedUsedCount, next - numbers.rangeStart]
+        .reduce((greatest, value) => value > greatest ? value : greatest, 0n)
+      database.prepare(`
+        INSERT INTO patta_partiya_number_blocks (
+          id, device_id, range_start, range_end, reported_used_count, status,
+          allocated_at, exhausted_at, local_next_number, local_consumed_count,
+          local_role, server_sequence
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET device_id = excluded.device_id,
+          range_start = excluded.range_start, range_end = excluded.range_end,
+          reported_used_count = excluded.reported_used_count, status = excluded.status,
+          allocated_at = excluded.allocated_at, exhausted_at = excluded.exhausted_at,
+          local_next_number = excluded.local_next_number,
+          local_consumed_count = excluded.local_consumed_count, server_sequence = excluded.server_sequence
+      `).run(row.id, row.device_id, row.range_start, row.range_end, row.reported_used_count,
+        row.status, row.allocated_at, row.exhausted_at, next.toString(), consumed.toString(),
+        current?.local_role ?? 'AVAILABLE', sequence)
+      return
+    }
+    case 'patta_print_batches': {
+      const row = projection.data
+      const current = database.prepare('SELECT ownership_state FROM patta_print_batches WHERE id = ?')
+        .get(row.id) as LocalOwnershipState | undefined
+      if (current && current.ownership_state !== 'SERVER_SYNCED') return
+      const persistBatch = database.transaction(() => {
+        database.prepare(`
+          INSERT INTO patta_print_batches (
+            id, model_id, model_name_snapshot, partiya_number, partiya_block_id, ish_soni, rang,
+            status, version, revision, corrected_from_batch_id, created_by, created_device_id,
+            created_at, updated_at, printed_at, ownership_state, server_sequence
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SERVER_SYNCED', ?)
+          ON CONFLICT(id) DO UPDATE SET model_id = excluded.model_id,
+            model_name_snapshot = excluded.model_name_snapshot, partiya_number = excluded.partiya_number,
+            partiya_block_id = excluded.partiya_block_id, ish_soni = excluded.ish_soni,
+            rang = excluded.rang, status = excluded.status, version = excluded.version,
+            revision = excluded.revision, corrected_from_batch_id = excluded.corrected_from_batch_id,
+            created_by = excluded.created_by, created_device_id = excluded.created_device_id,
+            created_at = excluded.created_at, updated_at = excluded.updated_at,
+            printed_at = excluded.printed_at, ownership_state = 'SERVER_SYNCED',
+            server_sequence = excluded.server_sequence
+        `).run(row.id, row.model_id, row.model_name_snapshot, row.partiya_number,
+          row.partiya_block_id, row.ish_soni, row.rang, row.status, row.version,
+          row.revision, row.corrected_from_batch_id, row.created_by, row.created_device_id,
+          row.created_at, row.updated_at, row.printed_at, sequence)
+
+        database.prepare('DELETE FROM patta_print_batch_sizes WHERE print_batch_id = ?').run(row.id)
+        for (const size of row.size_distribution) {
+          database.prepare(`
+            INSERT INTO patta_print_batch_sizes (
+              id, print_batch_id, razmer, patta_count, sort_order, ownership_state, server_sequence
+            ) VALUES (?, ?, ?, ?, ?, 'SERVER_SYNCED', ?)
+            ON CONFLICT(id) DO UPDATE SET print_batch_id = excluded.print_batch_id,
+              razmer = excluded.razmer, patta_count = excluded.patta_count,
+              sort_order = excluded.sort_order, ownership_state = 'SERVER_SYNCED',
+              server_sequence = excluded.server_sequence
+          `).run(size.id, size.print_batch_id, size.razmer, size.patta_count, size.sort_order, sequence)
+        }
+        for (const patta of row.pattas) {
+          const localPatta = database.prepare(`
+            SELECT ownership_state FROM patta_hisob WHERE id = ?
+          `).get(patta.id) as LocalOwnershipState | undefined
+          if (localPatta && localPatta.ownership_state !== 'SERVER_SYNCED') continue
+          database.prepare(`
+            INSERT INTO patta_hisob (
+              id, partiya_number, patta_number, model_id, model_name_snapshot, template_id,
+              konveyer_snapshot, razmer, rang, ish_soni, legacy_operation_count, status, print_batch_id,
+              created_device_id, created_from_block_id, created_at, client_created_at, occurred_at,
+              version, ownership_state, server_sequence
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SERVER_SYNCED', ?)
+            ON CONFLICT(id) DO UPDATE SET partiya_number = excluded.partiya_number,
+              patta_number = excluded.patta_number, model_id = excluded.model_id,
+              model_name_snapshot = excluded.model_name_snapshot, template_id = excluded.template_id,
+              konveyer_snapshot = excluded.konveyer_snapshot, razmer = excluded.razmer,
+              rang = excluded.rang, ish_soni = excluded.ish_soni,
+              legacy_operation_count = excluded.legacy_operation_count, status = excluded.status,
+              print_batch_id = excluded.print_batch_id, created_device_id = excluded.created_device_id,
+              created_from_block_id = excluded.created_from_block_id, created_at = excluded.created_at,
+               client_created_at = excluded.client_created_at, occurred_at = excluded.occurred_at,
+               version = excluded.version,
+              ownership_state = 'SERVER_SYNCED', server_sequence = excluded.server_sequence
+          `).run(patta.id, patta.partiya_number, patta.patta_number, patta.model_id,
+            patta.model_name_snapshot, patta.template_id, patta.konveyer_snapshot, patta.razmer,
+            patta.rang, patta.ish_soni, patta.legacy_operation_count, patta.status, patta.print_batch_id,
+            patta.created_device_id, patta.created_from_block_id, patta.created_at,
+             patta.client_created_at, patta.occurred_at, patta.version, sequence)
+          database.prepare('DELETE FROM patta_operation_snapshots WHERE patta_hisob_id = ?').run(patta.id)
+          for (const snapshot of patta.operations) {
+            database.prepare(`
+              INSERT INTO patta_operation_snapshots (
+                id, patta_hisob_id, operation_id, operation_name_snapshot, unit_price_snapshot,
+                sort_order, created_at, ownership_state, server_sequence
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, 'SERVER_SYNCED', ?)
+              ON CONFLICT(id) DO UPDATE SET patta_hisob_id = excluded.patta_hisob_id,
+                operation_id = excluded.operation_id, operation_name_snapshot = excluded.operation_name_snapshot,
+                unit_price_snapshot = excluded.unit_price_snapshot, sort_order = excluded.sort_order,
+                created_at = excluded.created_at, ownership_state = 'SERVER_SYNCED',
+                server_sequence = excluded.server_sequence
+            `).run(snapshot.id, snapshot.patta_hisob_id, snapshot.operation_id,
+              snapshot.operation_name_snapshot, snapshot.unit_price_snapshot, snapshot.sort_order,
+              snapshot.created_at, sequence)
+          }
+        }
+      })
+      persistBatch.immediate()
+      return
+    }
+    case 'patta_print_batch_sizes': {
+      const row = projection.data
+      database.prepare(`
+        INSERT INTO patta_print_batch_sizes (
+          id, print_batch_id, razmer, patta_count, sort_order, ownership_state, server_sequence
+        ) VALUES (?, ?, ?, ?, ?, 'SERVER_SYNCED', ?)
+        ON CONFLICT(id) DO UPDATE SET print_batch_id = excluded.print_batch_id,
+          razmer = excluded.razmer, patta_count = excluded.patta_count,
+          sort_order = excluded.sort_order, ownership_state = 'SERVER_SYNCED',
+          server_sequence = excluded.server_sequence
+      `).run(row.id, row.print_batch_id, row.razmer, row.patta_count, row.sort_order, sequence)
+      return
+    }
+    case 'patta_print_events': {
+      const row = projection.data
+      database.prepare(`
+        INSERT INTO patta_print_events (
+          id, batch_id, revision, kind, outcome, actor_user_id, device_id, created_at,
+          printed_at, server_sequence
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET outcome = excluded.outcome, printed_at = excluded.printed_at,
+          server_sequence = excluded.server_sequence
+      `).run(row.id, row.batch_id, row.revision, row.kind, row.outcome, row.actor_user_id,
+        row.device_id, row.created_at, row.printed_at, sequence)
+      return
+    }
+    case 'patta_sheets': {
+      const sheet = projection.data
+      const current = database.prepare('SELECT ownership_state FROM patta_sheets WHERE id = ?')
+        .get(sheet.id) as LocalOwnershipState | undefined
+      if (current && current.ownership_state !== 'SERVER_SYNCED') return
+      const applySheet = database.transaction(() => {
+        database.prepare(`
+          INSERT INTO patta_sheets (
+            id, patta_hisob_id, entered_at, business_date, conveyor_snapshot, version, created_by,
+            created_at, updated_at, deleted_at, deleted_by, ownership_state, server_sequence
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SERVER_SYNCED', ?)
+          ON CONFLICT(id) DO UPDATE SET patta_hisob_id = excluded.patta_hisob_id,
+            entered_at = excluded.entered_at, business_date = excluded.business_date,
+            conveyor_snapshot = excluded.conveyor_snapshot, version = excluded.version,
+            created_by = excluded.created_by, created_at = excluded.created_at,
+            updated_at = excluded.updated_at, deleted_at = excluded.deleted_at,
+            deleted_by = excluded.deleted_by, ownership_state = 'SERVER_SYNCED',
+            server_sequence = excluded.server_sequence
+        `).run(
+          sheet.id, sheet.patta_hisob_id, sheet.entered_at, sheet.business_date,
+          sheet.conveyor_snapshot, sheet.version, sheet.created_by, sheet.created_at,
+          sheet.updated_at, sheet.deleted_at, sheet.deleted_by, sequence
+        )
+        for (const snapshot of sheet.operation_snapshots) {
+          const existing = database.prepare(`
+            SELECT patta_sheet_id, model_operation_id, source_type, source_patta_operation_snapshot_id,
+              operation_name_snapshot, unit_price_snapshot, sort_order
+            FROM patta_sheet_operation_snapshots WHERE id = ?
+          `).get(snapshot.id) as Omit<typeof snapshot, 'id' | 'created_at'> | undefined
+          if (existing && (
+            existing.patta_sheet_id !== sheet.id || existing.model_operation_id !== snapshot.model_operation_id ||
+            existing.source_type !== snapshot.source_type ||
+            existing.source_patta_operation_snapshot_id !== snapshot.source_patta_operation_snapshot_id ||
+            existing.operation_name_snapshot !== snapshot.operation_name_snapshot ||
+            existing.unit_price_snapshot !== snapshot.unit_price_snapshot || existing.sort_order !== snapshot.sort_order
+          )) {
+            throw new LocalDomainError('PATTA_SHEET_SNAPSHOT_MISMATCH', 'Server varaq operatsiya tarixi mahalliy nusxaga mos emas')
+          }
+          database.prepare(`
+            INSERT INTO patta_sheet_operation_snapshots (
+              id, patta_sheet_id, model_operation_id, source_type, source_patta_operation_snapshot_id,
+              operation_name_snapshot, unit_price_snapshot, sort_order, created_at, ownership_state, server_sequence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SERVER_SYNCED', ?)
+            ON CONFLICT(id) DO UPDATE SET ownership_state = 'SERVER_SYNCED', server_sequence = excluded.server_sequence
+          `).run(snapshot.id, sheet.id, snapshot.model_operation_id, snapshot.source_type,
+            snapshot.source_patta_operation_snapshot_id, snapshot.operation_name_snapshot,
+            snapshot.unit_price_snapshot, snapshot.sort_order, snapshot.created_at, sequence)
+        }
+        for (const row of sheet.rows) {
+          database.prepare(`
+            INSERT INTO patta_sheet_rows (
+              id, patta_sheet_id, patta_sheet_operation_snapshot_id, worker_id, quantity_snapshot,
+              nuqson, deleted_at, deleted_by, created_at, updated_at, ownership_state, server_sequence
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SERVER_SYNCED', ?)
+            ON CONFLICT(id) DO UPDATE SET patta_sheet_operation_snapshot_id = excluded.patta_sheet_operation_snapshot_id,
+              worker_id = excluded.worker_id, quantity_snapshot = excluded.quantity_snapshot,
+              nuqson = excluded.nuqson, deleted_at = excluded.deleted_at, deleted_by = excluded.deleted_by,
+              updated_at = excluded.updated_at, ownership_state = 'SERVER_SYNCED',
+              server_sequence = excluded.server_sequence
+          `).run(row.id, sheet.id, row.patta_sheet_operation_snapshot_id, row.worker_id,
+            row.quantity_snapshot, row.nuqson ? 1 : 0, row.deleted_at, row.deleted_by,
+            row.created_at, row.updated_at, sequence)
+        }
+      })
+      applySheet.immediate()
+      return
+    }
+    case 'patta_sheet_operation_snapshots':
+    case 'patta_sheet_rows':
+      throw new Error('Patta Sheet child projections must be applied in their aggregate')
+  }
+}
+
 export class ReferenceMirrorRepository {
   constructor(
     private readonly unitOfWork: LocalUnitOfWork,
     private readonly stagingRepository: BootstrapStagingRepository,
     private readonly stateRepository: SyncStateRepository
   ) {}
+
+  applyPattaV2LookupMirror(mirror: PattaV2LookupMirror): void {
+    assertPostgresBigint(mirror.server_sequence, 'Patta lookup server cursor')
+    this.unitOfWork.transaction((database) => {
+      if (mirror.batch) {
+        applyProjectionV2(database, {
+          projection_version: 2,
+          entity_type: 'patta_print_batches',
+          entity_id: mirror.batch.id,
+          entity_version: mirror.batch.version,
+          data: mirror.batch
+        }, mirror.server_sequence)
+        return
+      }
+      const { version, operations, ...pattaData } = mirror.patta
+      applyProjectionV2(database, {
+        projection_version: 2,
+        entity_type: 'patta_hisob',
+        entity_id: mirror.patta.id,
+        entity_version: version,
+        data: pattaData
+      }, mirror.server_sequence)
+      for (const operation of operations) {
+        applyProjectionV2(database, {
+          projection_version: 2,
+          entity_type: 'patta_operation_snapshots',
+          entity_id: operation.id,
+          entity_version: null,
+          data: operation
+        }, mirror.server_sequence)
+      }
+    })
+  }
 
   finalizeBootstrap(sessionId: string, watermark: string, completedAt: string): CompletedBootstrap {
     parsePostgresBigint(watermark, 'Bootstrap watermark')
@@ -709,6 +1100,7 @@ export class ReferenceMirrorRepository {
     reconciledAt: string
   ): void {
     for (const mirror of SERVER_MIRRORS) {
+      if (mirror.entityType === 'patta_sheet_rows' || mirror.entityType === 'patta_sheet_operation_snapshots') continue
       const ownershipFilter = mirror.onlyServerOwned
         ? `AND mirror.ownership_state = 'SERVER_SYNCED'`
         : ''
@@ -728,6 +1120,36 @@ export class ReferenceMirrorRepository {
       `
         )
         .run(mirror.entityType, watermark, reconciledAt, sessionId, mirror.entityType)
+      if (mirror.entityType === 'patta_sheets') {
+        const absentSheets = database.prepare(`
+          SELECT sheet.id FROM patta_sheets sheet
+          WHERE sheet.ownership_state = 'SERVER_SYNCED'
+            AND NOT EXISTS (
+              SELECT 1 FROM bootstrap_items staged
+              WHERE staged.session_id = ? AND staged.entity_type = 'patta_sheets'
+                AND staged.entity_id = sheet.id
+            )
+        `).all(sessionId) as Array<{ id: string }>
+        for (const sheet of absentSheets) {
+          const rowIds = database.prepare('SELECT id FROM patta_sheet_rows WHERE patta_sheet_id = ?')
+            .all(sheet.id) as Array<{ id: string }>
+          const snapshotIds = database.prepare('SELECT id FROM patta_sheet_operation_snapshots WHERE patta_sheet_id = ?')
+            .all(sheet.id) as Array<{ id: string }>
+          const insertTombstone = database.prepare(`
+            INSERT INTO sync_tombstones (entity_type, entity_id, server_sequence, deleted_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(entity_type, entity_id) DO UPDATE SET
+              server_sequence = excluded.server_sequence, deleted_at = excluded.deleted_at
+          `)
+          for (const { id } of rowIds) insertTombstone.run('patta_sheet_rows', id, watermark, reconciledAt)
+          for (const { id } of snapshotIds) {
+            insertTombstone.run('patta_sheet_operation_snapshots', id, watermark, reconciledAt)
+          }
+          database.prepare('DELETE FROM patta_sheet_rows WHERE patta_sheet_id = ?').run(sheet.id)
+          database.prepare('DELETE FROM patta_sheet_operation_snapshots WHERE patta_sheet_id = ?').run(sheet.id)
+          database.prepare('DELETE FROM patta_sheets WHERE id = ?').run(sheet.id)
+        }
+      }
     }
   }
 }

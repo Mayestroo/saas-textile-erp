@@ -34,6 +34,15 @@ export class SyncStateRepository {
     this.set('last_server_cursor', assertPostgresBigint(cursor, 'Server change cursor'), updatedAt)
   }
 
+  tenantTimezone(): string | null {
+    const timezone = this.get('tenant_timezone')
+    return timezone === '' ? null : timezone
+  }
+
+  setTenantTimezone(timezone: string, updatedAt: string): void {
+    this.set('tenant_timezone', timezone, updatedAt)
+  }
+
   lastCompletedBootstrapSessionId(): string | null {
     return this.get('last_completed_bootstrap_session_id')
   }

@@ -1,3 +1,4 @@
+import { createServer } from 'node:http'
 import { describe, expect, it, vi } from 'vitest'
 import type { AuthenticatedHttpRequest } from './authenticated-sync-transport'
 import { AuthenticatedHttpError, FetchAuthenticatedHttpClient } from './authenticated-http-client'
@@ -15,7 +16,7 @@ const LOGIN_RESULT: TenantLoginResult = {
     email: 'operator@example.test',
     fullName: 'Operator One'
   },
-  company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'factory' }
+  company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'factory', timezone: 'Asia/Tashkent' }
 }
 
 class AuthTestStore implements SecureSessionStore {
@@ -130,6 +131,64 @@ describe('authenticated HTTP session boundary', () => {
     expect(session.refreshCalls).toBe(1)
     expect(session.rejectedTokens).toEqual(['expired-token'])
     expect(session.accessTokenCalls).toBe(2)
+  })
+
+  it('uses the tenant hostname as Host while retrying local .localhost DNS failures over loopback', async () => {
+    const observed = {
+      remoteAddress: '',
+      host: '',
+      method: '',
+      path: '',
+      contentType: '',
+      authorization: '',
+      body: ''
+    }
+    const server = createServer((request, response) => {
+      observed.remoteAddress = request.socket.remoteAddress ?? ''
+      observed.host = request.headers.host ?? ''
+      observed.method = request.method ?? ''
+      observed.path = request.url ?? ''
+      observed.contentType = request.headers['content-type'] ?? ''
+      observed.authorization = request.headers.authorization ?? ''
+      request.setEncoding('utf8')
+      request.on('data', (chunk: string) => { observed.body += chunk })
+      request.once('end', () => {
+        response.writeHead(202, { 'Content-Type': 'application/json' })
+        response.end(JSON.stringify({ accepted: true }))
+      })
+    })
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
+    try {
+      const address = server.address()
+      if (!address || typeof address === 'string') throw new Error('Local test server did not bind')
+      const origin = `http://textile-dev.localhost:${address.port}`
+      const session = new TestSession(['local-token'], true)
+      const fetcher = vi.fn<typeof fetch>()
+        .mockRejectedValueOnce(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ENOTFOUND' } }))
+      const client = new FetchAuthenticatedHttpClient(session, origin, fetcher)
+
+      await expect(client.request({
+        method: 'POST',
+        url: `${origin}/api/v1/sync/push?cursor=7&limit=25`,
+        body: { events: [{ event_id: 'entry-event-1' }] }
+      })).resolves.toEqual({ accepted: true })
+
+      expect(fetcher).toHaveBeenCalledTimes(1)
+      expect(observed.remoteAddress).toBe('127.0.0.1')
+      expect(observed.host).toBe(`textile-dev.localhost:${address.port}`)
+      expect(observed.method).toBe('POST')
+      expect(observed.path).toBe('/api/v1/sync/push?cursor=7&limit=25')
+      expect(observed.contentType).toBe('application/json')
+      expect(observed.authorization).toBe('Bearer local-token')
+      expect(JSON.parse(observed.body)).toEqual({ events: [{ event_id: 'entry-event-1' }] })
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve())
+      })
+    }
   })
 
   it('surfaces an unrefreshed 401 and keeps authentication outside queue payloads', async () => {

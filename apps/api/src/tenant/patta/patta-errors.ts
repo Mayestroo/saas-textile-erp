@@ -121,6 +121,13 @@ export function pattaSnapshotMismatch(details: object = {}): ConflictException {
   );
 }
 
+export function pattaProtocolUpgradeRequired(): ConflictException {
+  return pattaConflict(
+    'SYNC_PROTOCOL_UPGRADE_REQUIRED',
+    'Patta miqdorini to‘g‘ri uzatish uchun dastur versiyasini yangilang',
+  );
+}
+
 export function pattaRecordNotFound(): NotFoundException {
   return pattaNotFound('PATTA_NOT_FOUND', 'Patta hisob yozuvi topilmadi');
 }

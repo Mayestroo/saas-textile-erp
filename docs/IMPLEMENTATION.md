@@ -1152,13 +1152,9 @@ Noyabrda operatsiya 1 200 so‘m qilinsa ham eski Pattaga ta’sir qilmaydi.
 
 Operatsiya nomi keyinchalik o‘zgartirilsa ham eski Patta varag‘i tarixiy nomini saqlay oladi.
 
-`patta_hisob.ish_soni`:
-
-```text
-COUNT(patta_operation_snapshots)
-```
-
-ga mos bo‘lishi kerak.
+`patta_hisob.ish_soni` bosma Pattadagi mahsulot miqdori. U operation
+snapshotlar sonidan mustaqil. Eski yozuvlarda haqiqiy miqdor noma’lum bo‘lsa,
+avvalgi qiymat faqat `legacy_operation_count` sifatida saqlanadi.
 
 ---
 

@@ -5,6 +5,7 @@ describe('Patta configuration', () => {
   it('uses validated defaults', () => {
     expect(loadPattaConfiguration({})).toEqual({
       numberStart: 1n,
+      partiyaNumberStart: 1n,
       blockSize: 1000n,
       maxActiveBlocksPerDevice: 2,
       maxBatchSize: 100,
@@ -21,6 +22,7 @@ describe('Patta configuration', () => {
 
     expect(config).toEqual({
       numberStart: 9_007_199_254_740_993n,
+      partiyaNumberStart: 1n,
       blockSize: 9_007_199_254_740_994n,
       maxActiveBlocksPerDevice: 3,
       maxBatchSize: 250,

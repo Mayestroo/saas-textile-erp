@@ -135,7 +135,20 @@ export class PattaNumberBlockRepository {
     `
       )
       .get(this.deviceId) as NumberBlockRow | undefined
-    if (!current) return false
+    if (!current) {
+      const usable = this.database.prepare(`
+        SELECT id, device_id, range_start, range_end, reported_used_count,
+          status, local_next_number, local_consumed_count, local_role
+        FROM patta_number_blocks
+        WHERE device_id = ? AND status = 'ACTIVE' AND local_role IN ('RESERVED', 'AVAILABLE')
+          AND NOT EXISTS (
+            SELECT 1 FROM sync_tombstones AS tombstone
+            WHERE tombstone.entity_type = 'patta_number_blocks'
+              AND tombstone.entity_id = patta_number_blocks.id
+          )
+      `).all(this.deviceId) as NumberBlockRow[]
+      return !usable.some((block) => this.normalizeProgress(block).nextNumber <= this.normalizeProgress(block).rangeEnd)
+    }
     const currentProgress = this.normalizeProgress(current)
     const capacity = currentProgress.rangeEnd - currentProgress.rangeStart + 1n
     if (currentProgress.consumedCount * 100n < capacity * 80n) return false

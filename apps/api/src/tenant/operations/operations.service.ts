@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
 import { Decimal } from 'decimal.js';
-import type { DataSource } from 'typeorm';
+import type { DataSource, EntityManager } from 'typeorm';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuditAction } from '../audit/audit.service.js';
 import { createSyncProjection } from '../sync/sync-projections.js';
@@ -31,6 +31,14 @@ export interface OperationRecord {
   version: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface CreatePattaSheetOperationInput {
+  id: string;
+  name: string;
+  initial_price: string;
+  sort_order: number;
+  effective_from: string;
 }
 
 interface OperationRow {
@@ -242,6 +250,126 @@ export class OperationsService {
     } catch (error) {
       return mapWriteError(error);
     }
+  }
+
+  async createForPattaSheet(
+    dataSource: DataSource,
+    modelId: string,
+    actorUserId: string,
+    validatedDeviceId: string,
+    input: CreatePattaSheetOperationInput,
+  ): Promise<OperationRecord> {
+    const operationId = input.id.toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.id)) {
+      throw new BadRequestException({ code: 'INVALID_OPERATION_ID', message: 'Operatsiya identifikatori yaroqsiz', details: {} });
+    }
+    const name = canonicalizeBusinessName(input.name);
+    if (!name) {
+      throw new BadRequestException({ code: 'INVALID_OPERATION_NAME', message: 'Operatsiya nomi bo‘sh bo‘lishi mumkin emas', details: {} });
+    }
+    const price = normalizePrice(input.initial_price);
+    this.validateSortOrder(input.sort_order);
+    if (!Number.isFinite(Date.parse(input.effective_from)) ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(input.effective_from)) {
+      throw new BadRequestException({ code: 'INVALID_EFFECTIVE_FROM', message: 'Operatsiya narxi kuchga kirish vaqti yaroqsiz', details: {} });
+    }
+    try {
+      return await dataSource.transaction((manager) => this.createForPattaSheetInTransaction(
+        manager, modelId, actorUserId, validatedDeviceId, { ...input, id: operationId, name, initial_price: price },
+      ));
+    } catch (error) {
+      return mapWriteError(error);
+    }
+  }
+
+  async createForPattaSheetInTransaction(
+    manager: EntityManager,
+    modelId: string,
+    actorUserId: string,
+    validatedDeviceId: string,
+    input: CreatePattaSheetOperationInput,
+  ): Promise<OperationRecord> {
+    const operationId = input.id.toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(input.id)) {
+      throw new BadRequestException({ code: 'INVALID_OPERATION_ID', message: 'Operatsiya identifikatori yaroqsiz', details: {} });
+    }
+    const name = canonicalizeBusinessName(input.name);
+    if (!name) throw new BadRequestException({ code: 'INVALID_OPERATION_NAME', message: 'Operatsiya nomi bo‘sh bo‘lishi mumkin emas', details: {} });
+    const price = normalizePrice(input.initial_price);
+    this.validateSortOrder(input.sort_order);
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(input.effective_from) ||
+      !Number.isFinite(Date.parse(input.effective_from))) {
+      throw new BadRequestException({ code: 'INVALID_EFFECTIVE_FROM', message: 'Operatsiya narxi kuchga kirish vaqti yaroqsiz', details: {} });
+    }
+    input = { ...input, id: operationId, name, initial_price: price };
+    const modelRows: ModelLockRow[] = await manager.query(
+      `SELECT "id", "status" FROM "models" WHERE "id" = $1 FOR UPDATE`, [modelId],
+    );
+    const model = modelRows[0];
+    if (!model) throw modelNotFound();
+    if (model.status !== 'ACTIVE') throw inactiveModel();
+    const timeRows: Array<{ transaction_time: string }> = await manager.query(
+      'SELECT transaction_timestamp()::text AS "transaction_time"',
+    );
+    const transactionTime = timeRows[0]?.transaction_time;
+    if (!transactionTime) throw new Error('Database transaction timestamp was not returned');
+    if (Date.parse(input.effective_from) > Date.parse(transactionTime)) {
+      throw new BadRequestException({ code: 'INVALID_EFFECTIVE_FROM', message: 'Yangi operatsiya narxi Kiritilgan vaqtdan keyin boshlanmaydi', details: {} });
+    }
+    const existingRows: OperationRow[] = await manager.query(
+      `SELECT ${OPERATION_COLUMNS} FROM "model_operations"
+       WHERE "model_id" = $1 AND "name_normalized" = lower("canonicalize_business_name"($2))
+         AND "status" = 'ACTIVE' ORDER BY "id" FOR UPDATE`,
+      [modelId, input.name],
+    );
+    const existing = existingRows[0];
+    if (existing) {
+      const effectivePrice = await this.operationPriceService.resolvePrice(existing.id, input.effective_from, manager);
+      return serializeOperation(existing, effectivePrice);
+    }
+    const duplicateIds: Array<{ id: string }> = await manager.query(
+      `SELECT "id" FROM "model_operations" WHERE "id" = $1 FOR UPDATE`, [input.id],
+    );
+    if (duplicateIds.length > 0) {
+      throw new ConflictException({
+        code: 'MODEL_OPERATION_ID_ALREADY_EXISTS',
+        message: 'Operatsiya identifikatori boshqa yozuvda ishlatilgan',
+        details: { operation_id: input.id },
+      });
+    }
+    const operationRows: OperationRow[] = await manager.query(
+      `INSERT INTO "model_operations" ("id", "model_id", "name", "price", "sort_order", "status")
+       VALUES ($1, $2, $3, $4, $5, 'ACTIVE') RETURNING ${OPERATION_COLUMNS}`,
+      [input.id, modelId, input.name, normalizePrice(input.initial_price), input.sort_order],
+    );
+    const operation = operationRows[0];
+    if (!operation) throw new Error('Patta varag‘i custom operation insert did not return a record');
+    const history = await this.operationPriceService.createInitialPrice(
+      manager, operation.id, normalizePrice(input.initial_price), actorUserId, input.effective_from,
+    );
+    const result = serializeOperation(operation, history.price);
+    await this.auditService.append(manager, {
+      actorUserId,
+      deviceId: validatedDeviceId,
+      entityType: 'operation',
+      entityId: result.id,
+      action: 'operation.create',
+      before: null,
+      after: result,
+    });
+    await this.syncChangeRecorder.record(manager, {
+      entityType: 'model_operations', entityId: result.id, operation: 'UPSERT',
+      entityVersion: result.version, projectionVersion: 1,
+      payload: createSyncProjection({
+        entityType: 'model_operations',
+        data: {
+          id: result.id, model_id: result.model_id, name: result.name, sort_order: result.sort_order,
+          status: result.status, version: result.version, created_at: result.created_at, updated_at: result.updated_at,
+        },
+        entityVersion: result.version,
+      }),
+    });
+    return result;
   }
 
   async update(

@@ -87,13 +87,21 @@ describe('DesktopTenantRuntime', () => {
 
   it('creates the authenticated transport runtime only after a pre-provisioned device is validated', async () => {
     const runtime = createRuntime(JSON.stringify({ version: 1, device_id: DEVICE_A }))
-    await runtime.openTenant(COMPANY_A)
-    await runtime.startSync('https://atlas.example.test')
+    await runtime.openTenant(COMPANY_A, 'Asia/Tashkent')
+    await runtime.startSync('https://atlas.example.test', null)
 
     expect(runtime.getDeviceIdentityStatus()).toEqual({ state: 'CONFIGURED', deviceId: DEVICE_A })
     expect(runtime.getSyncEngine()).not.toBeNull()
     expect(runtime.getSyncStatus('AUTHENTICATED').connectivity).toBe('OFFLINE')
+    expect(runtime.tenantTimezone()).toBe('Asia/Tashkent')
     expect(await runtime.runSync('OFFLINE_SESSION_PENDING')).toMatchObject({ status: 'OFFLINE' })
+  })
+
+  it('does not invent a timezone when opening a legacy tenant session without cached trusted metadata', async () => {
+    const runtime = createRuntime(null)
+    await runtime.openTenant(COMPANY_A, null)
+
+    expect(runtime.tenantTimezone()).toBeNull()
   })
 
   it('disposes sync and closes tenant DB on logout before any later tenant opens', async () => {

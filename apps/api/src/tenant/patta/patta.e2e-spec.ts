@@ -1,4 +1,4 @@
-import { ForbiddenException, INestApplication, ValidationPipe } from '@nestjs/common';
+import { ConflictException, ForbiddenException, INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { DataSource } from 'typeorm';
@@ -14,7 +14,12 @@ import { TenantResolverService } from '../tenant-resolver/tenant-resolver.servic
 import { TenantRbacService } from '../rbac/tenant-rbac.service.js';
 import { PattaController } from './patta.controller.js';
 import { PattaTemplatesController } from './patta-templates.controller.js';
+import { PattaPrintBatchesController } from './patta-print-batches.controller.js';
+import { PattaPartiyaNumberBlocksController } from './patta-partiya-number-blocks.controller.js';
+import { PattaV2Controller } from './patta-v2.controller.js';
 import { PattaNumberBlocksService } from './patta-number-blocks.service.js';
+import { PattaPartiyaNumberBlocksService } from './patta-partiya-number-blocks.service.js';
+import { PattaPrintBatchesService } from './patta-print-batches.service.js';
 import { PattaService } from './patta.service.js';
 import { PattaTemplatesService } from './patta-templates.service.js';
 
@@ -60,10 +65,21 @@ const pattaNumberBlocksService = {
   cancel: vi.fn(async () => ({ id: templateId, status: 'CANCELLED' })),
 };
 
+const pattaPartiyaNumberBlocksService = {
+  allocate: vi.fn(async () => ({ id: templateId, device_id: deviceId, range_start: '1', range_end: '1000' })),
+  reportUsage: vi.fn(async () => ({ id: templateId, status: 'ACTIVE', reported_used_count: '12' })),
+};
+
+const pattaPrintBatchesService = {
+  create: vi.fn(async () => ({ id: templateId, partiya_number: '1', ish_soni: 125, pattas: [] })),
+  lookup: vi.fn(async () => ({ id: templateId, ish_soni: 125, legacy_operation_count: 13, operation_count: 1 })),
+  recordPrintEvent: vi.fn(async () => ({ id: templateId, batch_id: templateId, outcome: 'SUCCEEDED' })),
+};
+
 const pattaService = {
-  generate: vi.fn(async () => [{ id: templateId, partiya_number: 'A-1', patta_number: '1000' }]),
-  lookup: vi.fn(async () => ({ id: templateId, partiya_number: 'A-1', patta_number: '1000' })),
-  list: vi.fn(async () => ({ items: [], total: '0', page: 1, limit: 50 })),
+  generate: vi.fn(async () => { throw new ConflictException({ code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED', message: 'upgrade', details: {} }); }),
+  lookup: vi.fn(async () => { throw new ConflictException({ code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED', message: 'upgrade', details: {} }); }),
+  list: vi.fn(async () => { throw new ConflictException({ code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED', message: 'upgrade', details: {} }); }),
 };
 
 async function issueToken(scope: 'platform' | 'tenant', userId = viewUserId): Promise<string> {
@@ -119,10 +135,13 @@ describe('Patta tenant API (e2e)', () => {
 
   beforeAll(async () => {
     const moduleFixture = await Test.createTestingModule({
-      controllers: [PattaController, PattaTemplatesController],
+      controllers: [PattaController, PattaTemplatesController, PattaPrintBatchesController,
+        PattaPartiyaNumberBlocksController, PattaV2Controller],
       providers: [
         { provide: PattaService, useValue: pattaService },
         { provide: PattaNumberBlocksService, useValue: pattaNumberBlocksService },
+        { provide: PattaPartiyaNumberBlocksService, useValue: pattaPartiyaNumberBlocksService },
+        { provide: PattaPrintBatchesService, useValue: pattaPrintBatchesService },
         { provide: PattaTemplatesService, useValue: pattaTemplatesService },
         { provide: DeviceAccessService, useValue: deviceAccess },
         { provide: TenantResolverService, useValue: resolver },
@@ -261,13 +280,9 @@ describe('Patta tenant API (e2e)', () => {
         count: 1,
         device_id: deviceId,
       })
-      .expect(201);
-    expect(pattaService.generate).toHaveBeenCalledWith(
-      tenantDataSource,
-      manageUserId,
-      deviceId,
-      expect.objectContaining({ partiya_number: 'A-1' }),
-    );
+      .expect(409);
+    expect(pattaService.generate).toHaveBeenCalledWith(tenantDataSource, manageUserId, deviceId,
+      expect.objectContaining({ partiya_number: 'A-1' }));
 
     await request(app.getHttpServer())
       .post('/api/v1/patta/generate')
@@ -293,14 +308,84 @@ describe('Patta tenant API (e2e)', () => {
       .get('/api/v1/patta/lookup?partiya_number=25%2F09-3&patta_number=1057')
       .set('Host', 'atlas-textile.erp.example.test')
       .set('Authorization', `Bearer ${token}`)
-      .expect(200);
+      .expect(409);
     expect(pattaService.lookup).toHaveBeenCalledWith(tenantDataSource, '25/09-3', '1057');
 
     await request(app.getHttpServer())
       .get('/api/v1/patta?page=1&limit=50')
       .set('Host', 'atlas-textile.erp.example.test')
       .set('Authorization', `Bearer ${token}`)
-      .expect(200);
+      .expect(409);
     expect(pattaService.list).toHaveBeenCalledWith(tenantDataSource, expect.objectContaining({ page: 1, limit: 50 }));
+  });
+
+  it('uses v2 batch and Partiya-block routes with validated device ownership', async () => {
+    const token = await issueToken('tenant', manageUserId);
+    await request(app.getHttpServer())
+      .post('/api/v2/patta-print-batches')
+      .set('Host', 'atlas-textile.erp.example.test')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        model_id: templateId,
+        ish_soni: 125,
+        rang: 'Qora',
+        size_distribution: [{ razmer: 'S', patta_count: 2, sort_order: 0 }],
+        device_id: deviceId,
+      })
+      .expect(201);
+    expect(pattaPrintBatchesService.create).toHaveBeenCalledWith(
+      tenantDataSource, manageUserId, deviceId, expect.objectContaining({ ish_soni: 125 }),
+    );
+
+    await request(app.getHttpServer())
+      .post(`/api/v2/patta-print-batches/${templateId}/print-events`)
+      .set('Host', 'atlas-textile.erp.example.test')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        event_id: '99999999-9999-4999-8999-999999999999',
+        revision: 1,
+        kind: 'INITIAL',
+        outcome: 'SUCCEEDED',
+        device_id: deviceId,
+      })
+      .expect(201);
+    expect(pattaPrintBatchesService.recordPrintEvent).toHaveBeenCalledWith(
+      tenantDataSource,
+      manageUserId,
+      deviceId,
+      templateId,
+      expect.objectContaining({ kind: 'INITIAL', outcome: 'SUCCEEDED' }),
+    );
+
+    await request(app.getHttpServer())
+      .post('/api/v2/patta-partiya-number-blocks/allocate')
+      .set('Host', 'atlas-textile.erp.example.test')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ device_id: deviceId })
+      .expect(201);
+    expect(pattaPartiyaNumberBlocksService.allocate).toHaveBeenCalledWith(tenantDataSource, manageUserId, deviceId);
+
+    await request(app.getHttpServer())
+      .post(`/api/v2/patta-partiya-number-blocks/${templateId}/usage`)
+      .set('Host', 'atlas-textile.erp.example.test')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ device_id: deviceId, reported_used_count: '12' })
+      .expect(200);
+    expect(pattaPartiyaNumberBlocksService.reportUsage).toHaveBeenCalledWith(
+      tenantDataSource, deviceId, templateId, 12n,
+    );
+  });
+
+  it('serves the v2 Patta lookup contract separately from blocked v1 reads', async () => {
+    const token = await issueToken('tenant', viewUserId);
+    await request(app.getHttpServer())
+      .get('/api/v2/patta/lookup?partiya_number=1&patta_number=1')
+      .set('Host', 'atlas-textile.erp.example.test')
+      .set('Authorization', `Bearer ${token}`)
+      .expect(200);
+    expect(pattaPrintBatchesService.lookup).toHaveBeenCalledWith(
+      tenantDataSource,
+      expect.objectContaining({ partiya_number: '1', patta_number: '1' }),
+    );
   });
 });
