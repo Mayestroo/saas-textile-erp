@@ -80,7 +80,9 @@ Entry trash qilinganda actor UUID bilan birga `deleted_by_name_snapshot` maydoni
 
 Mavjud tenant catalog’da `patta.hisob.view` bor, lekin manual contribution write permission yoki model-account adjustment jadvali yo‘q. Additive PostgreSQL/SQLite migration va sync projection/event existing sync engine’ni qayta ishlatadi. `patta.hisob.manual_manage` yangi permission add/edit/trash/restore mutation’larini gate qiladi; `patta.hisob.view` report read’ni gate qiladi.
 
-Manual record model va operation bir modelga tegishli, worker identity `workers.id`ga FK, quantity `> 0`, unit price `NUMERIC(14,2) >= 0` bilan saqlanadi. Active adjustment’lar worker/model/operation bo‘yicha Patta-derived source’dan alohida agregatsiya qilinadi; `business_date` kelajakdagi oylik report uchun saqlanadi. API sync handler price snapshotni effective price history bilan solishtiradi; duplicate `event_id` takror yozuv yaratmaydi. Tahrir `expected_version` bilan; conflict’da old state saqlanadi. Add/edit/trash/restore endpoint va sync mutation’lari `patta.hisob.manual_manage` talab qiladi.
+Manual record model va operation bir modelga tegishli, worker identity `workers.id`ga FK, quantity `> 0`, unit price `NUMERIC(14,2) >= 0` bilan saqlanadi. Active adjustment’lar worker/model/operation bo‘yicha Patta-derived source’dan alohida agregatsiya qilinadi; `business_date` kelajakdagi oylik report uchun saqlanadi. API sync handler price snapshotni effective price history bilan solishtiradi; duplicate `event_id` takror yozuv yaratmaydi. Tahrir `expected_version` bilan; conflict’da old state saqlanadi. Add/edit/trash/restore sync mutation’lari `patta.hisob.manual_manage` talab qiladi; Model hesap query read uchun `patta.hisob.view` ishlatadi.
+
+Mavjud `/api/v2/patta-sheets` va `/api/v2/models/:modelId/account-sheet` contractlari o‘zgarmaydi, linked Entry/V2 account shape uchun saqlanadi. Standalone-capable Patta Sheet REST create/read/edit routes `/api/v3/patta-sheets` namespace’da, manual-inclusive account read projection esa `/api/v3/models/:modelId/account-sheet` namespace’da bo‘ladi. V2 account query model’da manual adjustment bor bo‘lsa incomplete total qaytarmay `SYNC_PROTOCOL_UPGRADE_REQUIRED` beradi. Desktop mutatsiyalari renderer’dan REST’ga bormaydi: main-process local-first SQLite + SyncProtocolVersion 3 queue ishlatadi. V2 client V3-only data ko‘rsa cursor advance qilmasdan upgrade-required oladi.
 
 ## Tavsiya etilgan arxitektura
 
@@ -88,7 +90,7 @@ Manual record model va operation bir modelga tegishli, worker identity `workers.
 
 Tasdiqlangan yondashuv — bitta Entry lifecycle ichida `PATTA_LINKED` va `STANDALONE` turlarini qo‘llash. Bu history, assignment rows, optimistic version, audit, trash/restore/purge, two-way sync va accounting lifecycle’ini bo‘lib yubormaydi.
 
-Additive PostgreSQL/SQLite migrations va sync-protocol projection/event versiyasi quyidagilarni ifodalaydi:
+Additive PostgreSQL/SQLite migrations va `SyncProtocolVersion = 3` quyidagilarni ifodalaydi. V3 hozirgi V2 entity’lari va flows’ni olib yuradi hamda Standalone Entry va `model_account_adjustments` payload/projection’larini qo‘shadi. V1/V2 contractlari qayta talqin qilinmaydi:
 
 - Entry turi va nullable `patta_hisob_id`; Patta-linked yozuv uchun FK va unique qoidalar saqlanadi.
 - Model ID/name snapshot, musbat `ish_soni` snapshoti va Rang/Razmer/Partiya/Patta informational snapshotlari.
@@ -97,6 +99,8 @@ Additive PostgreSQL/SQLite migrations va sync-protocol projection/event versiyas
 - Entry create/update/trash/restore/purge oldingi local mutation + sync queue + stable event ID atomikligini va duplicate delivery idempotency’ni saqlaydi.
 
 Eski linked projectionlar migratsiyada linked turi bilan map qilinadi. Yangi optional fieldlar eski ma’lumotdan taxminan to‘ldirilmaydi; haqiqiy source mavjud bo‘lmagan joyda `null` qoladi. Doimiy protocol compatibility uchun projection versioning va API adapterlar aniq ajratiladi.
+
+Yangi desktop V3 push/pull/bootstrap ishlatadi. V2 client linked Patta Sheet change’larini legacy V2 projection sifatida olishda davom etadi. V2 client Standalone/manual V3-only data’ni o‘qishi yoki yozishi mumkin bo‘lmaydi; V2 cursor/bootstrap V3-only change’ga duch kelsa server cursor’ni advance qilmasdan `SYNC_PROTOCOL_UPGRADE_REQUIRED` beradi. V2-only tenant data’da oldingi client ishlashda davom etadi. Bu strict parserli ikki-PC sync’da yangi entity’larni jim tashlab ketishning oldini oladi.
 
 Separate standalone tables/services approach’i lifecycle/accounting/sync logic’ni takrorlagani sababli tanlanmadi. Fake Patta yozuvi allocator, raqamlar va Patta historical identity’ni buzishi sababli qabul qilinmaydi.
 
@@ -200,7 +204,7 @@ Renderer component/integration testlari kamida quyidagilarni tekshiradi:
 - Offline/pending/conflict badge, cached permission bo‘yicha navigation/action visibility, permission yo‘q bo‘lganda fail-closed UI.
 - `Umumiy Oylik Hisobot`, net payroll va `Oyni yopish` action navigation/UI’da yo‘qligi; Model hisob gross snapshot valuation’i esa tekshiriladi.
 
-Main/API/sync tests additive migration va backward compatibility, nullable Patta FK faqat Standalone’da, linked duplicate, standalone `ish_soni`/quantity equality, model/operation price snapshot, manual adjustment schema/quantity/price snapshot/version/permission/trash/restore, badge history timestamp, actor-name snapshot sync, all-history aggregation, Model create/price change/deactivate via existing API, Konveyer unique-entry totals, permission projection va unauthorized server mutation’ni rad etishni tekshiradi. Ikki client testida PC-1 offline manual adjustment yaratadi, duplicate event qayta yuborilganda bitta contribution qoladi va PC-2 pull orqali ayni record/source split’ni oladi.
+Main/API/sync tests V1/V2 backward compatibility, V2-to-V3 upgrade-required/cursor preservation, nullable Patta FK faqat Standalone’da, linked duplicate, standalone `ish_soni`/quantity equality, model/operation price snapshot, manual adjustment schema/quantity/price snapshot/version/permission/trash/restore, badge history timestamp, actor-name snapshot sync, all-history aggregation, Model create/price change/deactivate via existing API, Konveyer unique-entry totals, permission projection va unauthorized server mutation’ni rad etishni tekshiradi. V3 ikki-client testida PC-1 offline manual adjustment yaratadi, duplicate event qayta yuborilganda bitta contribution qoladi va PC-2 pull orqali ayni record/source split’ni oladi.
 
 ### Visual/runtime
 
