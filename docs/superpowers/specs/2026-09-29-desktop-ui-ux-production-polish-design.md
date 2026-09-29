@@ -31,6 +31,8 @@ Korzinka’dagi o‘chirgan foydalanuvchi hozir faqat UUID bilan ifodalangan. Fo
 
 Header’da korxonaning Master’dagi haqiqiy nomi ko‘rsatiladi. Desktop auth/session contract hozir faqat slug uzatadi; login/refresh va cached safe session’ga additive company name qo‘shiladi. Slug tenant host identifikatori bo‘lib qoladi.
 
+Yangi screenshotlar qo‘shimcha live UI talablarini berdi: Model yaratish va operation narx/holatini `models`/`operations` API’lari orqali boshqarish, Model hisobda operation narxini o‘zgartirish, hamda `Konveyer` bo‘yicha ishlab chiqarish hisobi. Model create/operation/price/template CRUD API’lari bor, ammo ularning desktop IPC/UI yo‘q. Model account IPC hozir faqat read-only miqdorlarni qaytaradi va operation pricesiz; Konveyer hisob query’si yo‘q. Foydalanuvchi Konveyer sahifasi alohida qolip CRUD emas, Patta Entry’lardan tuziladigan production report ekanini aniqlashtirdi; `patta_templates` CRUD bu route uchun ishlatilmaydi.
+
 ## Tasdiqlangan domain qarorlari
 
 ### Patta kiritish rejimlari
@@ -48,11 +50,19 @@ Patta-linked yozuvlarda mavjud bir-Patta-bir-Entry unique/duplicate qoidalari o�
 
 Standalone Entry edit qilinganda `entry_kind` o‘zgarmaydi. Entry’ni keyinchalik Patta’ya link qilish ushbu design scope’ida yo‘q. `entered_at`, worker ID attribution, Patta allocator, Partiya allocator, badge history, Entry version/conflict, trash/restore/purge lifecycle, sync idempotency va historical price invariants saqlanadi.
 
+### Oy bo‘yicha ko‘rinish va haqiqiy yopish chegarasi
+
+Model hisob va Konveyer hisobida `business_date` bo‘yicha oy filteri bo‘ladi; yangi oy tanlanganda shu oyda yozuv bo‘lmasa jadval bo‘sh ko‘rinadi, oldingi oy yozuvlari o‘zgarmasdan saqlanadi. Model/worker reference data, Pattalar va allocated Partiya/Patta raqam bloklari tozalanmaydi.
+
+Foydalanuvchi haqiqiy `Oyni yopish` lifecycle’ini ham talab qildi. U period status, lock/permission, audit, oldindan offline navbatga tushgan mutation’lar uchun conflict va close/reopen siyosatini talab qiladi. Bu repo delivery order’dagi keyingi Payroll/period-accounting bosqichi va avvalgi UI scope’dagi out-of-scope band bo‘lgani uchun ushbu desktop polish branchida close/lock tugmasi va period lifecycle implement qilinmaydi. Hozirgi oy filteri faqat read query; eski oy Entry’lari mavjud permission bilan edit/trash qilinishi mumkin. Hisobotdagi oylik daromad/ish haqi formulalari ham ushbu scope’da yo‘q.
+
 ### Operatsiyalar va Model hisob
 
 Patta-linked Entry mavjud Patta snapshotlarini va qo‘shimcha normal/custom model operation’larni ishlatadi. Standalone Entry uchun main process tanlangan modelning local mirror’dagi faol operationlarini va `entered_at` vaqtiga mos narxlarini beradi; renderer katalogni o‘zi hisoblamaydi. Qo‘shimcha operation mavjud model operation domain service orqali yaratiladi/reuse qilinadi va normal sync dependency’siga ega bo‘ladi.
 
-Stand-alone va linked qatorlar Model hisobga shu modelning operation va haqiqiy `worker_id`si bo‘yicha qo‘shiladi. Aggregatsiya hanuz `SUM(quantity_snapshot)` bo‘lib qoladi. **Model hisob header’da Narx ko‘rsatilmaydi**: bu view’da turli tarixiy narxlarni bitta qiymatga qisqartirish yoki amaldagi narxni tarixiy hisob deb talqin qilishdan saqlaydi. Worker ID birinchi identity ustuni; sun’iy ketma-ket row number ko‘rsatilmaydi. `Jami` ko‘rinadigan holatda qoladi.
+Standalone va linked qatorlar Model hisobga shu modelning operation va haqiqiy `worker_id`si bo‘yicha qo‘shiladi. Aggregatsiya hanuz `SUM(quantity_snapshot)` bo‘lib qoladi. Screenshot’dagi operation price qatori **bugungi effective narx** sifatida ko‘rsatiladi va `models.manage` huquqi bilan aynan Model hisob sahifasidan o‘zgartiriladi. O‘zgartirish existing price endpoint/service’ga version bilan boradi; `effective_from` yuborilmaganda server transaction time’dan boshlanadi, audit/history yoziladi, kelajakdagi/scheduled price existing contractga muvofiq qoladi. Oflayn holatda narx o‘qiladi, o‘zgartirish internetga qadar bloklanadi. Narx o‘zgarishi eski Entry operation snapshotlariga tegmaydi.
+
+Soni kataklari input emas: ular oy bo‘yicha Patta Entry’dan kelgan read-only `quantity_snapshot` agregatlari. `Jami dona` miqdorlar yig‘indisi ko‘rinadi. **`Jami so‘m` yoki boshqa money total ko‘rsatilmaydi**: bu branch payroll/maosh yoki yangi pul formulasini hisoblamaydi. Operation’dagi trash icon hard delete emas, `INACTIVE` holatiga o‘tkazish (`models.manage`) va confirm’dagi `Faolsizlantirish` amalidir; tarixiy Entry va snapshotlar qoladi. Worker ID birinchi identity ustuni; sun’iy ketma-ket row number ko‘rsatilmaydi.
 
 ### O‘chirgan foydalanuvchi
 
@@ -82,7 +92,16 @@ Authenticated tenant API `GET /api/v1/auth/permissions` orqali effective permiss
 
 Permission cache mavjud bo‘lmaganda permission-gated write/action yashiriladi. Oflayn holatda oxirgi saqlangan projection UI visibility’ni boshqaradi; sync/API baribir server permission’ni qayta tekshiradi va ruxsatsiz mutation’ni conflict/error qiladi. Permission ma’lumotlari har Jeton keystroke’da olinmaydi.
 
-Faqat hozir ishlaydigan sahifalar navigation’da ko‘rsatiladi: Patta chiqarish, Patta kiritish, Kiritilgan Pattalar, Korzinka va Model hisob. Hozir implement qilinmagan Bosh sahifa, Modellar, Ishchilar, License yoki Payroll uchun soxta route/action qo‘shilmaydi.
+Sidebar screenshot’iga mos, yig‘iladigan navigation:
+
+- **Patta:** `Patta chiqarish`, `Patta kiritish`, `Patta-Hisob (Jurnal)` (mavjud Kiritilgan Pattalar history route’i), `Korzinka`.
+- **Konveyer:** `Konveyer hisobi` report route’i.
+- **Modellar:** faol model ro‘yxati; model tanlanganda uning hisob varag‘i; `Model qo‘shish` action/page.
+- `Umumiy Oylik Hisobot` bu fazada route/menu olmaydi. Payroll/oylik report hali ishlab chiqish ketma-ketligidagi keyingi bosqich.
+
+`Model qo‘shish` page mavjud online `POST /api/v1/models` contractini `models.manage` bilan chaqiradi; model nomini yaratgach yangi model ro‘yxatga olinadi va uning hisob varag‘iga o‘tadi. Operationlar model hisob sahifasidagi `+ Operatsiya qo‘shish` orqali existing `POST /api/v1/models/:modelId/operations` ishlatadi. Model/operation CRUD va effective price o‘zgartirish online bo‘lishi shart; typed main-process IPC ishlatiladi, renderer generic HTTP olmaydi, muvaffaqiyatli mutation’dan keyin sync pull local mirror’ni yangilaydi.
+
+`Konveyer hisobi` alohida editable business entity yaratmaydi. U local Patta Entry projection’larini o‘qib, tanlangan `business_date` oyi va model bo‘yicha grouping qiladi. `conveyor_snapshot IS NULL` qiymatlar `Noma’lum` guruhiga kiradi. `Patta soni` faqat linked Entry/Patta’larni sanaydi; `Mustaqil Entry soni` standalone yozuvlarni alohida sanaydi; `Ish soni` har bir unique Entry/Patta header `ish_soni`ni bir martadan qo‘shadi — operation row’lar bo‘yicha ko‘paytirilmaydi. Trashed Entry’lar hisobga kirmaydi. Bu hisobot offline local SQLite’dan ishlaydi.
 
 ### Renderer component boundaries
 
@@ -127,9 +146,15 @@ Entry edit linked yoki standalone turini o‘zgartirmaydi. `Kiritilgan sana` ori
 
 Korzinka jadvali O‘chirilgan sana, Kiritilgan sana, Partiya №, Patta №, Model, Ish soni, O‘chirgan foydalanuvchi va Amallar ustunlarini ko‘rsatadi. `Qayta tiklash` safe action; `Butunlay o‘chirish` alohida strong `ConfirmDialog` va `Bu amalni ortga qaytarib bo‘lmaydi.` matniga ega. Purge faqat mavjud domain service orqali bajariladi.
 
-### Model hisob
+### Model qo‘shish va Model hisob varag‘i
 
-Model select, Ishchi qidiruvi, worker ID + sentence-case F.I.O. sticky identity ustunlari va gorizontal scrollable operation columns. Operation header’da nom bor; narx ko‘rsatilmaydi. Cell’lar agregatsiyalangan son, bo‘sh cell `—`, `Jami` ko‘rinadigan sticky/summary joyida. Qatorlar worker_id, model_operation_id va quantity snapshot semantikasidan olinadi; full_name/badge/visual row number identity emas.
+Model qo‘shish sahifasi kompakt `Model nomi` formasi, server validation/duplicate-name xabari va pending/success holatiga ega. Faqat `models.manage` ko‘rinadi va ishlaydi. Yangi model yaratish serverdan keyin sync mirror’ga tushadi; offline’da create/save disabled, mavjud local Pattalar va Model hisob esa ishlashda davom etadi.
+
+Model hisob varag‘i screenshot’dagi grouped spreadsheet: worker ID/`F.I.O.` sticky; har operation group’da operation name/action, `Amaldagi narx` qatori va `Soni` qatori. `Soni` values read-only, month filter orqali tanlangan `business_date` scope’da `PattaSheet` assignment’lardan agregatsiya qilinadi. Worker ID, model_operation_id va immutable quantity snapshot identity/calculation’da ishlatiladi; F.I.O. display. `Jami dona` ko‘rinadi; `Jami so‘m` yo‘q. Operation price input o‘zgarishi explicit save va version conflict bilan existing API’ga boradi; offlayn price edit yo‘q. Inactive qilish tarixni qoldiradi.
+
+### Konveyer hisobi
+
+Yuqorida oy/model filter; jadval qatorlari `Konveyer`, `Model`, `Patta soni`, `Mustaqil Entry soni`, `Ish soni`. Bo‘sh konveyer `Noma’lum`. Hisob har sheet/Patta entry’ni bir marta oladi va ish sonini operation soniga ko‘paytirmaydi. Empty/loading/error state’lar umumiy design system’dan olinadi. Bu sahifada input/mutation yo‘q.
 
 ## States, format va accessibility
 
@@ -152,10 +177,12 @@ Renderer component/integration testlari kamida quyidagilarni tekshiradi:
 - Badge valid/`Topilmadi`, Enter → keyingi focus, oxirgi Enter → save + focus reset, worker_id’siz save bloklanishi.
 - `Nuqson` va `O‘chirish` mustaqil ishlashi, custom operation qo‘shish, linked va standalone edit.
 - Version conflict matni, history qidiruv/filter/pagination, trash confirmation, restore va purge confirmation.
-- Model hisob linked+standalone edit contribution, trash’da yo‘qolish, restore’da qaytish; operation header narxsiz.
+- Model hisob linked+standalone month-filter aggregation; `Soni` read-only; operation price update’dagi version conflict/offline disable; operation deactivate tarixni saqlashi.
+- Model create permission/API holatlari va Konveyer hisobi: unknown conveyor, model grouping, unique Entry/Patta count hamda quantity operation qatorlari bilan ko‘paymasligi.
 - Offline/pending/conflict badge, cached permission bo‘yicha navigation/action visibility, permission yo‘q bo‘lganda fail-closed UI.
+- Oylik `Jami so‘m`, payroll report va `Oyni yopish` action navigation/UI’da yo‘qligi.
 
-Main/API/sync tests additive migration va backward compatibility, nullable Patta FK faqat Standalone’da, linked duplicate, standalone `ish_soni`/quantity equality, model/operation price snapshot, badge history timestamp, actor-name snapshot sync, Model hisob aggregation, trash/restore/purge, permission projection va unauthorized server mutation’ni rad etishni tekshiradi. Ikki client’da duplicate sync va push/pull testlari stable event identity/idempotency saqlanganini tasdiqlaydi.
+Main/API/sync tests additive migration va backward compatibility, nullable Patta FK faqat Standalone’da, linked duplicate, standalone `ish_soni`/quantity equality, model/operation price snapshot, badge history timestamp, actor-name snapshot sync, month-filter aggregation, Model create/price change/deactivate via existing API, Konveyer unique-entry totals, trash/restore/purge, permission projection va unauthorized server mutation’ni rad etishni tekshiradi. Ikki client’da duplicate sync va push/pull testlari stable event identity/idempotency saqlanganini tasdiqlaydi.
 
 ### Visual/runtime
 
@@ -166,4 +193,4 @@ Main/API/sync tests additive migration va backward compatibility, nullable Patta
 
 ## Scope’dan tashqari
 
-License/device enrollment redesign, Payroll/maosh formulalari, auto-updater, yangi accounting formula yoki ishlamaydigan Model/Worker/Admin/License/Payroll sahifalari kiritilmaydi. Ish soni, allocator, worker identity, badge history, entered_at, linked Entry duplicate qoidasi, sync idempotency/conflict, trash semantikasi va historical price hisoblashlari o‘zgarmaydi.
+License/device enrollment redesign, `Umumiy Oylik Hisobot`, Payroll/maosh formulalari, `Oyni yopish`/period lock, auto-updater, puldagi `Jami so‘m` yoki boshqa yangi accounting formula kiritilmaydi. `Konveyer hisobi` existing Patta Entry’lardan read-only hisobot; Konveyer uchun yangi mutation/domain entity qo‘shilmaydi. Ish soni, allocator, worker identity, badge history, entered_at, linked Entry duplicate qoidasi, sync idempotency/conflict, trash semantikasi va historical price hisoblashlari o‘zgarmaydi.
