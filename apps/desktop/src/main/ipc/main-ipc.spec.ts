@@ -39,10 +39,12 @@ function createAuthService(
     },
     company: initialState === 'SIGNED_OUT' ? null : {
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      name: 'Atlas Textile',
       slug: 'atlas',
       timezone: 'Asia/Tashkent'
     },
-    tenant_host: initialState === 'SIGNED_OUT' ? null : 'atlas.example.test'
+    tenant_host: initialState === 'SIGNED_OUT' ? null : 'atlas.example.test',
+    permission_codes: initialState === 'SIGNED_OUT' ? [] : ['patta.hisob.view']
   }
   return {
     status: () => status,
@@ -56,14 +58,20 @@ function createAuthService(
           email: 'operator@example.test',
           full_name: 'Operator One'
         },
-        company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'atlas', timezone: 'Asia/Tashkent' },
-        tenant_host: 'atlas.example.test'
+        company: {
+          id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+          name: 'Atlas Textile',
+          slug: 'atlas',
+          timezone: 'Asia/Tashkent'
+        },
+        tenant_host: 'atlas.example.test',
+        permission_codes: ['patta.hisob.view']
       }
       return status
     },
     logout: async () => {
       status = { state: 'SIGNED_OUT', errorCode: null, message: null }
-      session = { state: 'SIGNED_OUT', user: null, company: null, tenant_host: null }
+      session = { state: 'SIGNED_OUT', user: null, company: null, tenant_host: null, permission_codes: [] }
       return status
     },
     refreshAccessToken: async () => false
@@ -153,8 +161,14 @@ describe('narrow renderer IPC bridge', () => {
               email: 'operator@example.test',
               full_name: 'Operator One'
             },
-            company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'atlas', timezone: 'Asia/Tashkent' },
-            tenant_host: 'atlas.example.test'
+            company: {
+              id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+              name: 'Atlas Textile',
+              slug: 'atlas',
+              timezone: 'Asia/Tashkent'
+            },
+            tenant_host: 'atlas.example.test',
+            permission_codes: ['patta.hisob.view']
           }
         }
         if (channel === 'patta:lookup') return {
@@ -235,7 +249,12 @@ describe('narrow renderer IPC bridge', () => {
       password: 'password-value'
     })).toEqual({ state: 'AUTHENTICATED', errorCode: null, message: null })
     expect(await api.auth.status()).toMatchObject({ state: 'AUTHENTICATED' })
-    expect(await api.auth.session()).not.toHaveProperty('accessToken')
+    const safeSession = await api.auth.session()
+    expect(safeSession).toMatchObject({
+      company: { name: 'Atlas Textile' },
+      permission_codes: ['patta.hisob.view']
+    })
+    expect(safeSession).not.toHaveProperty('accessToken')
     expect(await api.auth.logout()).toMatchObject({ state: 'SIGNED_OUT' })
     expect(calls.map(({ channel }) => channel)).toEqual([
       'app:get-version',
@@ -302,6 +321,17 @@ describe('narrow renderer IPC bridge', () => {
       })
     })
     await expect(tokenLeakingApi.auth.session()).rejects.toThrow('Invalid safe session response')
+
+    const invalidPermissionApi = createErpApi({
+      invoke: async () => ({
+        state: 'AUTHENTICATED',
+        user: null,
+        company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'Atlas', slug: 'atlas', timezone: null },
+        tenant_host: 'atlas.example.test',
+        permission_codes: ['models.manage', 'not a permission']
+      })
+    })
+    await expect(invalidPermissionApi.auth.session()).rejects.toThrow('Invalid safe session permissions')
   })
 })
 
@@ -462,7 +492,7 @@ describe('main-process IPC handlers', () => {
       state: 'SIGNED_OUT', errorCode: null, message: null
     })
     expect(await handlers.get('auth:session')?.({})).toEqual({
-      state: 'SIGNED_OUT', user: null, company: null, tenant_host: null
+      state: 'SIGNED_OUT', user: null, company: null, tenant_host: null, permission_codes: []
     })
     await expect(handlers.get('auth:login')?.({}, {
       tenantUrl: 'https://atlas.example.test',

@@ -4,6 +4,7 @@ import { fetchWithLocalTenantFallback } from './local-tenant-host'
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 const TENANT_SLUG_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+const PERMISSION_CODE_PATTERN = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/
 
 export interface TenantOrigin {
   origin: string
@@ -20,17 +21,19 @@ export interface TenantTokenPair {
   accessToken: string
   refreshToken: string
   expiresIn: number
+  tenantCompanyName?: string
   tenantTimezone?: string
 }
 
 export interface TenantLoginResult extends TenantTokenPair {
   user: { id: string; email: string; fullName: string }
-  company: { id: string; slug: string; timezone: string }
+  company: { id: string; name: string; slug: string; timezone: string }
 }
 
 export interface TenantAuthApi {
   login(tenantUrl: string, input: TenantLoginInput): Promise<TenantLoginResult>
   refresh(tenantOrigin: string, refreshToken: string): Promise<TenantTokenPair>
+  permissions(tenantOrigin: string, accessToken: string): Promise<readonly string[]>
 }
 
 export class TenantAuthApiError extends Error {
@@ -137,6 +140,7 @@ function parseLoginResult(value: unknown, tenantSlug: string): TenantLoginResult
     !requiredString(user.full_name, 512) ||
     typeof company.id !== 'string' ||
     !UUID_PATTERN.test(company.id) ||
+    !requiredString(company.name, 255) ||
     !requiredString(company.slug, 63) ||
     !TENANT_SLUG_PATTERN.test(company.slug) ||
     company.slug.toLowerCase() !== tenantSlug ||
@@ -147,7 +151,7 @@ function parseLoginResult(value: unknown, tenantSlug: string): TenantLoginResult
   return {
     ...tokenPair,
     user: { id: user.id.toLowerCase(), email: user.email, fullName: user.full_name },
-    company: { id: company.id.toLowerCase(), slug: company.slug, timezone: company.timezone }
+    company: { id: company.id.toLowerCase(), name: company.name, slug: company.slug, timezone: company.timezone }
   }
 }
 
@@ -155,11 +159,27 @@ function parseRefreshResult(value: unknown, tenantSlug: string): TenantTokenPair
   const pair = parseTokenPair(value)
   if (!isRecord(value) || !isRecord(value.company) ||
     typeof value.company.id !== 'string' || !UUID_PATTERN.test(value.company.id) ||
+    !requiredString(value.company.name, 255) ||
     !requiredString(value.company.slug, 63) || value.company.slug.toLowerCase() !== tenantSlug ||
     !isValidTenantTimezone(value.company.timezone)) {
     throw new TenantAuthApiError(200, 'AUTH_RESPONSE_INVALID', false)
   }
-  return { ...pair, tenantTimezone: value.company.timezone }
+  return {
+    ...pair,
+    tenantCompanyName: value.company.name,
+    tenantTimezone: value.company.timezone
+  }
+}
+
+function parsePermissionCodes(value: unknown): readonly string[] {
+  if (!isRecord(value) || !Array.isArray(value.permission_codes) || value.permission_codes.length > 256) {
+    throw new TenantAuthApiError(200, 'AUTH_RESPONSE_INVALID', false)
+  }
+  const codes = value.permission_codes
+  if (codes.some((code) => typeof code !== 'string' || !PERMISSION_CODE_PATTERN.test(code))) {
+    throw new TenantAuthApiError(200, 'AUTH_RESPONSE_INVALID', false)
+  }
+  return [...new Set(codes as string[])].sort((left, right) => left.localeCompare(right))
 }
 
 async function parseResponseBody(response: Response): Promise<unknown> {
@@ -199,6 +219,49 @@ export class TenantAuthApiClient implements TenantAuthApi {
       await this.post(`${tenant.origin}/api/v1/auth/refresh`, { refresh_token: refreshToken }),
       tenant.tenantSlug
     )
+  }
+
+  async permissions(tenantOrigin: string, accessToken: string): Promise<readonly string[]> {
+    const tenant = normalizeTenantOrigin(tenantOrigin)
+    if (!requiredString(accessToken, 8_192)) {
+      throw new TenantAuthApiError(401, 'AUTH_REQUIRED', false)
+    }
+    let response: Response
+    try {
+      response = await fetchWithLocalTenantFallback(
+        this.fetcher,
+        `${tenant.origin}/api/v1/auth/permissions`,
+        {
+          method: 'GET',
+          headers: {
+            Accept: 'application/json',
+            Authorization: `Bearer ${accessToken}`
+          },
+          cache: 'no-store',
+          credentials: 'omit',
+          redirect: 'error',
+          signal: AbortSignal.timeout(15_000)
+        }
+      )
+    } catch {
+      throw new TenantAuthApiError(null, 'NETWORK_ERROR', true)
+    }
+
+    let body: unknown
+    try {
+      body = await parseResponseBody(response)
+    } catch {
+      throw new TenantAuthApiError(null, 'NETWORK_ERROR', true)
+    }
+    if (!response.ok) {
+      const statusFallback = response.status === 429 ? 'RATE_LIMITED' : 'AUTH_API_ERROR'
+      throw new TenantAuthApiError(
+        response.status,
+        structuredCode(body) ?? statusFallback,
+        transientStatus(response.status)
+      )
+    }
+    return parsePermissionCodes(body)
   }
 
   private async post(url: string, body: Record<string, string>): Promise<unknown> {

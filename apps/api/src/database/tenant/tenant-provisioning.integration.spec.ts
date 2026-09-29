@@ -1062,20 +1062,30 @@ integrationDescribe(
           access_token: string;
           refresh_token: string;
           user: { id: string };
-          company: { id: string; slug: string; timezone: string };
+          company: { id: string; name: string; slug: string; timezone: string };
         };
-        const timezoneRows: Array<{ timezone: string }> = await masterDataSource.query(
-          `SELECT "timezone" FROM "companies" WHERE "id" = $1`,
+        const companyRows: Array<{ name: string; timezone: string }> = await masterDataSource.query(
+          `SELECT "name", "timezone" FROM "companies" WHERE "id" = $1`,
           [companyA.companyId],
         );
         expect(tenantTokens.company).toEqual({
           id: companyA.companyId,
+          name: companyRows[0]?.name,
           slug: companyASlug,
-          timezone: timezoneRows[0]?.timezone,
+          timezone: companyRows[0]?.timezone,
         });
         expect(JSON.stringify(tenantLogin.body)).not.toContain(
           tenantAdminPassword,
         );
+
+        const permissionProjection = await request(app.getHttpServer())
+          .get('/api/v1/auth/permissions')
+          .set('Host', `${companyASlug}.erp.example.test`)
+          .set('Authorization', `Bearer ${tenantTokens.access_token}`)
+          .expect(200);
+        expect(permissionProjection.body.permission_codes).toContain('models.view');
+        expect(permissionProjection.body.permission_codes).toContain('patta.hisob.view');
+        expect(permissionProjection.body).not.toHaveProperty('roles');
 
         const tenantDataSource = await tenantConnectionManager.getDataSource(
           companyA.companyId,

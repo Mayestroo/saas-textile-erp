@@ -19,6 +19,7 @@ const LOGIN_RESPONSE = {
   },
   company: {
     id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    name: 'Atlas Textile',
     slug: 'atlas',
     timezone: 'Asia/Tashkent'
   }
@@ -77,7 +78,7 @@ describe('tenant auth API client', () => {
     ).resolves.toMatchObject({
       accessToken: 'access-token-value',
       refreshToken: 'refresh-token-value',
-      company: { id: LOGIN_RESPONSE.company.id, slug: 'atlas', timezone: 'Asia/Tashkent' }
+      company: { id: LOGIN_RESPONSE.company.id, name: 'Atlas Textile', slug: 'atlas', timezone: 'Asia/Tashkent' }
     })
 
     const [url, request] = fetcher.mock.calls[0] ?? []
@@ -178,7 +179,7 @@ describe('tenant auth API client', () => {
       refresh_token: 'new-refresh-token',
       token_type: 'Bearer',
       expires_in: 900,
-      company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'atlas', timezone: 'Asia/Tashkent' }
+      company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'Atlas Textile', slug: 'atlas', timezone: 'Asia/Tashkent' }
     }
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(pair))
     const client = new TenantAuthApiClient(fetcher)
@@ -187,12 +188,39 @@ describe('tenant auth API client', () => {
       accessToken: 'new-access-token',
       refreshToken: 'new-refresh-token',
       expiresIn: 900,
+      tenantCompanyName: 'Atlas Textile',
       tenantTimezone: 'Asia/Tashkent'
     })
     expect(fetcher.mock.calls[0]?.[0]).toBe('https://atlas.example.test/api/v1/auth/refresh')
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toEqual({
       refresh_token: 'old-refresh-token'
     })
+  })
+
+  it('loads a narrow authenticated tenant permission projection', async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(jsonResponse({
+      permission_codes: ['models.manage', 'patta.hisob.view']
+    }))
+    const client = new TenantAuthApiClient(fetcher)
+
+    await expect(client.permissions('https://atlas.example.test', 'access-token-value'))
+      .resolves.toEqual(['models.manage', 'patta.hisob.view'])
+    expect(fetcher.mock.calls[0]?.[0]).toBe('https://atlas.example.test/api/v1/auth/permissions')
+    expect(fetcher.mock.calls[0]?.[1]).toMatchObject({
+      method: 'GET',
+      headers: { Authorization: 'Bearer access-token-value' },
+      credentials: 'omit',
+      redirect: 'error'
+    })
+  })
+
+  it('rejects malformed permission projections instead of exposing arbitrary values', async () => {
+    const client = new TenantAuthApiClient(vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({ permission_codes: ['models.manage', 4] })
+    ))
+
+    await expect(client.permissions('https://atlas.example.test', 'access-token-value'))
+      .rejects.toMatchObject({ code: 'AUTH_RESPONSE_INVALID' })
   })
 
   it('returns structured API codes without exposing raw backend messages', async () => {

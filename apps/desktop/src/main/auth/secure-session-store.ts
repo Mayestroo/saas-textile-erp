@@ -1,14 +1,16 @@
 export interface SecureSessionPayload {
-  version: 2
+  version: 3
   refreshToken: string
   tenantOrigin: string
   tenantHost: string
   companyId: string
+  companyName: string
   companySlug: string
   userId: string
   email: string
   fullName: string
   timezone: string | null
+  permissionCodes: readonly string[]
 }
 
 export interface SecureSessionStore {

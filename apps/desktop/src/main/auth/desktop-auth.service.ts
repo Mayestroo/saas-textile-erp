@@ -25,8 +25,9 @@ export interface DesktopAuthStatus {
 export interface SafeDesktopSession {
   state: DesktopAuthState
   user: { id: string; email: string; full_name: string } | null
-  company: { id: string; slug: string; timezone: string | null } | null
+  company: { id: string; name: string; slug: string; timezone: string | null } | null
   tenant_host: string | null
+  permission_codes: readonly string[]
 }
 
 export interface DesktopLoginInput {
@@ -86,20 +87,23 @@ function isInvalidRefresh(error: unknown): boolean {
 
 function payloadFromLogin(
   tenantUrl: string,
-  result: TenantLoginResult
+  result: TenantLoginResult,
+  permissionCodes: readonly string[]
 ): SecureSessionPayload {
   const tenant = normalizeTenantOrigin(tenantUrl)
   return {
-    version: 2,
+    version: 3,
     refreshToken: result.refreshToken,
     tenantOrigin: tenant.origin,
     tenantHost: tenant.tenantHost,
     companyId: result.company.id,
+    companyName: result.company.name,
     companySlug: result.company.slug,
     userId: result.user.id,
     email: result.user.email,
     fullName: result.user.fullName,
-    timezone: result.company.timezone
+    timezone: result.company.timezone,
+    permissionCodes
   }
 }
 
@@ -145,9 +149,15 @@ export class DesktopAuthService implements AuthenticatedSessionProvider {
         ? { id: payload.userId, email: payload.email, full_name: payload.fullName }
         : null,
       company: payload
-        ? { id: payload.companyId, slug: payload.companySlug, timezone: payload.timezone }
+        ? {
+            id: payload.companyId,
+            name: payload.companyName,
+            slug: payload.companySlug,
+            timezone: payload.timezone
+          }
         : null,
-      tenant_host: payload?.tenantHost ?? null
+      tenant_host: payload?.tenantHost ?? null,
+      permission_codes: payload?.permissionCodes ?? []
     }
   }
 
@@ -174,7 +184,9 @@ export class DesktopAuthService implements AuthenticatedSessionProvider {
         password: input.password
       })
       if (generation !== this.operationGeneration) return this.status()
-      const payload = payloadFromLogin(input.tenantUrl, result)
+      const permissionCodes = await this.readPermissionCodes(tenant.origin, result.accessToken, [])
+      if (generation !== this.operationGeneration) return this.status()
+      const payload = payloadFromLogin(input.tenantUrl, result, permissionCodes)
       return await this.runTransition(async () => {
         if (generation !== this.operationGeneration) return this.status()
         await this.runtime.openTenant(payload.companyId, payload.timezone)
@@ -416,9 +428,17 @@ export class DesktopAuthService implements AuthenticatedSessionProvider {
     tokens: TenantTokenPair,
     generation: number
   ): Promise<DesktopAuthStatus> {
+    const permissionCodes = await this.readPermissionCodes(
+      payload.tenantOrigin,
+      tokens.accessToken,
+      payload.permissionCodes
+    )
+    if (generation !== this.operationGeneration) return this.status()
     const updatedPayload: SecureSessionPayload = {
       ...payload,
       refreshToken: tokens.refreshToken,
+      companyName: tokens.tenantCompanyName ?? payload.companyName,
+      permissionCodes,
       timezone: tokens.tenantTimezone ?? payload.timezone
     }
     return this.runTransition(async () => {
@@ -445,6 +465,18 @@ export class DesktopAuthService implements AuthenticatedSessionProvider {
       await this.runtime.startSync(updatedPayload.tenantOrigin, updatedPayload.timezone)
       return this.status()
     })
+  }
+
+  private async readPermissionCodes(
+    tenantOrigin: string,
+    accessToken: string,
+    fallback: readonly string[]
+  ): Promise<readonly string[]> {
+    try {
+      return await this.api.permissions(tenantOrigin, accessToken)
+    } catch {
+      return fallback
+    }
   }
 
   private async clearLocalSession(preserveLocalDatabase = false): Promise<void> {

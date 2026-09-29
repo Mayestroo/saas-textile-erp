@@ -22,26 +22,29 @@ const LOGIN_RESULT: TenantLoginResult = {
   refreshToken: 'refresh-A-1',
   expiresIn: 900,
   user: { id: USER_A, email: 'operator-a@example.test', fullName: 'Operator A' },
-  company: { id: COMPANY_A, slug: 'atlas', timezone: 'Asia/Tashkent' }
+  company: { id: COMPANY_A, name: 'Atlas Textile', slug: 'atlas', timezone: 'Asia/Tashkent' }
 }
 
 const SESSION_A: SecureSessionPayload = {
-  version: 2,
+  version: 3,
   refreshToken: 'refresh-A-1',
   tenantOrigin: 'https://atlas.example.test',
   tenantHost: 'atlas.example.test',
   companyId: COMPANY_A,
+  companyName: 'Atlas Textile',
   companySlug: 'atlas',
   userId: USER_A,
   email: 'operator-a@example.test',
   fullName: 'Operator A',
-  timezone: 'Asia/Tashkent'
+  timezone: 'Asia/Tashkent',
+  permissionCodes: ['patta.hisob.view']
 }
 
 const PAIR_B: TenantTokenPair = {
   accessToken: 'access-A-2',
   refreshToken: 'refresh-A-2',
   expiresIn: 900,
+  tenantCompanyName: 'Atlas Textile',
   tenantTimezone: 'Asia/Tashkent'
 }
 
@@ -78,8 +81,11 @@ class TestAuthApi implements TenantAuthApi {
   loginError: unknown = null
   refreshResult: TenantTokenPair = PAIR_B
   refreshError: unknown = null
+  permissionCodes: readonly string[] = ['patta.hisob.view']
+  permissionsError: unknown = null
   readonly loginCalls: Array<{ tenantUrl: string; email: string; password: string }> = []
   readonly refreshCalls: Array<{ tenantOrigin: string; refreshToken: string }> = []
+  readonly permissionCalls: Array<{ tenantOrigin: string; accessToken: string }> = []
   refreshGate: Promise<void> | null = null
   refreshStarted: (() => void) | null = null
 
@@ -95,6 +101,12 @@ class TestAuthApi implements TenantAuthApi {
     if (this.refreshGate) await this.refreshGate
     if (this.refreshError) throw this.refreshError
     return this.refreshResult
+  }
+
+  async permissions(tenantOrigin: string, accessToken: string): Promise<readonly string[]> {
+    this.permissionCalls.push({ tenantOrigin, accessToken })
+    if (this.permissionsError) throw this.permissionsError
+    return this.permissionCodes
   }
 }
 
@@ -170,9 +182,14 @@ describe('DesktopAuthService', () => {
     expect(service.currentSession()).toEqual({
       state: 'AUTHENTICATED',
       user: { id: USER_A, email: 'operator-a@example.test', full_name: 'Operator A' },
-      company: { id: COMPANY_A, slug: 'atlas', timezone: 'Asia/Tashkent' },
-      tenant_host: 'atlas.example.test'
+      company: { id: COMPANY_A, name: 'Atlas Textile', slug: 'atlas', timezone: 'Asia/Tashkent' },
+      tenant_host: 'atlas.example.test',
+      permission_codes: ['patta.hisob.view']
     })
+    expect(api.permissionCalls).toEqual([{
+      tenantOrigin: 'https://atlas.example.test',
+      accessToken: 'access-A-1'
+    }])
     expect(service.currentSession()).not.toHaveProperty('accessToken')
     expect(service.currentSession()).not.toHaveProperty('refreshToken')
   })
@@ -211,6 +228,39 @@ describe('DesktopAuthService', () => {
     expect(runtime.openedTimezones).toEqual(['Asia/Tashkent'])
     expect(runtime.startedOrigins).toEqual([SESSION_A.tenantOrigin])
     expect(runtime.startedTimezones).toEqual(['Asia/Tashkent'])
+  })
+
+  it('refreshes and caches current permission codes after access-token rotation', async () => {
+    const { service, store, api } = createService()
+    await service.login({
+      tenantUrl: 'https://atlas.example.test',
+      email: 'operator@example.test',
+      password: 'password'
+    })
+    api.permissionCodes = ['models.manage', 'patta.hisob.manual_manage']
+
+    await expect(service.refreshAccessToken()).resolves.toBe(true)
+    expect(service.currentSession().permission_codes).toEqual([
+      'models.manage',
+      'patta.hisob.manual_manage'
+    ])
+    expect(store.value?.permissionCodes).toEqual([
+      'models.manage',
+      'patta.hisob.manual_manage'
+    ])
+  })
+
+  it('keeps authentication available and fails closed when first-login permission fetch fails', async () => {
+    const { service, store, api } = createService()
+    api.permissionsError = new TypeError('network unavailable')
+
+    await expect(service.login({
+      tenantUrl: 'https://atlas.example.test',
+      email: 'operator@example.test',
+      password: 'password'
+    })).resolves.toMatchObject({ state: 'AUTHENTICATED' })
+    expect(store.value?.permissionCodes).toEqual([])
+    expect(service.currentSession().permission_codes).toEqual([])
   })
 
   it.each(['INVALID_REFRESH_TOKEN', 'SESSION_REVOKED'])('clears an expired or %s session', async (code) => {
@@ -282,7 +332,7 @@ describe('DesktopAuthService', () => {
       refreshToken: 'refresh-B-1',
       expiresIn: 900,
       user: { id: USER_B, email: 'operator-b@example.test', fullName: 'Operator B' },
-      company: { id: COMPANY_B, slug: 'bravo', timezone: 'Europe/London' }
+      company: { id: COMPANY_B, name: 'Bravo Textile', slug: 'bravo', timezone: 'Europe/London' }
     }
 
     await expect(
@@ -296,7 +346,12 @@ describe('DesktopAuthService', () => {
     expect(runtime.events[0]).toBe('runtime:clear')
     expect(runtime.openedCompanyIds.at(-1)).toBe(COMPANY_B)
     expect(store.value).toMatchObject({ companyId: COMPANY_B, refreshToken: 'refresh-B-1' })
-    expect(service.currentSession().company).toEqual({ id: COMPANY_B, slug: 'bravo', timezone: 'Europe/London' })
+    expect(service.currentSession().company).toEqual({
+      id: COMPANY_B,
+      name: 'Bravo Textile',
+      slug: 'bravo',
+      timezone: 'Europe/London'
+    })
   })
 
   it('performs local logout while offline and clears active session state', async () => {
@@ -312,7 +367,8 @@ describe('DesktopAuthService', () => {
       state: 'SIGNED_OUT',
       user: null,
       company: null,
-      tenant_host: null
+      tenant_host: null,
+      permission_codes: []
     })
     expect(store.value).toBeNull()
     expect(runtime.events).toEqual(['runtime:clear'])

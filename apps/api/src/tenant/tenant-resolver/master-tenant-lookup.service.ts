@@ -6,6 +6,7 @@ import { isIanaTimezone } from '../../common/time/iana-timezone.js';
 
 export interface MasterTenantMetadata {
   id: string;
+  name: string;
   slug: string;
   status: string;
   databaseName: string;
@@ -41,7 +42,7 @@ export class MasterTenantLookupService implements MasterTenantReader {
     identityValue: string,
   ): Promise<MasterTenantMetadata | null> {
     const result: unknown = await this.masterDataSource.query(
-      `SELECT "id", "slug", "status", "db_name", "db_connection_ciphertext", "timezone"
+      `SELECT "id", "name", "slug", "status", "db_name", "db_connection_ciphertext", "timezone"
        FROM "companies" WHERE "${identityColumn}" = $1`,
       [identityValue],
     );
@@ -57,6 +58,7 @@ export class MasterTenantLookupService implements MasterTenantReader {
     }
 
     const id = Reflect.get(row, 'id');
+    const name = Reflect.get(row, 'name');
     const slug = Reflect.get(row, 'slug');
     const status = Reflect.get(row, 'status');
     const databaseName = Reflect.get(row, 'db_name');
@@ -64,6 +66,7 @@ export class MasterTenantLookupService implements MasterTenantReader {
     const timezone = Reflect.get(row, 'timezone');
     if (
       typeof id !== 'string' ||
+      typeof name !== 'string' || name.trim() === '' ||
       typeof slug !== 'string' ||
       typeof status !== 'string' ||
       typeof databaseName !== 'string' ||
@@ -73,6 +76,6 @@ export class MasterTenantLookupService implements MasterTenantReader {
       throw new Error('Master tenant query returned incomplete metadata');
     }
 
-    return { id, slug, status, databaseName, connectionCiphertext, timezone };
+    return { id, name, slug, status, databaseName, connectionCiphertext, timezone };
   }
 }

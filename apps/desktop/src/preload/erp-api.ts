@@ -43,8 +43,9 @@ export interface DesktopAuthStatus {
 export interface DesktopSafeSession {
   state: DesktopAuthState
   user: { id: string; email: string; full_name: string } | null
-  company: { id: string; slug: string; timezone: string | null } | null
+  company: { id: string; name: string; slug: string; timezone: string | null } | null
   tenant_host: string | null
+  permission_codes: readonly string[]
 }
 
 export interface DesktopLoginInput {
@@ -298,6 +299,18 @@ function nullableString(value: unknown, field: string): string | null {
   return stringValue(value, field)
 }
 
+function parsePermissionCodes(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.length > 256) throw new Error('Invalid safe session permissions')
+  const codes: string[] = []
+  for (const code of value as unknown[]) {
+    if (typeof code !== 'string' || !PERMISSION_CODE_PATTERN.test(code)) {
+      throw new Error('Invalid safe session permissions')
+    }
+    codes.push(code)
+  }
+  return [...new Set(codes)].sort((left, right) => left.localeCompare(right))
+}
+
 function parseSyncStatus(value: unknown): DesktopSyncStatus {
   if (!record(value)) throw new Error('Invalid sync status response')
   const connectivity = value.connectivity
@@ -358,6 +371,7 @@ const AUTH_STATES: readonly DesktopAuthState[] = [
   'OFFLINE_SESSION_PENDING',
   'ERROR'
 ]
+const PERMISSION_CODE_PATTERN = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/
 
 function authState(value: unknown): DesktopAuthState {
   if (typeof value !== 'string' || !AUTH_STATES.includes(value as DesktopAuthState)) {
@@ -379,9 +393,11 @@ function parseAuthStatus(value: unknown): DesktopAuthStatus {
 }
 
 function parseSafeSession(value: unknown): DesktopSafeSession {
-  if (!record(value) || Object.keys(value).length !== 4) {
+  const safeSessionKeys = ['company', 'permission_codes', 'state', 'tenant_host', 'user']
+  if (!record(value) || Object.keys(value).sort().join(',') !== safeSessionKeys.join(',')) {
     throw new Error('Invalid safe session response')
   }
+  const permissionCodes = parsePermissionCodes(value.permission_codes)
   const userValue = value.user
   const companyValue = value.company
   const tenantHost = value.tenant_host
@@ -398,12 +414,14 @@ function parseSafeSession(value: unknown): DesktopSafeSession {
     }
   }
   if (companyValue !== null) {
-    if (!record(companyValue) || Object.keys(companyValue).length !== 3 ||
+    if (!record(companyValue) || Object.keys(companyValue).length !== 4 ||
+      typeof companyValue.name !== 'string' || companyValue.name.length === 0 || companyValue.name.length > 255 ||
       (companyValue.timezone !== null && typeof companyValue.timezone !== 'string')) {
       throw new Error('Invalid safe session company')
     }
     company = {
       id: stringValue(companyValue.id, 'company.id'),
+      name: stringValue(companyValue.name, 'company.name'),
       slug: stringValue(companyValue.slug, 'company.slug'),
       timezone: nullableString(companyValue.timezone, 'company.timezone')
     }
@@ -411,7 +429,13 @@ function parseSafeSession(value: unknown): DesktopSafeSession {
   if (tenantHost !== null && typeof tenantHost !== 'string') {
     throw new Error('Invalid safe session tenant host')
   }
-  return { state: authState(value.state), user, company, tenant_host: tenantHost }
+  return {
+    state: authState(value.state),
+    user,
+    company,
+    tenant_host: tenantHost,
+    permission_codes: permissionCodes
+  }
 }
 
 function loginInput(value: unknown): DesktopLoginInput {
