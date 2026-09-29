@@ -31,10 +31,12 @@
 
 **Interface produced:**
 
+In `packages/sync-protocol/src/index.ts`, rename the current sheet projection to `PattaSheetProjectionV2` with all existing fields unchanged. Keep the existing V2 operation-snapshot source union unchanged. The new interface below is V3; the Desktop current UI/main-process consumers use V3 types.
+
 ```ts
 type PattaSheetEntryKind = 'PATTA_LINKED' | 'STANDALONE'
 
-interface PattaSheetProjection {
+interface PattaSheetProjectionV3 {
   id: string
   entry_kind: PattaSheetEntryKind
   patta_hisob_id: string | null
@@ -55,11 +57,11 @@ interface PattaSheetProjection {
   deleted_at: string | null
   deleted_by: string | null
   deleted_by_name_snapshot: string | null
-  operation_snapshots: readonly PattaSheetOperationSnapshotProjection[]
+  operation_snapshots: readonly PattaSheetOperationSnapshotProjectionV3[]
   rows: readonly PattaSheetRowProjection[]
 }
 
-interface PattaSheetOperationSnapshotProjection {
+interface PattaSheetOperationSnapshotProjectionV3 {
   id: string
   patta_sheet_id: string
   model_operation_id: string
@@ -92,6 +94,8 @@ interface DesktopModelOperationOption {
   version: string
 }
 ```
+
+Define `SyncProjectionV3` as the V1/V2 projection unions plus the V3 `patta_sheets` and manual-adjustment projections. `SyncChange.projection_version` accepts `1 | 2 | 3`; V1/V2 event and projection interfaces stay unchanged.
 
 - [ ] Add protocol V3 tests/types for linked and standalone projection and mutation payloads while leaving V1/V2 types unchanged. `PATTA` snapshots require Patta source IDs; standalone `MODEL` snapshots have no Patta source ID; `CUSTOM` remains existing model-operation creation.
 - [ ] Add service test cases: linked create rejects mismatched model/Patta metadata and keeps Patta quantity; standalone create requires active model, positive `ish_soni`, operation belonging to that model, and allows null Partiya/Patta/Rang/Razmer.
@@ -177,7 +181,8 @@ expect(rows[0]).toEqual({ entry_kind: 'PATTA_LINKED', patta_hisob_id: pattaId, i
 - [ ] Include `deleted_by_name_snapshot` when soft trash occurs and return it in the typed projection; do not change old sheet snapshots on restore.
 - [ ] Add SyncProtocolVersion 3 and a V3 projection union that includes existing V1/V2 entity projections plus the Standalone Patta Sheet shape. Update the four sync DTO enums and bootstrap-session protocol constraint; keep V1/V2 request behavior unchanged.
 - [ ] Add the V3 projection/event type to bootstrap ordering, push registry, pull mirror, and local queued-event parser. Update Desktop transport to send protocol version 3. Reuse current event processor, processed-event idempotency, cursor, and tombstones; do not create a parallel sync path.
-- [ ] Preserve V2 linked-Entry compatibility by adapting linked V3 sheet projections to the legacy V2 linked shape. If a V2 pull/bootstrap would encounter a Standalone projection, return `SYNC_PROTOCOL_UPGRADE_REQUIRED` without advancing the V2 cursor; V3 clients exchange linked and Standalone records.
+- [ ] Preserve V2 linked-Entry compatibility: map a V2 linked event to the V3 internal record using the authoritative Patta row, and adapt a V3 linked pull projection back to the exact old V2 response shape. Reject a Standalone mutation from a V2 client.
+- [ ] If a V2 pull/bootstrap would encounter a Standalone projection, return `SYNC_PROTOCOL_UPGRADE_REQUIRED` without advancing the V2 cursor; V3 clients exchange linked and Standalone records.
 - [ ] Keep `/api/v2/patta-sheets` linked-only with its current request/response shape. Add Standalone-capable create/get/update/trash/restore/purge REST methods under `/api/v3/patta-sheets`; use existing `patta_varaq.*` permission checks.
 - [ ] Add acceptance tests for V2 linked Entry compatibility, V2 upgrade-required on Standalone data/cursor preservation, duplicate V3 event retry, PC-1 Standalone create/PC-2 V3 pull, price history change after create, badge reassignment history, stale edit conflict, and trash/restore propagation.
 - [ ] Run `npm run test --workspace=apps/api -- src/tenant/patta-sheets/patta-sheets.service.spec.ts src/tenant/sync/patta-sheet-sync-handler.spec.ts`, `npm run test:sync --workspace=apps/api`, and desktop focused sync tests.
