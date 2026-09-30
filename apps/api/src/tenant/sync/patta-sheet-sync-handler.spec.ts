@@ -63,6 +63,58 @@ function createEvent(operation: 'CREATE' | 'UPDATE', deletedAt: string | null = 
   };
 }
 
+function createStandaloneEvent(): SyncEvent {
+  const modelId = '44444444-4444-4444-8444-444444444444';
+  return {
+    event_id: '77777777-7777-4777-8777-777777777777',
+    entity_type: 'patta_sheet',
+    entity_id: sheetId,
+    operation: 'CREATE',
+    base_version: '0',
+    client_created_at: '2026-09-28T10:00:00.000Z',
+    occurred_at: '2026-09-28T10:00:00.000Z',
+    reference_cursor: '9',
+    payload: {
+      entry_kind: 'STANDALONE',
+      patta_hisob_id: null,
+      model_id: modelId,
+      model_name_snapshot: 'Atlas',
+      ish_soni: 95,
+      partiya_number_snapshot: null,
+      patta_number_snapshot: null,
+      rang_snapshot: null,
+      razmer_snapshot: null,
+      entered_at: '2026-09-28T10:00:00.000Z',
+      business_date: '2026-09-28',
+      conveyor_snapshot: null,
+      deleted_at: null,
+      deleted_by: null,
+      deleted_by_name_snapshot: null,
+      operation_snapshots: [{
+        id: snapshotId,
+        model_operation_id: operationId,
+        source_type: 'MODEL',
+        source_patta_operation_snapshot_id: null,
+        operation_name_snapshot: 'Tikish',
+        unit_price_snapshot: '37.00',
+        sort_order: 0,
+      }],
+      rows: [{
+        id: '33333333-3333-4333-8333-333333333333',
+        patta_sheet_operation_snapshot_id: snapshotId,
+        worker_id: workerId,
+        quantity_snapshot: 95,
+        nuqson: false,
+        entered_badge_number: '0007',
+        deleted_at: null,
+        deleted_by: null,
+      }],
+      depends_on_event_ids: [],
+      device_id: deviceId,
+    },
+  };
+}
+
 const projection = {
   id: sheetId,
   patta_hisob_id: pattaId,
@@ -95,7 +147,76 @@ describe('PattaSheetSyncHandler', () => {
     });
     expect(created).toHaveBeenCalledWith(manager, {
       actorUserId: actorId, validatedDeviceId: deviceId, timezone: 'Asia/Tashkent',
-    }, expect.objectContaining({ id: sheetId, patta_hisob_id: pattaId, device_id: deviceId }));
+    }, expect.objectContaining({ id: sheetId, patta_hisob_id: pattaId, device_id: deviceId }), 2);
+  });
+
+  it('applies a V3 Standalone CREATE and returns a V3 projection', async () => {
+    const modelId = '44444444-4444-4444-8444-444444444444';
+    const standalone = {
+      ...projection,
+      entry_kind: 'STANDALONE' as const,
+      patta_hisob_id: null,
+      model_id: modelId,
+      model_name_snapshot: 'Atlas',
+      ish_soni: 95,
+      partiya_number_snapshot: null,
+      patta_number_snapshot: null,
+      rang_snapshot: null,
+      razmer_snapshot: null,
+      deleted_by_name_snapshot: null,
+      operation_snapshots: [{
+        id: snapshotId, patta_sheet_id: sheetId, model_operation_id: operationId,
+        source_type: 'MODEL' as const, source_patta_operation_snapshot_id: null,
+        operation_name_snapshot: 'Tikish', unit_price_snapshot: '37.00', sort_order: 0,
+        created_at: '2026-09-28T10:00:00.000000Z',
+      }],
+      rows: [{
+        id: '33333333-3333-4333-8333-333333333333', patta_sheet_id: sheetId,
+        patta_sheet_operation_snapshot_id: snapshotId, worker_id: workerId, quantity_snapshot: 95,
+        nuqson: false, deleted_at: null, deleted_by: null,
+        created_at: '2026-09-28T10:00:00.000000Z', updated_at: '2026-09-28T10:00:00.000000Z',
+      }],
+    };
+    const create = vi.fn(async () => standalone);
+    const handler = new PattaSheetSyncHandler({
+      createV3InTransaction: create,
+      latestChangeSequence: vi.fn(async () => '94'),
+    } as unknown as PattaSheetsService);
+    const manager = { query: vi.fn(async () => [{ allowed: true }]) } as unknown as EntityManager;
+    const v3Context = { ...context, protocolVersion: 3 as const };
+
+    await expect(handler.apply(manager, v3Context, createStandaloneEvent())).resolves.toMatchObject({
+      entityVersion: '1',
+      changeSequence: '94',
+      projection: { projection_version: 3, entity_type: 'patta_sheets', data: { entry_kind: 'STANDALONE' } },
+    });
+    expect(create).toHaveBeenCalledWith(manager, {
+      actorUserId: actorId, validatedDeviceId: deviceId, timezone: 'Asia/Tashkent',
+    }, expect.objectContaining({ entry_kind: 'STANDALONE', patta_hisob_id: null, ish_soni: 95 }));
+  });
+
+  it('accepts an old linked V2 event in a V3 envelope and records a V3 linked projection', async () => {
+    const create = vi.fn(async () => projection);
+    const handler = new PattaSheetSyncHandler({
+      createInTransaction: create,
+      latestChangeSequence: vi.fn(async () => '95'),
+    } as unknown as PattaSheetsService);
+    const manager = { query: vi.fn(async () => [{ allowed: true }]) } as unknown as EntityManager;
+
+    await expect(handler.apply(manager, { ...context, protocolVersion: 3 }, createEvent('CREATE'))).resolves.toMatchObject({
+      entityVersion: '1',
+      projection: { projection_version: 2, entity_type: 'patta_sheets' },
+    });
+    expect(create).toHaveBeenCalledWith(manager, {
+      actorUserId: actorId, validatedDeviceId: deviceId, timezone: 'Asia/Tashkent',
+    }, expect.objectContaining({ patta_hisob_id: pattaId }), 3);
+  });
+
+  it('requires a V3 client before accepting a Standalone mutation', async () => {
+    const handler = new PattaSheetSyncHandler({} as unknown as PattaSheetsService);
+    const manager = { query: vi.fn() } as unknown as EntityManager;
+    await expect(handler.apply(manager, context, createStandaloneEvent()))
+      .rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
   });
 
   it('requires a trusted timezone and enforces permission for a trashed-parent UPDATE', async () => {
@@ -116,7 +237,7 @@ describe('PattaSheetSyncHandler', () => {
     });
     expect(setTrashed).toHaveBeenCalledWith(
       manager, { actorUserId: actorId, validatedDeviceId: deviceId, timezone: 'Asia/Tashkent' },
-      sheetId, '1', true, '2026-09-28T10:00:00.000Z',
+      sheetId, '1', true, '2026-09-28T10:00:00.000Z', 2,
     );
 
     await expect(handler.apply(manager, { ...context, timezone: undefined }, createEvent('CREATE')))
@@ -137,7 +258,7 @@ describe('PattaSheetSyncHandler', () => {
       entityVersion: null, projection: null, changeSequence: '93',
     });
     expect(purge).toHaveBeenCalledWith(
-      manager, { actorUserId: actorId, validatedDeviceId: deviceId, timezone: 'Asia/Tashkent' }, sheetId, '1',
+      manager, { actorUserId: actorId, validatedDeviceId: deviceId, timezone: 'Asia/Tashkent' }, sheetId, '1', 2,
     );
   });
 });

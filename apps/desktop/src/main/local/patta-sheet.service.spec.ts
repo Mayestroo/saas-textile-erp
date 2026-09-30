@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type Database from 'better-sqlite3'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openSqliteDatabase } from '../database/sqlite-database'
 import { LocalUnitOfWork } from './local-unit-of-work'
 import { BadgeLocalRepository } from './badge-local.repository'
@@ -12,6 +12,7 @@ import { PattaSheetService } from './patta-sheet.service'
 import { PattaSheetCustomOperationRepository } from './patta-sheet-custom-operation.repository'
 import { SyncQueueRepository } from './sync-queue.repository'
 import { SyncStateRepository } from './sync-state.repository'
+import { ModelLocalRepository } from './model-local.repository'
 
 const timestamp = '2026-09-27T20:00:00.000000Z'
 const databases: Database.Database[] = []
@@ -67,12 +68,15 @@ function createService(database: Database.Database): {
   service: PattaSheetService
   queue: SyncQueueRepository
   sheets: PattaSheetRepository
+  pattas: PattaLocalRepository
 } {
   const queue = new SyncQueueRepository(database)
   const sheets = new PattaSheetRepository(database)
+  const pattas = new PattaLocalRepository(database)
   const service = new PattaSheetService({
     unitOfWork: new LocalUnitOfWork(database),
-    pattaRepository: new PattaLocalRepository(database),
+    pattaRepository: pattas,
+    modelRepository: new ModelLocalRepository(database),
     sheetRepository: sheets,
     customOperationRepository: new PattaSheetCustomOperationRepository(database),
     badgeRepository: new BadgeLocalRepository(database),
@@ -85,7 +89,7 @@ function createService(database: Database.Database): {
       return () => `00000000-0000-4000-8000-${String(next++).padStart(12, '0')}`
     })()
   })
-  return { service, queue, sheets }
+  return { service, queue, sheets, pattas }
 }
 
 afterEach(() => {
@@ -140,6 +144,79 @@ describe('PattaSheetService', () => {
     expect(database.prepare('SELECT COUNT(*) AS count FROM patta_sheets').get()).toEqual({ count: 1 })
     expect(database.prepare('SELECT COUNT(*) AS count FROM patta_sheet_rows WHERE quantity_snapshot = 125').get())
       .toEqual({ count: 1 })
+  })
+
+  it('creates Standalone Entry without looking up or creating a Patta and queues the model price snapshots atomically', () => {
+    const database = createDatabase({ timezone: 'Asia/Tashkent' })
+    const { service, queue, sheets, pattas } = createService(database)
+    const standaloneModelId = '11111111-1111-4111-8111-111111111111'
+    const standaloneOperationId = '22222222-2222-4222-8222-222222222222'
+    database.prepare(`
+      INSERT INTO models (id, name, status, version, created_at, updated_at)
+      VALUES (?, 'Mustaqil model', 'ACTIVE', '1', ?, ?)
+    `).run(standaloneModelId, timestamp, timestamp)
+    database.prepare(`
+      INSERT INTO model_operations (id, model_id, name, sort_order, status, version, created_at, updated_at)
+      VALUES (?, ?, 'Tikish', 0, 'ACTIVE', '3', ?, ?)
+    `).run(standaloneOperationId, standaloneModelId, timestamp, timestamp)
+    database.prepare(`
+      INSERT INTO model_operation_prices (id, operation_id, price, valid_from, valid_to, created_at)
+      VALUES ('33333333-3333-4333-8333-333333333333', ?, '21.50', '2026-01-01T00:00:00.000Z', NULL, ?)
+    `).run(standaloneOperationId, timestamp)
+    const pattaLookup = vi.spyOn(pattas, 'findByBusinessKey')
+
+    const created = service.create({
+      entry_kind: 'STANDALONE',
+      entered_at: timestamp,
+      model_id: standaloneModelId,
+      ish_soni: 95,
+      partiya_number_snapshot: null,
+      patta_number_snapshot: null,
+      rang_snapshot: 'Ko‘k',
+      razmer_snapshot: 'M',
+      conveyor_snapshot: null,
+      assignments: [{ model_operation_id: standaloneOperationId, badge_number: '0007', nuqson: false }]
+    }, actorId)
+
+    expect(created).toMatchObject({
+      entry_kind: 'STANDALONE',
+      patta_hisob_id: null,
+      model_id: standaloneModelId,
+      ish_soni: 95,
+      operation_snapshots: [{ source_type: 'MODEL', source_patta_operation_snapshot_id: null, unit_price_snapshot: '21.50' }],
+      rows: [{ worker_id: workerId, quantity_snapshot: 95 }]
+    })
+    expect(pattaLookup).not.toHaveBeenCalled()
+    expect(sheets.findByPatta(pattaId)).toBeNull()
+    expect(pattas.getById(pattaId)).not.toBeNull()
+    expect(database.prepare(`
+      SELECT patta_hisob_id, entry_kind, ish_soni FROM patta_sheets WHERE id = ?
+    `).get(created.id)).toEqual({ patta_hisob_id: null, entry_kind: 'STANDALONE', ish_soni: 95 })
+    const createdEvent = queue.pendingBatch(10, timestamp)[0]
+    expect(createdEvent).toMatchObject({
+      entity_type: 'patta_sheet', operation: 'CREATE', payload: {
+        entry_kind: 'STANDALONE', patta_hisob_id: null, ish_soni: 95,
+        operation_snapshots: [{ source_type: 'MODEL', unit_price_snapshot: '21.50' }]
+      }
+    })
+    if (!createdEvent) throw new Error('Standalone sync event was not enqueued')
+    const updated = service.update({
+      sheet_id: created.id,
+      expected_version: '0',
+      conveyor_snapshot: '1-konveyer',
+      assignments: [{ model_operation_id: standaloneOperationId, badge_number: '0007', nuqson: true }]
+    }, actorId)
+    expect(updated).toMatchObject({
+      entry_kind: 'STANDALONE', patta_hisob_id: null, ish_soni: 95,
+      conveyor_snapshot: '1-konveyer',
+      operation_snapshots: [{ unit_price_snapshot: '21.50' }],
+      rows: [{ quantity_snapshot: 95, nuqson: true }]
+    })
+    expect(queue.pendingBatch(10, timestamp)).toMatchObject([{
+      event_id: createdEvent.event_id,
+      operation: 'CREATE',
+      payload: { entry_kind: 'STANDALONE', ish_soni: 95, conveyor_snapshot: '1-konveyer' }
+    }])
   })
 
   it('creates custom operations atomically and blocks their dependent Entry until the operation syncs', () => {
@@ -308,7 +385,7 @@ describe('PattaSheetService', () => {
       assignments: [{ model_operation_id: operationId, badge_number: '0007', nuqson: false }]
     })
 
-    const trashed = service.trash(created.id, '0', actorId)
+    const trashed = service.trash(created.id, '0', actorId, 'Operator One')
     expect(trashed).toMatchObject({ version: '0', deleted_at: timestamp, deleted_by: actorId })
     expect(queue.pendingBatch(10, timestamp)).toMatchObject([{
       operation: 'CREATE', payload: { deleted_at: timestamp, deleted_by: actorId }
@@ -320,7 +397,7 @@ describe('PattaSheetService', () => {
       operation: 'CREATE', payload: { deleted_at: null, deleted_by: null }
     }])
 
-    service.trash(created.id, '0', actorId)
+    service.trash(created.id, '0', actorId, 'Operator One')
     service.purge(created.id, '0')
     expect(sheets.getById(created.id)).toBeNull()
     expect(queue.pendingBatch(10, timestamp)).toEqual([])
@@ -349,7 +426,7 @@ describe('PattaSheetService', () => {
     }
     markServerSynced('1', '10')
 
-    const trashed = service.trash(created.id, '1', actorId)
+    const trashed = service.trash(created.id, '1', actorId, 'Operator One')
     expect(trashed).toMatchObject({ version: '2', deleted_at: timestamp, deleted_by: actorId })
     expect(queue.pendingBatch(10, timestamp)).toMatchObject([{
       operation: 'UPDATE', base_version: '1', payload: { deleted_at: timestamp, deleted_by: actorId }
@@ -363,7 +440,7 @@ describe('PattaSheetService', () => {
     }])
 
     markServerSynced('3', '12')
-    service.trash(created.id, '3', actorId)
+    service.trash(created.id, '3', actorId, 'Operator One')
     markServerSynced('4', '13')
     service.purge(created.id, '4')
 

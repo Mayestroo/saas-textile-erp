@@ -5,6 +5,7 @@ import { TenantRbacService } from '../rbac/tenant-rbac.service.js';
 import { TenantAuthController } from './tenant-auth.controller.js';
 import { TenantAuthGuard } from './tenant-auth.guard.js';
 import { TenantAuthService } from './tenant-auth.service.js';
+import { TenantPermissionsProjectionService } from './tenant-permissions-projection.service.js';
 import { TenantPermissionGuard } from './tenant-permission.guard.js';
 import { TenantSessionRepository } from './tenant-session.repository.js';
 
@@ -13,6 +14,7 @@ import { TenantSessionRepository } from './tenant-session.repository.js';
   controllers: [TenantAuthController],
   providers: [
     TenantAuthService,
+    TenantPermissionsProjectionService,
     TenantSessionRepository,
     TenantRbacService,
     TenantAuthGuard,

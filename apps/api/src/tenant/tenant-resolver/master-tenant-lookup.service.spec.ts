@@ -6,6 +6,7 @@ describe('MasterTenantLookupService', () => {
   it('loads and validates the company timezone with trusted tenant metadata', async () => {
     const query = vi.fn(async () => [{
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      name: 'Atlas Textile',
       slug: 'atlas',
       status: 'ACTIVE',
       db_name: 'tenant_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa',
@@ -15,14 +16,16 @@ describe('MasterTenantLookupService', () => {
     const service = new MasterTenantLookupService({ query } as unknown as DataSource);
 
     await expect(service.findTenantBySlug('atlas')).resolves.toMatchObject({
-      slug: 'atlas', timezone: 'Asia/Tashkent',
+      name: 'Atlas Textile', slug: 'atlas', timezone: 'Asia/Tashkent',
     });
+    expect(String(query.mock.calls[0]?.[0])).toContain('"name"');
     expect(String(query.mock.calls[0]?.[0])).toContain('"timezone"');
   });
 
   it('rejects invalid Master timezone metadata instead of inventing a default', async () => {
     const query = vi.fn(async () => [{
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      name: 'Atlas Textile',
       slug: 'atlas',
       status: 'ACTIVE',
       db_name: 'tenant_aaaaaaaaaaaa4aaa8aaaaaaaaaaaaaaa',

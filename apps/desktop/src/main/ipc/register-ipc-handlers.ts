@@ -5,6 +5,12 @@ import { normalizeTenantOrigin } from '../auth/tenant-auth-api-client'
 import { AuthenticatedHttpError } from '../sync/authenticated-http-client'
 import type { PattaPrintBatchProjection } from '@textile/sync-protocol'
 import type {
+  ConveyorAccountRow,
+  DesktopModelOperationOption,
+  ModelAccountAdjustmentProjection,
+  ModelAccountWorkerDetail,
+} from '@textile/sync-protocol'
+import type {
   DesktopModelOption,
   DesktopPattaLookup,
   DesktopPattaPrintBatchInput,
@@ -18,6 +24,8 @@ import type {
   DesktopPattaSheetHistoryItem,
   DesktopPattaSheetRowDetail,
   DesktopModelAccountSheet,
+  DesktopManualAdjustmentCreateInput,
+  DesktopOperationPriceChangeInput,
   DesktopSyncRunResult,
   DesktopSyncStatus,
   DesktopIpcChannel
@@ -49,15 +57,28 @@ export interface MainProcessIpcServices {
   recordPattaPrintEvent(input: unknown): DesktopPattaPrintEvent
   printPattaBatch(batchId: unknown): Promise<{ batch: DesktopPattaPrintBatchResult; event: DesktopPattaPrintEvent }>
   lookupPattaSheet(input: unknown): Promise<DesktopPattaSheetLookup | null>
+  getPattaSheet(input: unknown): DesktopPattaSheetHistoryItem | null
+  modelOperationsForPattaSheet(input: unknown): readonly DesktopModelOperationOption[]
   resolvePattaSheetBadge(input: unknown): { worker_id: string; full_name: string } | null
   listPattaSheetModels(): readonly DesktopModelOption[]
-  createPattaSheet(input: unknown): import('@textile/sync-protocol').PattaSheetProjection
-  updatePattaSheet(input: unknown): import('@textile/sync-protocol').PattaSheetProjection
-  trashPattaSheet(input: unknown): import('@textile/sync-protocol').PattaSheetProjection
-  restorePattaSheet(input: unknown): import('@textile/sync-protocol').PattaSheetProjection
+  listPattaSheetHistoryModels(): readonly DesktopModelOption[]
+  createPattaSheet(input: unknown): import('@textile/sync-protocol').PattaSheetProjectionV3
+  updatePattaSheet(input: unknown): import('@textile/sync-protocol').PattaSheetProjectionV3
+  trashPattaSheet(input: unknown): import('@textile/sync-protocol').PattaSheetProjectionV3
+  restorePattaSheet(input: unknown): import('@textile/sync-protocol').PattaSheetProjectionV3
   purgePattaSheet(input: unknown): void
   listPattaSheetHistory(input: unknown): readonly DesktopPattaSheetHistoryItem[]
   getModelAccountSheet(input: unknown): DesktopModelAccountSheet
+  changeModelOperationPrice(input: unknown): Promise<import('@textile/sync-protocol').OperationPriceChangeProjection>
+  addModelAccountAdjustment(input: unknown): ModelAccountAdjustmentProjection
+  listManualAdjustmentWorkers(): readonly DesktopModelOption[]
+  updateModelAccountAdjustment(input: unknown): ModelAccountAdjustmentProjection
+  trashModelAccountAdjustment(input: unknown): ModelAccountAdjustmentProjection
+  restoreModelAccountAdjustment(input: unknown): ModelAccountAdjustmentProjection
+  listModelAccountWorkerDetails(input: unknown): readonly ModelAccountWorkerDetail[]
+  listConveyorAccount(): readonly ConveyorAccountRow[]
+  listModelAccountModels(): readonly DesktopModelOption[]
+  listManualAdjustmentOperations(input: unknown): readonly DesktopModelOperationOption[]
 }
 
 export interface MainProcessIpcDependencies {
@@ -142,6 +163,13 @@ function canonicalizeCorrectionReason(value: string): string {
   return value.replace(ASCII_WHITESPACE, ' ').trim()
 }
 
+function nullableTextField(value: Record<string, unknown>, field: string): string | null {
+  const item = value[field]
+  if (item === null) return null
+  if (typeof item === 'string') return item
+  throw new Error(`${field} ma’lumoti yaroqsiz`)
+}
+
 function printEventInput(value: unknown): DesktopPattaPrintEventInput {
   if (!isRecord(value) || Object.keys(value).some((key) => !['batch_id', 'revision', 'kind', 'outcome'].includes(key)) ||
     typeof value.batch_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.batch_id) ||
@@ -159,10 +187,65 @@ function printEventInput(value: unknown): DesktopPattaPrintEventInput {
 }
 
 function pattaSheetInput(value: unknown): DesktopPattaSheetCreateInput {
-  if (!isRecord(value) || Object.keys(value).some((key) => ![
-    'partiya_number', 'patta_number', 'conveyor_snapshot', 'assignments', 'custom_operations'
-  ].includes(key)) || typeof value.partiya_number !== 'string' ||
-    typeof value.patta_number !== 'string' || !POSITIVE_BIGINT_PATTERN.test(value.patta_number) ||
+  if (!isRecord(value)) throw new Error('Patta varag‘i ma’lumoti yaroqsiz')
+  if (value.entry_kind === 'STANDALONE') {
+    const allowed = new Set([
+      'entry_kind', 'entered_at', 'model_id', 'ish_soni', 'partiya_number_snapshot', 'patta_number_snapshot',
+      'rang_snapshot', 'razmer_snapshot', 'conveyor_snapshot', 'assignments', 'custom_operations'
+    ])
+    if (Object.keys(value).some((key) => !allowed.has(key)) ||
+      typeof value.model_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.model_id) ||
+      typeof value.entered_at !== 'string' || !Number.isFinite(Date.parse(value.entered_at)) ||
+      typeof value.ish_soni !== 'number' || !Number.isSafeInteger(value.ish_soni) ||
+      value.ish_soni < 1 || value.ish_soni > 2_147_483_647 ||
+      !['partiya_number_snapshot', 'patta_number_snapshot', 'rang_snapshot', 'razmer_snapshot', 'conveyor_snapshot']
+        .every((key) => value[key] === null || typeof value[key] === 'string') ||
+      !Array.isArray(value.assignments) ||
+      (value.custom_operations !== undefined && !Array.isArray(value.custom_operations))) {
+      throw new Error('Standalone Patta varag‘i ma’lumoti yaroqsiz')
+    }
+    const assignments = value.assignments.map((assignment) => {
+      if (!isRecord(assignment) || Object.keys(assignment).some((key) => ![
+        'model_operation_id', 'badge_number', 'nuqson'
+      ].includes(key)) || typeof assignment.model_operation_id !== 'string' ||
+        !/^[0-9a-f-]{36}$/i.test(assignment.model_operation_id) ||
+        typeof assignment.badge_number !== 'string' || typeof assignment.nuqson !== 'boolean') {
+        throw new Error('Patta varag‘i ishchi topshirig‘i yaroqsiz')
+      }
+      return {
+        model_operation_id: assignment.model_operation_id.toLowerCase(),
+        badge_number: assignment.badge_number,
+        nuqson: assignment.nuqson
+      }
+    })
+    const customOperations = value.custom_operations?.map((operation) => {
+      if (!isRecord(operation) || Object.keys(operation).some((key) => !['id', 'name', 'initial_price'].includes(key)) ||
+        typeof operation.id !== 'string' || !/^[0-9a-f-]{36}$/i.test(operation.id) ||
+        typeof operation.name !== 'string' || operation.name.length > 500 ||
+        typeof operation.initial_price !== 'string' || !/^(0|[1-9][0-9]*)\.[0-9]{2}$/.test(operation.initial_price)) {
+        throw new Error('Yangi model operatsiyasi ma’lumoti yaroqsiz')
+      }
+      return { id: operation.id.toLowerCase(), name: operation.name, initial_price: operation.initial_price }
+    })
+    return {
+      entry_kind: 'STANDALONE',
+      entered_at: value.entered_at,
+      model_id: value.model_id.toLowerCase(),
+      ish_soni: value.ish_soni,
+      partiya_number_snapshot: nullableTextField(value, 'partiya_number_snapshot'),
+      patta_number_snapshot: nullableTextField(value, 'patta_number_snapshot'),
+      rang_snapshot: nullableTextField(value, 'rang_snapshot'),
+      razmer_snapshot: nullableTextField(value, 'razmer_snapshot'),
+      conveyor_snapshot: nullableTextField(value, 'conveyor_snapshot'),
+      assignments,
+      ...(customOperations === undefined ? {} : { custom_operations: customOperations })
+    }
+  }
+  if (Object.keys(value).some((key) => ![
+    'entry_kind', 'partiya_number', 'patta_number', 'conveyor_snapshot', 'assignments', 'custom_operations'
+  ].includes(key)) || (value.entry_kind !== undefined && value.entry_kind !== 'PATTA_LINKED') ||
+    typeof value.partiya_number !== 'string' || typeof value.patta_number !== 'string' ||
+    !POSITIVE_BIGINT_PATTERN.test(value.patta_number) ||
     !(value.conveyor_snapshot === null || typeof value.conveyor_snapshot === 'string') ||
     !Array.isArray(value.assignments) ||
     (value.custom_operations !== undefined && !Array.isArray(value.custom_operations))) {
@@ -192,6 +275,7 @@ function pattaSheetInput(value: unknown): DesktopPattaSheetCreateInput {
     return { id: operation.id.toLowerCase(), name: operation.name, initial_price: operation.initial_price }
   })
   return {
+    entry_kind: 'PATTA_LINKED',
     partiya_number: value.partiya_number,
     patta_number: value.patta_number,
     conveyor_snapshot: value.conveyor_snapshot,
@@ -255,6 +339,89 @@ function pattaSheetHistoryInput(value: unknown): { model_id: string; include_del
     throw new Error('Patta varaq tarixi so‘rovi yaroqsiz')
   }
   return { model_id: value.model_id.toLowerCase(), include_deleted: value.include_deleted === true }
+}
+
+function pattaSheetIdInput(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9a-f-]{36}$/i.test(value)) {
+    throw new Error('Patta varag‘i identifikatori yaroqsiz')
+  }
+  return value.toLowerCase()
+}
+
+function modelOperationsInput(value: unknown): { model_id: string; entered_at: string } {
+  if (!isRecord(value) || Object.keys(value).some((key) => !['model_id', 'entered_at'].includes(key)) ||
+    typeof value.model_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.model_id) ||
+    typeof value.entered_at !== 'string') {
+    throw new Error('Model operatsiyalari so‘rovi yaroqsiz')
+  }
+  return { model_id: value.model_id.toLowerCase(), entered_at: value.entered_at }
+}
+
+function manualAdjustmentCreateInput(value: unknown): DesktopManualAdjustmentCreateInput {
+  if (!isRecord(value) || Object.keys(value).some((key) => ![
+    'model_id', 'model_operation_id', 'worker_id', 'quantity'
+  ].includes(key)) || typeof value.model_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.model_id) ||
+    typeof value.model_operation_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.model_operation_id) ||
+    typeof value.worker_id !== 'string' || !POSITIVE_BIGINT_PATTERN.test(value.worker_id) ||
+    BigInt(value.worker_id) > MAX_POSTGRES_BIGINT || typeof value.quantity !== 'number' ||
+    !Number.isSafeInteger(value.quantity) || value.quantity < 1 || value.quantity > 2_147_483_647) {
+    throw new Error('Qo‘lda qo‘shish ma’lumoti yaroqsiz')
+  }
+  return {
+    model_id: value.model_id.toLowerCase(),
+    model_operation_id: value.model_operation_id.toLowerCase(),
+    worker_id: value.worker_id,
+    quantity: value.quantity
+  }
+}
+
+function manualAdjustmentMutationInput(value: unknown): { adjustment_id: string; expected_version: string; quantity?: number } {
+  if (!isRecord(value) || Object.keys(value).some((key) => ![
+    'adjustment_id', 'expected_version', 'quantity'
+  ].includes(key)) || typeof value.adjustment_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.adjustment_id) ||
+    typeof value.expected_version !== 'string' || !POSITIVE_BIGINT_PATTERN.test(value.expected_version) ||
+    (value.quantity !== undefined && (typeof value.quantity !== 'number' ||
+      !Number.isSafeInteger(value.quantity) || value.quantity < 1 || value.quantity > 2_147_483_647))) {
+    throw new Error('Qo‘shimchani o‘zgartirish ma’lumoti yaroqsiz')
+  }
+  return {
+    adjustment_id: value.adjustment_id.toLowerCase(),
+    expected_version: value.expected_version,
+    ...(typeof value.quantity === 'number' ? { quantity: value.quantity } : {})
+  }
+}
+
+function operationPriceChangeInput(value: unknown): DesktopOperationPriceChangeInput {
+  if (!isRecord(value) || Object.keys(value).some((key) => !['operation_id', 'expected_version', 'price'].includes(key)) ||
+    typeof value.operation_id !== 'string' || !/^[0-9a-f-]{36}$/i.test(value.operation_id) ||
+    typeof value.expected_version !== 'string' || !POSITIVE_BIGINT_PATTERN.test(value.expected_version) ||
+    typeof value.price !== 'string' || !/^(0|[1-9][0-9]*)\.[0-9]{2}$/.test(value.price)) {
+    throw new Error('Operatsiya narxini o‘zgartirish ma’lumoti yaroqsiz')
+  }
+  return {
+    operation_id: value.operation_id.toLowerCase(),
+    expected_version: value.expected_version,
+    price: value.price
+  }
+}
+
+function requireCachedPermission(
+  authService: Pick<DesktopAuthService, 'currentSession'>,
+  permission: string
+): void {
+  if (!authService.currentSession().permission_codes.includes(permission)) {
+    throw new Error('Ushbu amal uchun korxona ruxsati yetarli emas')
+  }
+}
+
+function requireAnyCachedPermission(
+  authService: Pick<DesktopAuthService, 'currentSession'>,
+  permissions: readonly string[]
+): void {
+  const cached = new Set(authService.currentSession().permission_codes)
+  if (!permissions.some((permission) => cached.has(permission))) {
+    throw new Error('Bu ma’lumotni ko‘rish uchun korxona ruxsati yetarli emas')
+  }
 }
 
 function publicPrintBatch(batch: PattaPrintBatchProjection): DesktopPattaPrintBatchResult {
@@ -362,7 +529,7 @@ export function createMainProcessIpcServices(
   }
   const publicSheetRows = (
     runtime: ReturnType<typeof activePrintRuntime>,
-    sheet: import('@textile/sync-protocol').PattaSheetProjection
+    sheet: import('@textile/sync-protocol').PattaSheetProjectionV3
   ): readonly DesktopPattaSheetRowDetail[] => {
     const badgeEvidence = runtime.repositories.sheets.badgeEvidence(sheet.id)
     const snapshotsById = new Map(sheet.operation_snapshots.map((snapshot) => [snapshot.id, snapshot]))
@@ -411,6 +578,7 @@ export function createMainProcessIpcServices(
     },
     listPattaPrintModels: () => activePrintRuntime().repositories.models.listActiveModels(),
     lookupPattaSheet: async (input) => {
+      requireAnyCachedPermission(dependencies.authService, ['patta_varaq.view', 'patta_varaq.create'])
       const { partiyaNumber, pattaNumber } = lookupInput(input)
       const runtime = activePrintRuntime()
       let patta = runtime.repositories.pattas.findByBusinessKey(partiyaNumber, pattaNumber)
@@ -432,46 +600,133 @@ export function createMainProcessIpcServices(
       }
     },
     resolvePattaSheetBadge: (input) => {
+      requireAnyCachedPermission(dependencies.authService, ['patta_varaq.create', 'patta_varaq.edit'])
       const { badge_number, entered_at } = pattaSheetBadgeInput(input)
       return activePrintRuntime().pattaSheetService.resolveBadge(badge_number, entered_at)
     },
-    listPattaSheetModels: () => activePrintRuntime().repositories.models.listModelsWithPattaHistory(),
+    listPattaSheetModels: () => {
+      requireAnyCachedPermission(dependencies.authService, ['patta_varaq.view', 'patta_varaq.create'])
+      return activePrintRuntime().repositories.models.listActiveModels()
+    },
+    getPattaSheet: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta_varaq.view')
+      const sheetId = pattaSheetIdInput(input)
+      const runtime = activePrintRuntime()
+      const sheet = runtime.repositories.sheets.getById(sheetId)
+      if (!sheet) return null
+      const patta = sheet.patta_hisob_id === null ? null : runtime.repositories.pattas.getById(sheet.patta_hisob_id)
+      return { patta: patta ? publicPatta(patta) : null, sheet, rows: publicSheetRows(runtime, sheet) }
+    },
+    modelOperationsForPattaSheet: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta_varaq.create')
+      const { model_id, entered_at } = modelOperationsInput(input)
+      return activePrintRuntime().pattaSheetService.modelOperations(model_id, entered_at)
+    },
+    listPattaSheetHistoryModels: () => {
+      requireCachedPermission(dependencies.authService, 'patta_varaq.view')
+      return activePrintRuntime().repositories.models.listModelsWithPattaHistory()
+    },
     createPattaSheet: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta_varaq.create')
       const runtime = activePrintRuntime()
       const actorUserId = dependencies.authService.currentSession().user?.id
       if (!actorUserId) throw new Error('Patta varag‘i kiritish uchun sessiya foydalanuvchisi kerak')
       return runtime.pattaSheetService.create(pattaSheetInput(input), actorUserId)
     },
-    updatePattaSheet: (input) => activePrintRuntime().pattaSheetService.update(
-      pattaSheetUpdateInput(input), requireActorId(dependencies.authService.currentSession().user?.id)
-    ),
+    updatePattaSheet: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta_varaq.edit')
+      return activePrintRuntime().pattaSheetService.update(
+        pattaSheetUpdateInput(input), requireActorId(dependencies.authService.currentSession().user?.id)
+      )
+    },
     trashPattaSheet: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta_varaq.delete')
       const { sheet_id, expected_version } = pattaSheetLifecycleInput(input)
+      const actor = dependencies.authService.currentSession().user
+      if (!actor?.full_name) throw new Error('Korzinkaga yuborish uchun sessiya foydalanuvchisi kerak')
       return activePrintRuntime().pattaSheetService.trash(
-        sheet_id, expected_version, requireActorId(dependencies.authService.currentSession().user?.id)
+        sheet_id, expected_version, requireActorId(actor.id), actor.full_name
       )
     },
     restorePattaSheet: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta_varaq.restore')
       const { sheet_id, expected_version } = pattaSheetLifecycleInput(input)
       return activePrintRuntime().pattaSheetService.restore(
         sheet_id, expected_version, requireActorId(dependencies.authService.currentSession().user?.id)
       )
     },
     purgePattaSheet: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta_varaq.purge')
       const { sheet_id, expected_version } = pattaSheetLifecycleInput(input)
       activePrintRuntime().pattaSheetService.purge(sheet_id, expected_version)
     },
     listPattaSheetHistory: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta_varaq.view')
       const { model_id, include_deleted } = pattaSheetHistoryInput(input)
       const runtime = activePrintRuntime()
       return runtime.repositories.sheets.listForModel(model_id, include_deleted).flatMap((sheet) => {
-        const patta = runtime.repositories.pattas.getById(sheet.patta_hisob_id)
-        return patta ? [{ patta: publicPatta(patta), sheet, rows: publicSheetRows(runtime, sheet) }] : []
+        const patta = sheet.patta_hisob_id === null ? null : runtime.repositories.pattas.getById(sheet.patta_hisob_id)
+        return [{ patta: patta ? publicPatta(patta) : null, sheet, rows: publicSheetRows(runtime, sheet) }]
       })
     },
     getModelAccountSheet: (input) => {
       const { model_id } = pattaSheetHistoryInput({ model_id: isRecord(input) ? input.model_id : null })
-      return activePrintRuntime().repositories.modelAccount.getModelAccountSheet(model_id)
+      requireCachedPermission(dependencies.authService, 'patta.hisob.view')
+      return activePrintRuntime().repositories.modelAccount.getModelAccountSheetV3(model_id)
+    },
+    listModelAccountModels: () => {
+      requireCachedPermission(dependencies.authService, 'patta.hisob.view')
+      return activePrintRuntime().repositories.models.listModelsWithPattaHistory()
+    },
+    listManualAdjustmentOperations: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta.hisob.manual_manage')
+      const { model_id, entered_at } = modelOperationsInput(input)
+      return activePrintRuntime().modelAccountAdjustmentService.availableOperations(model_id, entered_at)
+    },
+    changeModelOperationPrice: (input) => {
+      requireCachedPermission(dependencies.authService, 'models.manage')
+      const parsed = operationPriceChangeInput(input)
+      return activePrintRuntime().changeOperationPrice(parsed.operation_id, parsed.expected_version, parsed.price)
+    },
+    addModelAccountAdjustment: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta.hisob.manual_manage')
+      const actorUserId = requireActorId(dependencies.authService.currentSession().user?.id)
+      return activePrintRuntime().modelAccountAdjustmentService.create(manualAdjustmentCreateInput(input), actorUserId)
+    },
+    listManualAdjustmentWorkers: () => {
+      requireCachedPermission(dependencies.authService, 'patta.hisob.manual_manage')
+      return activePrintRuntime().repositories.workers.listActiveWorkers()
+        .map(({ id, full_name }) => ({ id, name: full_name }))
+    },
+    updateModelAccountAdjustment: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta.hisob.manual_manage')
+      const { adjustment_id, expected_version, quantity } = manualAdjustmentMutationInput(input)
+      if (quantity === undefined) throw new Error('Qo‘shimcha soni kiritilmagan')
+      return activePrintRuntime().modelAccountAdjustmentService.update(adjustment_id, expected_version, quantity)
+    },
+    trashModelAccountAdjustment: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta.hisob.manual_manage')
+      const { adjustment_id, expected_version } = manualAdjustmentMutationInput(input)
+      return activePrintRuntime().modelAccountAdjustmentService.trash(
+        adjustment_id, expected_version, requireActorId(dependencies.authService.currentSession().user?.id)
+      )
+    },
+    restoreModelAccountAdjustment: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta.hisob.manual_manage')
+      const { adjustment_id, expected_version } = manualAdjustmentMutationInput(input)
+      return activePrintRuntime().modelAccountAdjustmentService.restore(adjustment_id, expected_version)
+    },
+    listModelAccountWorkerDetails: (input) => {
+      requireCachedPermission(dependencies.authService, 'patta.hisob.view')
+      if (!isRecord(input) || Object.keys(input).length !== 1 || typeof input.worker_id !== 'string' ||
+        !POSITIVE_BIGINT_PATTERN.test(input.worker_id) || BigInt(input.worker_id) > MAX_POSTGRES_BIGINT) {
+        throw new Error('Ishchi identifikatori yaroqsiz')
+      }
+      return activePrintRuntime().repositories.modelAccount.getWorkerDetails(input.worker_id)
+    },
+    listConveyorAccount: () => {
+      requireCachedPermission(dependencies.authService, 'patta.hisob.view')
+      return activePrintRuntime().repositories.modelAccount.getConveyorAccount()
     },
     createPattaPrintBatch: (input) => publicPrintBatch(
       activePrintRuntime().pattaPrintService.createBatch(printBatchInput(input)).batch
@@ -574,6 +829,10 @@ export function registerIpcHandlers(
     if (args.length !== 1) throw new Error('Patta varag‘i qidiruv so‘rovi yaroqsiz')
     return services.lookupPattaSheet(args[0])
   })
+  ipcMain.handle('patta-sheet:get', async (_event, ...args) => {
+    if (args.length !== 1) throw new Error('Patta varag‘i ID so‘rovi yaroqsiz')
+    return services.getPattaSheet(args[0])
+  })
   ipcMain.handle('patta-sheet:resolve-badge', async (_event, ...args) => {
     if (args.length !== 1) throw new Error('Jeton tekshirish so‘rovi yaroqsiz')
     return services.resolvePattaSheetBadge(args[0])
@@ -581,6 +840,14 @@ export function registerIpcHandlers(
   ipcMain.handle('patta-sheet:models', async (_event, ...args) => {
     if (!hasNoPayload(args)) throw new Error('Varaq modellari so‘rovi yaroqsiz')
     return services.listPattaSheetModels()
+  })
+  ipcMain.handle('patta-sheet:history-models', async (_event, ...args) => {
+    if (!hasNoPayload(args)) throw new Error('Varaq tarixidagi modellar so‘rovi yaroqsiz')
+    return services.listPattaSheetHistoryModels()
+  })
+  ipcMain.handle('patta-sheet:model-operations', async (_event, ...args) => {
+    if (args.length !== 1) throw new Error('Model operatsiyalari so‘rovi yaroqsiz')
+    return services.modelOperationsForPattaSheet(args[0])
   })
   ipcMain.handle('patta-sheet:create', async (_event, ...args) => {
     if (args.length !== 1) throw new Error('Patta varag‘i yaratish so‘rovi yaroqsiz')
@@ -609,6 +876,46 @@ export function registerIpcHandlers(
   ipcMain.handle('model-account:get', async (_event, ...args) => {
     if (args.length !== 1) throw new Error('Model hisob so‘rovi yaroqsiz')
     return services.getModelAccountSheet(args[0])
+  })
+  ipcMain.handle('model-account:models', async (_event, ...args) => {
+    if (!hasNoPayload(args)) throw new Error('Model hisob modellari so‘rovi yaroqsiz')
+    return services.listModelAccountModels()
+  })
+  ipcMain.handle('model-account:change-price', async (_event, ...args) => {
+    if (args.length !== 1) throw new Error('Operatsiya narxini o‘zgartirish so‘rovi yaroqsiz')
+    return services.changeModelOperationPrice(args[0])
+  })
+  ipcMain.handle('model-account:manual-operations', async (_event, ...args) => {
+    if (args.length !== 1) throw new Error('Qo‘lda qo‘shish operatsiyalari so‘rovi yaroqsiz')
+    return services.listManualAdjustmentOperations(args[0])
+  })
+  ipcMain.handle('model-account:add-manual', async (_event, ...args) => {
+    if (args.length !== 1) throw new Error('Qo‘lda qo‘shish so‘rovi yaroqsiz')
+    return services.addModelAccountAdjustment(args[0])
+  })
+  ipcMain.handle('model-account:workers', async (_event, ...args) => {
+    if (!hasNoPayload(args)) throw new Error('Qo‘lda qo‘shish uchun ishchilar ro‘yxati so‘rovi yaroqsiz')
+    return services.listManualAdjustmentWorkers()
+  })
+  ipcMain.handle('model-account:update-manual', async (_event, ...args) => {
+    if (args.length !== 1) throw new Error('Qo‘lda qo‘shishni tahrirlash so‘rovi yaroqsiz')
+    return services.updateModelAccountAdjustment(args[0])
+  })
+  ipcMain.handle('model-account:trash-manual', async (_event, ...args) => {
+    if (args.length !== 1) throw new Error('Qo‘lda qo‘shishni Korzinkaga yuborish so‘rovi yaroqsiz')
+    return services.trashModelAccountAdjustment(args[0])
+  })
+  ipcMain.handle('model-account:restore-manual', async (_event, ...args) => {
+    if (args.length !== 1) throw new Error('Qo‘lda qo‘shishni tiklash so‘rovi yaroqsiz')
+    return services.restoreModelAccountAdjustment(args[0])
+  })
+  ipcMain.handle('model-account:worker-details', async (_event, ...args) => {
+    if (args.length !== 1) throw new Error('Ishchi hisob-kitobi so‘rovi yaroqsiz')
+    return services.listModelAccountWorkerDetails(args[0])
+  })
+  ipcMain.handle('model-account:conveyor-account', async (_event, ...args) => {
+    if (!hasNoPayload(args)) throw new Error('Konveyer hisobi so‘rovi yaroqsiz')
+    return services.listConveyorAccount()
   })
   ipcMain.handle('patta-print:create-batch', async (_event, ...args) => {
     if (args.length !== 1) throw new Error('Patta bosma to‘plami so‘rovi yaroqsiz')

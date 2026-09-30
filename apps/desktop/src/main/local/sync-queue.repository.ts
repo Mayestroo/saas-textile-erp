@@ -1,13 +1,17 @@
 import type Database from 'better-sqlite3'
 import type {
   OfflinePattaCreateEvent,
+  ModelAccountAdjustmentMutationPayload,
+  ModelAccountAdjustmentSyncEvent,
   PattaPrintEventSyncEvent,
   PattaPrintBatchMutationPayload,
   PattaPrintBatchProjection,
   PattaPrintBatchSyncEvent,
-  PattaSheetMutationPayload,
-  PattaSheetProjection,
-  PattaSheetSyncEvent,
+  PattaSheetMutationPayloadV2,
+  PattaSheetMutationPayloadV3,
+  PattaSheetProjectionV3,
+  PattaSheetSyncEventV2,
+  PattaSheetSyncEventV3,
   CustomModelOperationCreateEvent,
   SyncPattaCreatePayload,
   SyncPattaOperationSnapshotInput,
@@ -54,7 +58,7 @@ type ServerPattaProjection = Extract<SyncProjection, { entity_type: 'patta_hisob
 
 type QueueStatus = 'PENDING' | 'SYNCING' | 'SYNCED' | 'CONFLICT' | 'FAILED'
 type LocalQueuedEvent = OfflinePattaCreateEvent | PattaPrintBatchSyncEvent | PattaPrintEventSyncEvent |
-  PattaSheetSyncEvent | CustomModelOperationCreateEvent
+  PattaSheetSyncEventV2 | PattaSheetSyncEventV3 | ModelAccountAdjustmentSyncEvent | CustomModelOperationCreateEvent
 
 function requiredString(value: unknown, field: string): string {
   if (typeof value !== 'string') throw new Error(`Stored Patta event has invalid ${field}`)
@@ -248,8 +252,119 @@ function parsePrintEventPayload(json: string): PattaPrintEventSyncEvent['payload
   }
 }
 
-function parsePattaSheetPayload(json: string): PattaSheetMutationPayload {
+function parsePattaSheetPayloadV3(value: Record<string, unknown>): PattaSheetMutationPayloadV3 {
+  const allowed = new Set([
+    'entry_kind', 'patta_hisob_id', 'model_id', 'model_name_snapshot', 'ish_soni',
+    'partiya_number_snapshot', 'patta_number_snapshot', 'rang_snapshot', 'razmer_snapshot',
+    'entered_at', 'business_date', 'conveyor_snapshot', 'deleted_at', 'deleted_by',
+    'deleted_by_name_snapshot', 'operation_snapshots', 'rows', 'depends_on_event_ids'
+  ])
+  if (Object.keys(value).some((key) => !allowed.has(key)) ||
+    !Array.isArray(value.operation_snapshots) || !Array.isArray(value.rows) ||
+    !Array.isArray(value.depends_on_event_ids)) {
+    throw new Error('Stored V3 Patta Sheet event has an invalid aggregate payload')
+  }
+  const entryKind = value.entry_kind
+  if (entryKind !== 'PATTA_LINKED' && entryKind !== 'STANDALONE') {
+    throw new Error('Stored V3 Patta Sheet event has an invalid entry kind')
+  }
+  const pattaId = nullableString(value.patta_hisob_id, 'Patta id')
+  if ((entryKind === 'PATTA_LINKED') !== (pattaId !== null)) {
+    throw new Error('Stored V3 Patta Sheet event has inconsistent Patta identity')
+  }
+  const modelId = requiredString(value.model_id, 'model id')
+  const modelName = requiredString(value.model_name_snapshot, 'model name snapshot')
+  const quantity = value.ish_soni
+  if (!Number.isSafeInteger(quantity) || (quantity as number) <= 0) {
+    throw new Error('Stored V3 Patta Sheet event has invalid quantity')
+  }
+  const enteredAt = requiredString(value.entered_at, 'Sheet entered_at')
+  const businessDate = requiredString(value.business_date, 'Sheet business_date')
+  if (!Number.isFinite(Date.parse(enteredAt)) || !/^\d{4}-\d{2}-\d{2}$/.test(businessDate)) {
+    throw new Error('Stored V3 Patta Sheet event has an invalid entry timestamp or business date')
+  }
+  const deletedAt = nullableString(value.deleted_at, 'Sheet deleted_at')
+  const deletedBy = nullableString(value.deleted_by, 'Sheet deleted_by')
+  const deletedByName = nullableString(value.deleted_by_name_snapshot, 'Sheet deleted actor name')
+  if ((deletedAt === null) !== (deletedBy === null) ||
+    (deletedAt !== null && !Number.isFinite(Date.parse(deletedAt))) ||
+    (deletedAt === null && deletedByName !== null)) {
+    throw new Error('Stored V3 Patta Sheet event has invalid deletion metadata')
+  }
+  const operationSnapshots = value.operation_snapshots.map((raw) => {
+    if (!isJsonObject(raw) || Object.keys(raw).some((key) => ![
+      'id', 'model_operation_id', 'source_type', 'source_patta_operation_snapshot_id',
+      'operation_name_snapshot', 'unit_price_snapshot', 'sort_order'
+    ].includes(key)) || !['PATTA', 'MODEL', 'CUSTOM'].includes(String(raw.source_type)) ||
+      !Number.isSafeInteger(raw.sort_order) || (raw.sort_order as number) < 0) {
+      throw new Error('Stored V3 Patta Sheet operation snapshot is invalid')
+    }
+    const sourceId = nullableString(raw.source_patta_operation_snapshot_id, 'source Patta snapshot id')
+    if ((raw.source_type === 'PATTA') !== (sourceId !== null) ||
+      (raw.source_type === 'MODEL' && entryKind !== 'STANDALONE')) {
+      throw new Error('Stored V3 Patta Sheet operation source metadata is invalid')
+    }
+    return {
+      id: requiredString(raw.id, 'Sheet operation snapshot id'),
+      model_operation_id: requiredString(raw.model_operation_id, 'model operation id'),
+      source_type: raw.source_type as 'PATTA' | 'MODEL' | 'CUSTOM',
+      source_patta_operation_snapshot_id: sourceId,
+      operation_name_snapshot: requiredString(raw.operation_name_snapshot, 'operation name snapshot'),
+      unit_price_snapshot: requiredString(raw.unit_price_snapshot, 'operation price snapshot'),
+      sort_order: raw.sort_order as number
+    }
+  })
+  const rows = value.rows.map((raw) => {
+    if (!isJsonObject(raw) || Object.keys(raw).some((key) => ![
+      'id', 'patta_sheet_operation_snapshot_id', 'worker_id', 'quantity_snapshot', 'nuqson',
+      'entered_badge_number', 'deleted_at', 'deleted_by'
+    ].includes(key)) || !Number.isSafeInteger(raw.quantity_snapshot) ||
+      raw.quantity_snapshot !== quantity || typeof raw.nuqson !== 'boolean') {
+      throw new Error('Stored V3 Patta Sheet row is invalid')
+    }
+    const rowDeletedAt = nullableString(raw.deleted_at, 'Sheet row deleted_at')
+    const rowDeletedBy = nullableString(raw.deleted_by, 'Sheet row deleted_by')
+    if ((rowDeletedAt === null) !== (rowDeletedBy === null) ||
+      (rowDeletedAt !== null && !Number.isFinite(Date.parse(rowDeletedAt)))) {
+      throw new Error('Stored V3 Patta Sheet row deletion metadata is invalid')
+    }
+    return {
+      id: requiredString(raw.id, 'Sheet row id'),
+      patta_sheet_operation_snapshot_id: requiredString(raw.patta_sheet_operation_snapshot_id, 'Sheet snapshot id'),
+      worker_id: requiredString(raw.worker_id, 'worker id'),
+      quantity_snapshot: raw.quantity_snapshot as number,
+      nuqson: raw.nuqson,
+      entered_badge_number: requiredString(raw.entered_badge_number, 'entered badge number'),
+      deleted_at: rowDeletedAt,
+      deleted_by: rowDeletedBy
+    }
+  })
+  return {
+    entry_kind: entryKind,
+    patta_hisob_id: pattaId,
+    model_id: modelId,
+    model_name_snapshot: modelName,
+    ish_soni: quantity as number,
+    partiya_number_snapshot: nullableString(value.partiya_number_snapshot, 'Partiya snapshot'),
+    patta_number_snapshot: nullableString(value.patta_number_snapshot, 'Patta number snapshot'),
+    rang_snapshot: nullableString(value.rang_snapshot, 'color snapshot'),
+    razmer_snapshot: nullableString(value.razmer_snapshot, 'size snapshot'),
+    entered_at: enteredAt,
+    business_date: businessDate,
+    conveyor_snapshot: nullableString(value.conveyor_snapshot, 'Sheet conveyor'),
+    deleted_at: deletedAt,
+    deleted_by: deletedBy,
+    deleted_by_name_snapshot: deletedByName,
+    operation_snapshots: operationSnapshots,
+    rows,
+    depends_on_event_ids: value.depends_on_event_ids.map((id) => requiredString(id, 'dependency event id'))
+  }
+}
+
+function parsePattaSheetPayload(json: string): PattaSheetMutationPayloadV2 | PattaSheetMutationPayloadV3 {
   const value = parseLocalJson(json)
+  if (!isJsonObject(value)) throw new Error('Stored Patta Sheet event has an invalid aggregate payload')
+  if ('entry_kind' in value) return parsePattaSheetPayloadV3(value)
   const allowed = new Set([
     'patta_hisob_id', 'entered_at', 'business_date', 'conveyor_snapshot', 'deleted_at', 'deleted_by',
     'operation_snapshots', 'rows', 'depends_on_event_ids'
@@ -331,6 +446,40 @@ function parsePattaSheetPayload(json: string): PattaSheetMutationPayload {
   }
 }
 
+function parseModelAccountAdjustmentPayload(json: string): ModelAccountAdjustmentMutationPayload {
+  const value = parseLocalJson(json)
+  const allowed = new Set([
+    'model_id', 'model_operation_id', 'worker_id', 'quantity', 'unit_price_snapshot',
+    'entered_at', 'business_date', 'deleted_at', 'deleted_by', 'depends_on_event_ids'
+  ])
+  if (!isJsonObject(value) || Object.keys(value).some((key) => !allowed.has(key)) ||
+    !Array.isArray(value.depends_on_event_ids) || !Number.isSafeInteger(value.quantity) ||
+    (value.quantity as number) < 1 || typeof value.unit_price_snapshot !== 'string' ||
+    !/^(0|[1-9][0-9]*)\.[0-9]{2}$/.test(value.unit_price_snapshot) ||
+    typeof value.entered_at !== 'string' || !Number.isFinite(Date.parse(value.entered_at)) ||
+    typeof value.business_date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value.business_date)) {
+    throw new Error('Stored Model hisob adjustment event has an invalid payload')
+  }
+  const deletedAt = nullableString(value.deleted_at, 'Adjustment deleted_at')
+  const deletedBy = nullableString(value.deleted_by, 'Adjustment deleted_by')
+  if ((deletedAt === null) !== (deletedBy === null) ||
+    (deletedAt !== null && !Number.isFinite(Date.parse(deletedAt)))) {
+    throw new Error('Stored Model hisob adjustment lifecycle metadata is invalid')
+  }
+  return {
+    model_id: requiredString(value.model_id, 'adjustment model id'),
+    model_operation_id: requiredString(value.model_operation_id, 'adjustment operation id'),
+    worker_id: requiredString(value.worker_id, 'adjustment worker id'),
+    quantity: value.quantity as number,
+    unit_price_snapshot: value.unit_price_snapshot,
+    entered_at: value.entered_at,
+    business_date: value.business_date,
+    deleted_at: deletedAt,
+    deleted_by: deletedBy,
+    depends_on_event_ids: value.depends_on_event_ids.map((id) => requiredString(id, 'adjustment dependency id'))
+  }
+}
+
 function storedEvent(row: StoredQueueEvent): LocalQueuedEvent {
   if (row.entity_type === 'patta') {
     if (row.operation !== 'CREATE' || row.base_version !== '0') {
@@ -378,16 +527,34 @@ function storedEvent(row: StoredQueueEvent): LocalQueuedEvent {
   if (row.entity_type === 'patta_sheet' &&
     ((row.operation === 'CREATE' && row.base_version === '0') ||
       ((row.operation === 'UPDATE' || row.operation === 'DELETE') && row.base_version !== '0'))) {
+    const payload = parsePattaSheetPayload(row.payload_json)
+    const eventBase = {
+      event_id: row.event_id,
+      entity_type: 'patta_sheet' as const,
+      entity_id: row.entity_id,
+      operation: row.operation as PattaSheetSyncEventV3['operation'],
+      base_version: row.base_version,
+      client_created_at: row.client_created_at,
+      occurred_at: row.occurred_at,
+      reference_cursor: row.reference_cursor
+    }
+    return 'entry_kind' in payload
+      ? { ...eventBase, payload } satisfies PattaSheetSyncEventV3
+      : { ...eventBase, payload } satisfies PattaSheetSyncEventV2
+  }
+  if (row.entity_type === 'model_account_adjustment' &&
+    ((row.operation === 'CREATE' && row.base_version === '0') ||
+      (row.operation === 'UPDATE' && row.base_version !== '0'))) {
     return {
       event_id: row.event_id,
-      entity_type: 'patta_sheet',
+      entity_type: 'model_account_adjustment',
       entity_id: row.entity_id,
-      operation: row.operation as PattaSheetSyncEvent['operation'],
+      operation: row.operation,
       base_version: row.base_version,
       client_created_at: row.client_created_at,
       occurred_at: row.occurred_at,
       reference_cursor: row.reference_cursor,
-      payload: parsePattaSheetPayload(row.payload_json)
+      payload: parseModelAccountAdjustmentPayload(row.payload_json)
     }
   }
   if (row.entity_type === 'model_operation' && row.operation === 'CREATE' && row.base_version === '0') {
@@ -457,6 +624,28 @@ export class SyncQueueRepository {
     return { ...row, operation: row.operation }
   }
 
+  pendingAdjustmentMutation(entityId: string): {
+    event_id: string
+    operation: 'CREATE' | 'UPDATE'
+    base_version: string
+    status: QueueStatus
+    ever_sent: number
+  } | null {
+    const row = this.database.prepare(`
+      SELECT event_id, operation, base_version, status, ever_sent
+      FROM sync_queue WHERE entity_type = 'model_account_adjustment' AND entity_id = ?
+        AND status IN ('PENDING', 'SYNCING', 'CONFLICT', 'FAILED')
+      ORDER BY created_at, event_id LIMIT 1
+    `).get(entityId) as {
+      event_id: string; operation: string; base_version: string; status: QueueStatus; ever_sent: number
+    } | undefined
+    if (!row) return null
+    if (row.operation !== 'CREATE' && row.operation !== 'UPDATE') {
+      throw new LocalDomainError('MODEL_ACCOUNT_ADJUSTMENT_MUTATION_PENDING', 'Qo‘shimchada noma’lum sinxronlash amali bor')
+    }
+    return { ...row, operation: row.operation }
+  }
+
   customOperationPrerequisiteEventIds(operationIds: readonly string[]): readonly string[] {
     if (operationIds.length === 0) return []
     const rows = this.database.prepare(`
@@ -491,6 +680,12 @@ export class SyncQueueRepository {
       (event.operation !== 'CREATE' && event.base_version === '0')
     )) {
       throw new Error('Patta Sheet queue mutation or base version is invalid')
+    }
+    if (event.entity_type === 'model_account_adjustment' && (
+      (event.operation === 'CREATE' && event.base_version !== '0') ||
+      (event.operation === 'UPDATE' && event.base_version === '0')
+    )) {
+      throw new Error('Manual adjustment queue mutation or base version is invalid')
     }
     if (event.entity_type === 'model_operation' && (event.operation !== 'CREATE' || event.base_version !== '0' ||
       event.entity_id !== event.payload.id)) {
@@ -613,7 +808,7 @@ export class SyncQueueRepository {
     return event.event_id
   }
 
-  enqueueOrCoalescePattaSheetMutation(event: PattaSheetSyncEvent): string {
+  enqueueOrCoalescePattaSheetMutation(event: PattaSheetSyncEventV2 | PattaSheetSyncEventV3): string {
     if (!this.database.inTransaction) {
       throw new Error('Patta Sheet queue writes require the local business transaction')
     }
@@ -654,6 +849,67 @@ export class SyncQueueRepository {
     return event.event_id
   }
 
+  enqueueOrCoalesceAdjustmentMutation(event: ModelAccountAdjustmentSyncEvent): string {
+    if (!this.database.inTransaction) {
+      throw new Error('Model Account adjustment queue writes require the local business transaction')
+    }
+    const existingRows = this.database.prepare(`
+      SELECT event_id, operation, base_version, status, ever_sent
+      FROM sync_queue WHERE entity_type = 'model_account_adjustment' AND entity_id = ?
+        AND status IN ('PENDING', 'SYNCING', 'CONFLICT', 'FAILED')
+      ORDER BY created_at, event_id
+    `).all(event.entity_id) as Array<{
+      event_id: string; operation: string; base_version: string; status: QueueStatus; ever_sent: number
+    }>
+    if (existingRows.length > 1) {
+      throw new LocalDomainError('MODEL_ACCOUNT_ADJUSTMENT_MUTATION_PENDING', 'Qo‘shimchaning oldingi sinxronlash hodisasi hal qilinmagan')
+    }
+    const existing = existingRows[0]
+    if (existing) {
+      if (existing.status !== 'PENDING' || existing.ever_sent !== 0 ||
+        (existing.operation !== 'CREATE' && existing.operation !== 'UPDATE')) {
+        throw new LocalDomainError('MODEL_ACCOUNT_ADJUSTMENT_SYNCING', 'Qo‘shimcha sinxronlanmoqda yoki nizoda; o‘zgarish bloklandi')
+      }
+      if (existing.operation === 'CREATE') {
+        this.updateCoalescedAdjustmentEvent(existing.event_id, 'CREATE', '0', event)
+        return existing.event_id
+      }
+      if (event.base_version !== existing.base_version) {
+        throw new LocalDomainError('VERSION_CONFLICT', 'Qo‘shimchaning asosiy versiyasi o‘zgargan')
+      }
+      this.updateCoalescedAdjustmentEvent(existing.event_id, existing.operation, existing.base_version, event)
+      return existing.event_id
+    }
+    if (event.operation !== 'CREATE' && event.base_version === '0') {
+      throw new LocalDomainError('MODEL_ACCOUNT_ADJUSTMENT_SYNC_REQUIRED', 'Avval qo‘shimchaning serverdagi nusxasini sinxronlang')
+    }
+    this.enqueue(event)
+    return event.event_id
+  }
+
+  private updateCoalescedAdjustmentEvent(
+    eventId: string,
+    operation: string,
+    baseVersion: string,
+    event: ModelAccountAdjustmentSyncEvent
+  ): void {
+    const update = this.database.prepare(`
+      UPDATE sync_queue SET operation = ?, base_version = ?, payload_json = ?, updated_at = ?
+      WHERE event_id = ? AND entity_type = 'model_account_adjustment' AND status = 'PENDING' AND ever_sent = 0
+    `).run(operation, baseVersion, serializeLocalJson(event.payload), event.client_created_at, eventId)
+    if (update.changes !== 1) {
+      throw new LocalDomainError('MODEL_ACCOUNT_ADJUSTMENT_SYNCING', 'Qo‘shimcha sinxronlash holati o‘zgardi; qayta urinib ko‘ring')
+    }
+    this.database.prepare('DELETE FROM sync_event_dependencies WHERE event_id = ?').run(eventId)
+    const insertDependency = this.database.prepare(`
+      INSERT INTO sync_event_dependencies (event_id, prerequisite_event_id, created_at)
+      VALUES (?, ?, ?)
+    `)
+    for (const dependency of event.payload.depends_on_event_ids) {
+      insertDependency.run(eventId, dependency, event.client_created_at)
+    }
+  }
+
   cancelNeverSentPattaSheetCreate(sheetId: string): boolean {
     if (!this.database.inTransaction) throw new Error('Patta Sheet queue cancellation requires a SQLite transaction')
     const row = this.database.prepare(`
@@ -674,8 +930,8 @@ export class SyncQueueRepository {
     eventId: string,
     operation: string,
     baseVersion: string,
-    event: PattaSheetSyncEvent,
-    payload: PattaSheetMutationPayload,
+    event: PattaSheetSyncEventV2 | PattaSheetSyncEventV3,
+    payload: PattaSheetMutationPayloadV2 | PattaSheetMutationPayloadV3,
   ): void {
     const update = this.database.prepare(`
       UPDATE sync_queue SET operation = ?, base_version = ?, payload_json = ?, updated_at = ?
@@ -772,6 +1028,9 @@ export class SyncQueueRepository {
     }
     if (event.entity_type === 'patta_sheet') {
       return this.markPattaSheetSynced(event, result, updatedAt)
+    }
+    if (event.entity_type === 'model_account_adjustment') {
+      return this.markModelAccountAdjustmentSynced(event, result, updatedAt)
     }
     if (event.entity_type === 'model_operation') {
       return this.markCustomModelOperationSynced(event, result, updatedAt)
@@ -1029,7 +1288,7 @@ export class SyncQueueRepository {
   }
 
   private markPattaSheetSynced(
-    event: PattaSheetSyncEvent,
+    event: PattaSheetSyncEventV2 | PattaSheetSyncEventV3,
     result: Extract<SyncPushResult, { status: 'SYNCED' }>,
     updatedAt: string
   ): boolean {
@@ -1075,8 +1334,27 @@ export class SyncQueueRepository {
       }
       return true
     }
-    if (result.projection?.projection_version !== 2 || result.projection.entity_type !== 'patta_sheets') {
+    if (!result.projection || result.projection.entity_type !== 'patta_sheets') {
       throw new Error('Patta Sheet push response contains a different projection')
+    }
+    if ('entry_kind' in event.payload) {
+      if (result.projection.projection_version !== 3) {
+        throw new Error('V3 Patta Sheet mutation received a non-V3 projection')
+      }
+      const v3Sheet = result.projection.data
+      if (v3Sheet.entry_kind !== event.payload.entry_kind ||
+        v3Sheet.model_id !== event.payload.model_id ||
+        v3Sheet.model_name_snapshot !== event.payload.model_name_snapshot ||
+        v3Sheet.ish_soni !== event.payload.ish_soni ||
+        v3Sheet.partiya_number_snapshot !== event.payload.partiya_number_snapshot ||
+        v3Sheet.patta_number_snapshot !== event.payload.patta_number_snapshot ||
+        v3Sheet.rang_snapshot !== event.payload.rang_snapshot ||
+        v3Sheet.razmer_snapshot !== event.payload.razmer_snapshot ||
+        (v3Sheet.deleted_at !== null && v3Sheet.deleted_by_name_snapshot === null)) {
+        throw new Error('Server V3 Patta Sheet snapshot differs from the queued aggregate')
+      }
+    } else if (result.projection.projection_version !== 2) {
+      throw new Error('V2 Patta Sheet mutation received a non-V2 projection')
     }
     const sheet = result.projection.data
     if (result.projection.entity_id !== event.entity_id || sheet.id !== event.entity_id ||
@@ -1093,7 +1371,7 @@ export class SyncQueueRepository {
         deleted_at, deleted_by, ownership_state
       FROM patta_sheets WHERE id = ? AND ownership_state = 'SYNCING'
     `).get(event.entity_id) as {
-      id: string; patta_hisob_id: string; entered_at: string; business_date: string;
+      id: string; patta_hisob_id: string | null; entered_at: string; business_date: string;
       conveyor_snapshot: string | null; version: string; deleted_at: string | null;
       deleted_by: string | null; ownership_state: string;
     } | undefined
@@ -1116,11 +1394,20 @@ export class SyncQueueRepository {
     `).run(serializeLocalJson(result), updatedAt, event.event_id)
     if (queueResult.changes === 0) return false
     this.database.prepare('DELETE FROM sync_event_dependencies WHERE event_id = ?').run(event.event_id)
-    this.database.prepare(`
-      UPDATE patta_sheets SET version = ?, created_by = ?, created_at = ?, updated_at = ?,
-        ownership_state = 'SERVER_SYNCED', server_sequence = ?
-      WHERE id = ? AND ownership_state = 'SYNCING'
-    `).run(sheet.version, sheet.created_by, sheet.created_at, sheet.updated_at, result.change_sequence, sheet.id)
+    if (result.projection.projection_version === 3) {
+      this.database.prepare(`
+        UPDATE patta_sheets SET version = ?, created_by = ?, created_at = ?, updated_at = ?,
+          deleted_by_name_snapshot = ?, ownership_state = 'SERVER_SYNCED', server_sequence = ?
+        WHERE id = ? AND ownership_state = 'SYNCING'
+      `).run(sheet.version, sheet.created_by, sheet.created_at, sheet.updated_at,
+        result.projection.data.deleted_by_name_snapshot, result.change_sequence, sheet.id)
+    } else {
+      this.database.prepare(`
+        UPDATE patta_sheets SET version = ?, created_by = ?, created_at = ?, updated_at = ?,
+          ownership_state = 'SERVER_SYNCED', server_sequence = ?
+        WHERE id = ? AND ownership_state = 'SYNCING'
+      `).run(sheet.version, sheet.created_by, sheet.created_at, sheet.updated_at, result.change_sequence, sheet.id)
+    }
     this.database.prepare(`
       UPDATE patta_sheet_operation_snapshots SET ownership_state = 'SERVER_SYNCED', server_sequence = ?
       WHERE patta_sheet_id = ? AND ownership_state IN ('LOCAL_PENDING', 'SYNCING')
@@ -1138,25 +1425,85 @@ export class SyncQueueRepository {
     return row?.version ?? null
   }
 
-  private readLocalSheetChildren(sheetId: string): Pick<PattaSheetProjection, 'operation_snapshots' | 'rows'> {
+  private markModelAccountAdjustmentSynced(
+    event: ModelAccountAdjustmentSyncEvent,
+    result: Extract<SyncPushResult, { status: 'SYNCED' }>,
+    updatedAt: string
+  ): boolean {
+    if (!result.projection || result.projection.projection_version !== 3 ||
+      result.projection.entity_type !== 'model_account_adjustments') {
+      throw new Error('Model Account adjustment push response contains a different projection')
+    }
+    const adjustment = result.projection.data
+    const payload = event.payload
+    if (result.projection.entity_id !== event.entity_id || adjustment.id !== event.entity_id ||
+      result.entity_version !== adjustment.version || adjustment.model_id !== payload.model_id ||
+      adjustment.model_operation_id !== payload.model_operation_id || adjustment.worker_id !== payload.worker_id ||
+      adjustment.quantity !== payload.quantity || adjustment.unit_price_snapshot !== payload.unit_price_snapshot ||
+      Date.parse(adjustment.entered_at) !== Date.parse(payload.entered_at) ||
+      adjustment.business_date !== payload.business_date || adjustment.deleted_at !== payload.deleted_at ||
+      adjustment.deleted_by !== payload.deleted_by ||
+      (event.operation === 'UPDATE' && adjustment.version !== this.localAdjustmentVersion(event.entity_id))) {
+      throw new Error('Server Model Account adjustment echo differs from the local aggregate')
+    }
+    const local = this.database.prepare(`
+      SELECT id, model_id, model_operation_id, worker_id, quantity, unit_price_snapshot,
+        entered_at, business_date, version, deleted_at, deleted_by, ownership_state
+      FROM model_account_adjustments WHERE id = ? AND ownership_state = 'SYNCING'
+    `).get(event.entity_id) as {
+      id: string; model_id: string; model_operation_id: string; worker_id: string; quantity: number;
+      unit_price_snapshot: string; entered_at: string; business_date: string; version: string;
+      deleted_at: string | null; deleted_by: string | null; ownership_state: string
+    } | undefined
+    if (!local || local.model_id !== adjustment.model_id || local.model_operation_id !== adjustment.model_operation_id ||
+      local.worker_id !== adjustment.worker_id || local.quantity !== adjustment.quantity ||
+      local.unit_price_snapshot !== adjustment.unit_price_snapshot ||
+      Date.parse(local.entered_at) !== Date.parse(adjustment.entered_at) ||
+      local.business_date !== adjustment.business_date || local.deleted_at !== adjustment.deleted_at ||
+      local.deleted_by !== adjustment.deleted_by || (event.operation === 'UPDATE' && local.version !== adjustment.version)) {
+      throw new Error('Server Model Account adjustment echo differs from the local immutable contribution')
+    }
+    const queueResult = this.database.prepare(`
+      UPDATE sync_queue SET status = 'SYNCED', result_json = ?, last_error_code = NULL,
+        last_error_message = NULL, next_attempt_at = NULL, updated_at = ?
+      WHERE event_id = ? AND status = 'SYNCING'
+    `).run(serializeLocalJson(result), updatedAt, event.event_id)
+    if (queueResult.changes !== 1) return false
+    this.database.prepare('DELETE FROM sync_event_dependencies WHERE event_id = ?').run(event.event_id)
+    this.database.prepare(`
+      UPDATE model_account_adjustments SET version = ?, created_by = ?, created_device_id = ?,
+        created_at = ?, updated_at = ?, ownership_state = 'SERVER_SYNCED', server_sequence = ?
+      WHERE id = ? AND ownership_state = 'SYNCING'
+    `).run(adjustment.version, adjustment.created_by, adjustment.created_device_id,
+      adjustment.created_at, adjustment.updated_at, result.change_sequence, adjustment.id)
+    return true
+  }
+
+  private localAdjustmentVersion(adjustmentId: string): string | null {
+    const row = this.database.prepare('SELECT version FROM model_account_adjustments WHERE id = ?').get(adjustmentId) as
+      { version: string } | undefined
+    return row?.version ?? null
+  }
+
+  private readLocalSheetChildren(sheetId: string): Pick<PattaSheetProjectionV3, 'operation_snapshots' | 'rows'> {
     return {
       operation_snapshots: this.database.prepare(`
         SELECT id, patta_sheet_id, model_operation_id, source_type, source_patta_operation_snapshot_id,
           operation_name_snapshot, unit_price_snapshot, sort_order, created_at
         FROM patta_sheet_operation_snapshots WHERE patta_sheet_id = ? ORDER BY sort_order, model_operation_id
-      `).all(sheetId) as PattaSheetProjection['operation_snapshots'],
+      `).all(sheetId) as PattaSheetProjectionV3['operation_snapshots'],
       rows: (this.database.prepare(`
         SELECT id, patta_sheet_id, patta_sheet_operation_snapshot_id, worker_id, quantity_snapshot,
           nuqson, deleted_at, deleted_by, created_at, updated_at
         FROM patta_sheet_rows WHERE patta_sheet_id = ? ORDER BY created_at, id
-      `).all(sheetId) as Array<Omit<PattaSheetProjection['rows'][number], 'nuqson'> & { nuqson: number }>).
+      `).all(sheetId) as Array<Omit<PattaSheetProjectionV3['rows'][number], 'nuqson'> & { nuqson: number }>).
         map((row) => ({ ...row, nuqson: Boolean(row.nuqson) }))
     }
   }
 
   private assertSheetSnapshotsMatch(
-    expected: PattaSheetMutationPayload['operation_snapshots'],
-    actual: readonly PattaSheetProjection['operation_snapshots'][number][]
+    expected: PattaSheetMutationPayloadV3['operation_snapshots'],
+    actual: readonly PattaSheetProjectionV3['operation_snapshots'][number][]
   ): void {
     if (expected.length !== actual.length || expected.some((snapshot) => {
       const returned = actual.find(({ id }) => id === snapshot.id)
@@ -1171,8 +1518,8 @@ export class SyncQueueRepository {
   }
 
   private assertSheetRowsMatch(
-    expected: PattaSheetMutationPayload['rows'],
-    actual: readonly PattaSheetProjection['rows'][number][]
+    expected: PattaSheetMutationPayloadV3['rows'],
+    actual: readonly PattaSheetProjectionV3['rows'][number][]
   ): void {
     if (expected.length !== actual.length || expected.some((row) => {
       const returned = actual.find(({ id }) => id === row.id)
@@ -1426,6 +1773,13 @@ export class SyncQueueRepository {
       this.database.prepare(`
         UPDATE patta_sheet_rows SET ownership_state = ?
         WHERE patta_sheet_id = ? AND ownership_state IN ('LOCAL_PENDING', 'SYNCING')
+      `).run(state, entityId)
+      return
+    }
+    if (entityType === 'model_account_adjustment') {
+      this.database.prepare(`
+        UPDATE model_account_adjustments SET ownership_state = ?
+        WHERE id = ? AND ownership_state IN ('LOCAL_PENDING', 'SYNCING')
       `).run(state, entityId)
       return
     }

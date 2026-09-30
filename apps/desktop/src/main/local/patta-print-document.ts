@@ -85,8 +85,8 @@ export function renderPattaPrintHtml(batch: PattaPrintBatchProjection): string {
   @page { size: A4 portrait; margin: 0; }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; color: #202723; font-family: "Segoe UI", "Noto Sans", sans-serif; }
-  body { background: #e7e9e4; }
-  .revision { color:#b34824; font-weight:800; font-size:8pt; }
+  body { background: #edf3ee; }
+  .revision { color:#8a5c12; font-weight:800; font-size:8pt; }
   .page { width:210mm; height:297mm; margin:8mm auto; padding:7mm 11mm; background:#fff; display:flex; flex-direction:column; gap:4mm; page-break-after:always; break-after:page; }
   .page:last-of-type { page-break-after:auto; break-after:auto; }
   .page-summary { min-height:15mm; display:flex; align-items:center; justify-content:space-between; gap:4mm; border-bottom:1px solid #c7cdc5; }
@@ -94,17 +94,17 @@ export function renderPattaPrintHtml(batch: PattaPrintBatchProjection): string {
   .page-summary small { color:#6e776f; font-size:6pt; font-weight:800; letter-spacing:.12em; }
   .page-summary strong { font-size:11pt; }
   .page-summary-meta { display:flex; flex-wrap:wrap; gap:3mm; justify-content:flex-end; font-size:7pt; }
-  .page-summary-meta b { color:#b64d2b; }
+  .page-summary-meta b { color:#147a4c; }
   .slips { min-height:0; flex:1; display:grid; grid-template-rows:1fr 1fr; gap:5mm; }
-  .slip { position:relative; min-height:0; padding:7mm 8mm 6mm; border:1px solid #b9c0b8; border-left:4px solid #cb5a32; display:flex; flex-direction:column; overflow:hidden; }
+  .slip { position:relative; min-height:0; padding:7mm 8mm 6mm; border:1px solid #c6d3c9; border-left:4px solid #147a4c; display:flex; flex-direction:column; overflow:hidden; }
   .slip-brand { display:flex; justify-content:space-between; align-items:center; color:#667067; font-size:7pt; font-weight:800; letter-spacing:.14em; }
-  .slip-brand b { color:#cb5a32; font-size:12pt; letter-spacing:.08em; }
+  .slip-brand b { color:#147a4c; font-size:12pt; letter-spacing:.08em; }
   .model { margin-top:4mm; font-size:19pt; font-weight:750; letter-spacing:-.04em; }
   .identity { display:grid; grid-template-columns:1fr 1fr; gap:4mm; margin-top:5mm; }
   .identity div, .details div { display:flex; flex-direction:column; gap:1mm; }
   small { color:#6e776f; font-size:7pt; font-weight:800; letter-spacing:.13em; }
   .identity strong { font-size:18pt; font-variant-numeric:tabular-nums; }
-  .quantity { margin-top:5mm; padding:3mm 4mm; background:#f1f2ec; display:flex; align-items:center; justify-content:space-between; }
+  .quantity { margin-top:5mm; padding:3mm 4mm; background:#edf5ef; display:flex; align-items:center; justify-content:space-between; }
   .quantity span { font-size:8pt; font-weight:800; letter-spacing:.08em; }
   .quantity strong { font-size:18pt; }
   .quantity strong small { font-size:8pt; letter-spacing:0; }

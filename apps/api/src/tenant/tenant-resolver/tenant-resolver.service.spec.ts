@@ -13,6 +13,7 @@ function createReader(company: MasterTenantMetadata | null): MasterTenantReader 
 
 const activeCompany: MasterTenantMetadata = {
   id: companyId,
+  name: 'Atlas Textile',
   slug: 'atlas-textile',
   status: 'ACTIVE',
   databaseName: 'tenant_de305d5475b4431badb2eb6b9e546014',
@@ -27,6 +28,7 @@ describe('TenantResolverService', () => {
     await expect(resolver.resolveForLogin({ hostname: 'atlas-textile.erp.example.test:443' }))
       .resolves.toEqual({
         companyId,
+        name: 'Atlas Textile',
         slug: 'atlas-textile',
         databaseName: activeCompany.databaseName,
         timezone: activeCompany.timezone,
@@ -43,6 +45,7 @@ describe('TenantResolverService', () => {
       }),
     ).resolves.toEqual({
       companyId,
+      name: 'Atlas Textile',
       slug: 'atlas-textile',
       databaseName: activeCompany.databaseName,
       timezone: activeCompany.timezone,

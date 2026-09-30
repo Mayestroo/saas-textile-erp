@@ -9,8 +9,7 @@ import type {
   SyncBootstrapPage,
   SyncBootstrapSession,
   SyncProtocolVersion,
-  SyncProjection,
-  SyncProjectionV2,
+  SyncProjectionV3,
 } from '@textile/sync-protocol';
 import type { DataSource, QueryRunner } from 'typeorm';
 import { SYNC_CONFIGURATION } from './sync.config.js';
@@ -19,6 +18,8 @@ import { SYNC_CHANGE_LOCK_KEY } from './sync-change-recorder.js';
 import {
   MATERIALIZE_BOOTSTRAP_ITEMS_SQL,
   MATERIALIZE_PATTA_V2_BOOTSTRAP_ITEMS_SQL,
+  UPGRADE_PATTA_SHEET_BOOTSTRAP_ITEMS_TO_V3_SQL,
+  MATERIALIZE_MODEL_ACCOUNT_ADJUSTMENT_BOOTSTRAP_ITEMS_SQL,
 } from './sync-bootstrap-projections.js';
 
 const DEVICE_BOOTSTRAP_LOCK_CLASS = 1_398_365_763;
@@ -41,6 +42,7 @@ const SYNC_ENTITY_TYPES: ReadonlySet<string> = new Set([
   'patta_sheets',
   'patta_sheet_operation_snapshots',
   'patta_sheet_rows',
+  'model_account_adjustments',
 ]);
 
 interface BootstrapSessionRow {
@@ -115,12 +117,15 @@ function validateCursor(value: string): bigint {
 function validateProjection(
   row: BootstrapItemRow,
   protocolVersion: SyncProtocolVersion,
-): SyncProjection | SyncProjectionV2 {
+): SyncProjectionV3 {
+  if ((row.projection_version === 2 && protocolVersion === 1) ||
+    (row.projection_version === 3 && protocolVersion !== 3)) {
+    throw pattaProtocolUpgradeRequired();
+  }
   if (
     !SYNC_ENTITY_TYPES.has(row.entity_type) ||
     !Number.isSafeInteger(row.projection_version) ||
-    (row.projection_version !== 1 && row.projection_version !== 2) ||
-    (row.projection_version === 2 && protocolVersion !== 2) ||
+    (row.projection_version !== 1 && row.projection_version !== 2 && row.projection_version !== 3) ||
     typeof row.payload_json !== 'object' ||
     row.payload_json === null ||
     Array.isArray(row.payload_json)
@@ -138,7 +143,7 @@ function validateProjection(
   if (!CURSOR_PATTERN.test(row.order_key)) {
     throw new Error('Materialized bootstrap order key is not a decimal string');
   }
-  return projection as unknown as SyncProjection | SyncProjectionV2;
+  return projection as unknown as SyncProjectionV3;
 }
 
 @Injectable()
@@ -212,8 +217,18 @@ export class SyncBootstrapService {
       if (!session) throw new Error('Bootstrap session insert did not return a session');
 
       await queryRunner.query(MATERIALIZE_BOOTSTRAP_ITEMS_SQL, [sessionId, protocolVersion]);
-      if (protocolVersion === 2) {
+      if (protocolVersion === 2 || protocolVersion === 3) {
         await queryRunner.query(MATERIALIZE_PATTA_V2_BOOTSTRAP_ITEMS_SQL, [sessionId]);
+        if (protocolVersion === 3) {
+          await queryRunner.query(UPGRADE_PATTA_SHEET_BOOTSTRAP_ITEMS_TO_V3_SQL, [sessionId]);
+          await queryRunner.query(MATERIALIZE_MODEL_ACCOUNT_ADJUSTMENT_BOOTSTRAP_ITEMS_SQL, [sessionId]);
+        } else {
+          const standaloneEntries: Array<{ present: boolean }> = await queryRunner.query(
+            `SELECT EXISTS (SELECT 1 FROM "patta_sheets" WHERE "entry_kind" = 'STANDALONE')
+              OR EXISTS (SELECT 1 FROM "model_account_adjustments") AS "present"`,
+          );
+          if (standaloneEntries[0]?.present === true) throw pattaProtocolUpgradeRequired();
+        }
       } else {
         const pattaData: Array<{ present: boolean }> = await queryRunner.query(
           `SELECT EXISTS (SELECT 1 FROM "patta_templates")
@@ -225,7 +240,8 @@ export class SyncBootstrapService {
             OR EXISTS (SELECT 1 FROM "patta_print_events")
             OR EXISTS (SELECT 1 FROM "patta_sheets")
             OR EXISTS (SELECT 1 FROM "patta_sheet_operation_snapshots")
-            OR EXISTS (SELECT 1 FROM "patta_sheet_rows") AS "present"`,
+            OR EXISTS (SELECT 1 FROM "patta_sheet_rows")
+            OR EXISTS (SELECT 1 FROM "model_account_adjustments") AS "present"`,
         );
         if (pattaData[0]?.present === true) throw pattaProtocolUpgradeRequired();
       }

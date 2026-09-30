@@ -16,7 +16,7 @@ const LOGIN_RESULT: TenantLoginResult = {
     email: 'operator@example.test',
     fullName: 'Operator One'
   },
-  company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', slug: 'factory', timezone: 'Asia/Tashkent' }
+  company: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'Factory Textile', slug: 'factory', timezone: 'Asia/Tashkent' }
 }
 
 class AuthTestStore implements SecureSessionStore {
@@ -49,6 +49,10 @@ class AuthTestApi implements TenantAuthApi {
     this.refreshStarted?.()
     if (this.refreshGate) await this.refreshGate
     return { accessToken: 'fresh-token', refreshToken: 'refresh-token-2', expiresIn: 900 }
+  }
+
+  async permissions(): Promise<readonly string[]> {
+    return ['models.view', 'patta.hisob.view']
   }
 }
 

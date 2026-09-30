@@ -27,6 +27,7 @@ const REQUIRED_ENVIRONMENT = [
   'SYNC_TEST_BADGE_PC1',
   'SYNC_TEST_BADGE_PC2',
   'SYNC_TEST_USER_ID',
+  'SYNC_TEST_USER_NAME',
   'SYNC_TEST_TENANT_TIMEZONE',
   'SYNC_TEST_LOCAL_DATA_DIR'
 ] as const
@@ -248,7 +249,9 @@ acceptanceDescribe('two-client offline sync acceptance', () => {
 
     const editEntryPc1 = runtimePc1.repositories.sheets.findByPatta(patta.id)
     if (!editEntryPc1) throw new Error('PC-1 Entry disappeared after worker correction')
-    runtimePc1.pattaSheetService.trash(editEntryPc1.id, editEntryPc1.version, requiredSetting('SYNC_TEST_USER_ID'))
+    runtimePc1.pattaSheetService.trash(
+      editEntryPc1.id, editEntryPc1.version, requiredSetting('SYNC_TEST_USER_ID'), requiredSetting('SYNC_TEST_USER_NAME')
+    )
     await expect(runtimePc1.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED', pushed: 1 })
     await expect(runtimePc2.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED' })
     expect(runtimePc2.repositories.modelAccount.getModelAccountSheet(requiredSetting('SYNC_TEST_MODEL_ID')).rows)
@@ -266,7 +269,9 @@ acceptanceDescribe('two-client offline sync acceptance', () => {
 
     const restoredEntryPc1 = runtimePc1.repositories.sheets.findByPatta(patta.id)
     if (!restoredEntryPc1) throw new Error('Restored Entry is unavailable for purge')
-    runtimePc1.pattaSheetService.trash(restoredEntryPc1.id, restoredEntryPc1.version, requiredSetting('SYNC_TEST_USER_ID'))
+    runtimePc1.pattaSheetService.trash(
+      restoredEntryPc1.id, restoredEntryPc1.version, requiredSetting('SYNC_TEST_USER_ID'), requiredSetting('SYNC_TEST_USER_NAME')
+    )
     await expect(runtimePc1.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED', pushed: 1 })
     await expect(runtimePc2.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED' })
     const finalTrashedEntryPc1 = runtimePc1.repositories.sheets.findByPatta(patta.id)
@@ -278,6 +283,58 @@ acceptanceDescribe('two-client offline sync acceptance', () => {
     expect(runtimePc2.repositories.pattas.getById(patta.id)).not.toBeNull()
     expect(runtimePc2.repositories.modelAccount.getModelAccountSheet(requiredSetting('SYNC_TEST_MODEL_ID')).rows)
       .toEqual([])
+
+    const modelId = requiredSetting('SYNC_TEST_MODEL_ID')
+    const actorUserId = requiredSetting('SYNC_TEST_USER_ID')
+    const standaloneEntryPc1 = runtimePc1.pattaSheetService.create({
+      entry_kind: 'STANDALONE',
+      entered_at: clockPc1.nowIsoUtc(),
+      model_id: modelId,
+      ish_soni: 42,
+      partiya_number_snapshot: null,
+      patta_number_snapshot: null,
+      rang_snapshot: 'Qora',
+      razmer_snapshot: 'M',
+      conveyor_snapshot: '3-konveyer',
+      assignments: [{
+        model_operation_id: pattaOperation.operation_id,
+        badge_number: requiredSetting('SYNC_TEST_BADGE_PC1'),
+        nuqson: false
+      }]
+    }, actorUserId)
+    await expect(runtimePc1.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED', pushed: 1 })
+    await expect(runtimePc2.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED' })
+    expect(runtimePc2.repositories.sheets.listForModel(modelId))
+      .toEqual([expect.objectContaining({ id: standaloneEntryPc1.id, entry_kind: 'STANDALONE' })])
+    expect(runtimePc2.repositories.modelAccount.getModelAccountSheetV3(modelId, clockPc1.nowIsoUtc()).rows)
+      .toMatchObject([{
+        worker_id: requiredSetting('SYNC_TEST_WORKER_PC1'),
+        model_operation_id: pattaOperation.operation_id,
+        patta_quantity: '0',
+        standalone_quantity: '42',
+        manual_quantity: '0',
+        total_quantity: '42'
+      }])
+
+    const manualAdjustmentPc1 = runtimePc1.modelAccountAdjustmentService.create({
+      model_id: modelId,
+      model_operation_id: pattaOperation.operation_id,
+      worker_id: requiredSetting('SYNC_TEST_WORKER_PC1'),
+      quantity: 7
+    }, actorUserId)
+    await expect(runtimePc1.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED', pushed: 1 })
+    await expect(runtimePc2.syncEngine.runOnce()).resolves.toMatchObject({ status: 'COMPLETED' })
+    expect(runtimePc2.repositories.modelAccount.getModelAccountSheetV3(modelId, clockPc1.nowIsoUtc()).rows)
+      .toMatchObject([{
+        worker_id: requiredSetting('SYNC_TEST_WORKER_PC1'),
+        model_operation_id: pattaOperation.operation_id,
+        patta_quantity: '0',
+        standalone_quantity: '42',
+        manual_quantity: '7',
+        total_quantity: '49'
+      }])
+    expect(runtimePc2.repositories.modelAccountAdjustments.getById(manualAdjustmentPc1.id))
+      .toMatchObject({ id: manualAdjustmentPc1.id, ownership_state: 'SERVER_SYNCED' })
 
     runtimePc1.syncEngine.dispose()
     runtimePc2.syncEngine.dispose()

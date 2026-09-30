@@ -437,7 +437,7 @@ export class SyncEventProcessor {
       await runner.manager.query(`SAVEPOINT "${APPLY_SAVEPOINT}"`);
       try {
         const event = parseSyncEvent(rawEvent, eventId);
-        if (context.protocolVersion === 2 && event.entity_type === 'patta') {
+        if ((context.protocolVersion === 2 || context.protocolVersion === 3) && event.entity_type === 'patta') {
           throw new ConflictException({
             code: 'PATTA_PRINT_BATCH_REQUIRED',
             message: 'Yangi Pattalar v2 bosma to‘plami orqali sinxronlanishi kerak',

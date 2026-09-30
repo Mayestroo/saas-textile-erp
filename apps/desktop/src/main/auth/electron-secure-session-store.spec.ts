@@ -13,16 +13,18 @@ import {
 import type { SecureSessionPayload } from './secure-session-store'
 
 const SESSION: SecureSessionPayload = {
-  version: 2,
+  version: 3,
   refreshToken: 'refresh-secret-1',
   tenantOrigin: 'https://atlas.example.test',
   tenantHost: 'atlas.example.test',
   companyId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+  companyName: 'Atlas Textile',
   companySlug: 'atlas',
   userId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
   email: 'operator@example.test',
   fullName: 'Operator One',
-  timezone: 'Asia/Tashkent'
+  timezone: 'Asia/Tashkent',
+  permissionCodes: ['models.manage', 'patta.hisob.view']
 }
 
 const temporaryDirectories: string[] = []
@@ -143,7 +145,7 @@ describe('Electron secure session store', () => {
     await expect(store.load()).rejects.toMatchObject({ code: 'SECURE_SESSION_CORRUPT' })
   })
 
-  it('upgrades a valid legacy encrypted session without inventing a tenant timezone', async () => {
+  it('upgrades a valid v1 encrypted session without inventing timezone or permissions', async () => {
     const cipher = new TestSafeStorage()
     const fileSystem = new MemorySessionFileSystem()
     const store = new ElectronSecureSessionStore(cipher, fileSystem, 'session.bin', () => 'tmp-1')
@@ -161,7 +163,40 @@ describe('Electron secure session store', () => {
     const encrypted = cipher.encryptString(JSON.stringify(legacy)).toString('base64')
     fileSystem.files.set('session.bin', Buffer.from(JSON.stringify({ version: 1, encrypted_payload: encrypted })))
 
-    await expect(store.load()).resolves.toMatchObject({ version: 2, timezone: null, companyId: SESSION.companyId })
+    await expect(store.load()).resolves.toMatchObject({
+      version: 3,
+      timezone: null,
+      companyName: SESSION.companySlug,
+      permissionCodes: [],
+      companyId: SESSION.companyId
+    })
+  })
+
+  it('upgrades a valid v2 encrypted session with a safe company-name fallback and no cached permissions', async () => {
+    const cipher = new TestSafeStorage()
+    const fileSystem = new MemorySessionFileSystem()
+    const store = new ElectronSecureSessionStore(cipher, fileSystem, 'session.bin', () => 'tmp-1')
+    const legacy = {
+      version: 2,
+      refreshToken: SESSION.refreshToken,
+      tenantOrigin: SESSION.tenantOrigin,
+      tenantHost: SESSION.tenantHost,
+      companyId: SESSION.companyId,
+      companySlug: SESSION.companySlug,
+      userId: SESSION.userId,
+      email: SESSION.email,
+      fullName: SESSION.fullName,
+      timezone: SESSION.timezone
+    }
+    const encrypted = cipher.encryptString(JSON.stringify(legacy)).toString('base64')
+    fileSystem.files.set('session.bin', Buffer.from(JSON.stringify({ version: 1, encrypted_payload: encrypted })))
+
+    await expect(store.load()).resolves.toMatchObject({
+      version: 3,
+      companyName: SESSION.companySlug,
+      permissionCodes: [],
+      timezone: SESSION.timezone
+    })
   })
 
   it('keeps the prior encrypted session if atomic replacement fails', async () => {

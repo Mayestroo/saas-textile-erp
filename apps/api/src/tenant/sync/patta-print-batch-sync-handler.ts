@@ -17,7 +17,7 @@ export class PattaPrintBatchSyncHandler implements SyncEntityHandler {
     context: SyncApplyContext,
     event: SyncEvent,
   ): Promise<SyncHandlerResult> {
-    if (context.protocolVersion !== 2) {
+    if (context.protocolVersion !== 2 && context.protocolVersion !== 3) {
       throw new ConflictException({
         code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED',
         message: 'Patta bosma to‘plamini sinxronlash uchun dastur versiyasini yangilang',

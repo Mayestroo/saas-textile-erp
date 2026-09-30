@@ -21,6 +21,7 @@ export interface TenantLoginResolutionInput {
 
 export interface ResolvedTenantContext {
   companyId: string;
+  name: string;
   slug: string;
   databaseName: string;
   timezone: string;
@@ -103,6 +104,7 @@ export class TenantResolverService {
 
     return {
       companyId: company.id,
+      name: company.name,
       slug: company.slug,
       databaseName: company.databaseName,
       timezone: company.timezone,
@@ -144,6 +146,7 @@ export class TenantResolverService {
 
     return {
       companyId: company.id,
+      name: company.name,
       slug: company.slug,
       databaseName: company.databaseName,
       timezone: company.timezone,

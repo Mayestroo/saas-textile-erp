@@ -105,12 +105,12 @@ describe('REST sync transport', () => {
       ['POST', 'https://factory.example/api/v1/sync/push'],
       [
         'GET',
-        'https://factory.example/api/v1/sync/pull?device_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa&cursor=16&protocol_version=2&limit=20'
+        'https://factory.example/api/v1/sync/pull?device_id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa&cursor=16&protocol_version=3&limit=20'
       ],
       ['POST', 'https://factory.example/api/v1/sync/bootstrap'],
       [
         'GET',
-        `https://factory.example/api/v1/sync/bootstrap/${sessionId}?device_id=${deviceId}&limit=250&protocol_version=2`
+        `https://factory.example/api/v1/sync/bootstrap/${sessionId}?device_id=${deviceId}&limit=250&protocol_version=3`
       ],
       ['POST', `https://factory.example/api/v1/sync/bootstrap/${sessionId}/complete`],
       ['POST', 'https://factory.example/api/v1/patta-number-blocks/allocate'],
@@ -125,7 +125,7 @@ describe('REST sync transport', () => {
       ]
     ])
     expect(client.requests.every((request) => !('authorization' in request))).toBe(true)
-    expect(client.requests[0]?.body).toEqual({ device_id: deviceId, protocol_version: 2, events: [] })
+    expect(client.requests[0]?.body).toEqual({ device_id: deviceId, protocol_version: 3, events: [] })
   })
 
   it('rejects malformed authenticated server responses before they reach SQLite', async () => {
@@ -144,6 +144,30 @@ describe('REST sync transport', () => {
     await expect(transport.pull({ cursor: '0' })).rejects.toBeInstanceOf(
       SyncProtocolValidationError
     )
+  })
+
+  it('routes an online operation price update through the authenticated HTTP client', async () => {
+    const client = new RecordingHttpClient()
+    client.responses.push({
+      id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      operation_id: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      price: '30.00',
+      valid_from: '2026-09-28T10:00:00.000000Z',
+      valid_to: null,
+      created_by: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      created_at: '2026-09-28T10:00:00.000000Z',
+      operation_version: '2'
+    })
+    const transport = new RestSyncTransport(client, { deviceId: () => deviceId }, 'https://factory.example')
+
+    await expect(transport.changeOperationPrice?.(
+      'dddddddd-dddd-4ddd-8ddd-dddddddddddd', '1', '30.00'
+    )).resolves.toMatchObject({ price: '30.00', operation_version: '2' })
+    expect(client.requests[0]).toEqual({
+      method: 'POST',
+      url: 'https://factory.example/api/v1/operations/dddddddd-dddd-4ddd-8ddd-dddddddddddd/price',
+      body: { expected_version: '1', price: '30.00' }
+    })
   })
 
   it('accepts a strict v2 Patta projection with unknown actual quantity and a separate legacy count', () => {

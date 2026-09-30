@@ -4,6 +4,8 @@ import { BootstrapStagingRepository } from '../local/bootstrap-staging.repositor
 import { LocalUnitOfWork } from '../local/local-unit-of-work'
 import { ModelLocalRepository } from '../local/model-local.repository'
 import { ModelAccountRepository } from '../local/model-account.repository'
+import { ModelAccountAdjustmentRepository } from '../local/model-account-adjustment.repository'
+import { ModelAccountAdjustmentService } from '../local/model-account-adjustment.service'
 import { OfflinePattaService } from '../local/offline-patta.service'
 import { PattaPrintService } from '../local/patta-print.service'
 import { PattaPrintBatchRepository } from '../local/patta-print-batch.repository'
@@ -19,7 +21,7 @@ import { SyncQueueRepository } from '../local/sync-queue.repository'
 import { SyncStateRepository } from '../local/sync-state.repository'
 import { WorkerLocalRepository } from '../local/worker-local.repository'
 import type { AuthenticatedSyncTransport } from './authenticated-sync-transport'
-import type { PattaV2LookupMirror } from '@textile/sync-protocol'
+import type { OperationPriceChangeProjection, PattaV2LookupMirror } from '@textile/sync-protocol'
 import { NetworkStatusService } from './network-status.service'
 import { SyncEngine } from './sync-engine'
 import type { SyncEngineLimits } from './sync-engine'
@@ -31,6 +33,8 @@ export interface DesktopSyncRuntime {
   offlinePattaService: OfflinePattaService
   pattaPrintService: PattaPrintService
   pattaSheetService: PattaSheetService
+  modelAccountAdjustmentService: ModelAccountAdjustmentService
+  changeOperationPrice(operationId: string, expectedVersion: string, price: string): Promise<OperationPriceChangeProjection>
   lookupPattaV2(partiyaNumber: string, pattaNumber: string): Promise<PattaV2LookupMirror>
   networkStatus: NetworkStatusService
   repositories: {
@@ -39,6 +43,7 @@ export interface DesktopSyncRuntime {
     badges: BadgeLocalRepository
     models: ModelLocalRepository
     modelAccount: ModelAccountRepository
+    modelAccountAdjustments: ModelAccountAdjustmentRepository
     pattas: PattaLocalRepository
     numberBlocks: PattaNumberBlockRepository
     partiyaNumberBlocks: PattaPartiyaNumberBlockRepository
@@ -70,6 +75,7 @@ export function createDesktopSyncRuntime(
   const badges = new BadgeLocalRepository(database)
   const models = new ModelLocalRepository(database)
   const modelAccount = new ModelAccountRepository(database)
+  const modelAccountAdjustments = new ModelAccountAdjustmentRepository(database)
   const pattas = new PattaLocalRepository(database)
   const numberBlocks = new PattaNumberBlockRepository(database, transport.deviceId())
   const partiyaNumberBlocks = new PattaPartiyaNumberBlockRepository(database, transport.deviceId())
@@ -121,6 +127,7 @@ export function createDesktopSyncRuntime(
   const pattaSheetService = new PattaSheetService({
     unitOfWork,
     pattaRepository: pattas,
+    modelRepository: models,
     sheetRepository: sheets,
     customOperationRepository: customOperations,
     badgeRepository: badges,
@@ -128,6 +135,16 @@ export function createDesktopSyncRuntime(
     syncStateRepository: state,
     deviceId: transport.deviceId(),
     clock,
+  })
+  const modelAccountAdjustmentService = new ModelAccountAdjustmentService({
+    unitOfWork,
+    modelRepository: models,
+    workerRepository: workers,
+    adjustmentRepository: modelAccountAdjustments,
+    queueRepository: queue,
+    syncStateRepository: state,
+    deviceId: transport.deviceId(),
+    clock
   })
 
   const lookupPattaV2 = async (partiyaNumber: string, pattaNumber: string): Promise<PattaV2LookupMirror> => {
@@ -144,6 +161,15 @@ export function createDesktopSyncRuntime(
     offlinePattaService,
     pattaPrintService,
     pattaSheetService,
+    modelAccountAdjustmentService,
+    changeOperationPrice: async (operationId, expectedVersion, price) => {
+      if (!transport.changeOperationPrice) {
+        throw new Error('Operatsiya narxini o‘zgartirish uchun internet kerak')
+      }
+      const changed = await transport.changeOperationPrice(operationId, expectedVersion, price)
+      unitOfWork.transaction(() => models.applyOnlinePriceChange(changed))
+      return changed
+    },
     lookupPattaV2,
     networkStatus,
     repositories: {
@@ -152,6 +178,7 @@ export function createDesktopSyncRuntime(
       badges,
       models,
       modelAccount,
+      modelAccountAdjustments,
       pattas,
       numberBlocks,
       partiyaNumberBlocks,

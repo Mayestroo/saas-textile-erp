@@ -12,7 +12,8 @@ export type AuditEntityType =
   | 'patta_print_batch'
   | 'patta_print_event'
   | 'patta'
-  | 'patta_sheet';
+  | 'patta_sheet'
+  | 'model_account_adjustment';
 export type AuditAction =
   | 'model.create'
   | 'model.update'
@@ -48,7 +49,11 @@ export type AuditAction =
   | 'patta_sheet.purge'
   | 'patta_sheet.row_delete'
   | 'patta_sheet.row_restore'
-  | 'patta_sheet.custom_operation.create';
+  | 'patta_sheet.custom_operation.create'
+  | 'model_account_adjustment.create'
+  | 'model_account_adjustment.update'
+  | 'model_account_adjustment.trash'
+  | 'model_account_adjustment.restore';
 
 export interface AuditEventInput {
   actorUserId: string;

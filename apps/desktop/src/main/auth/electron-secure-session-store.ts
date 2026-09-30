@@ -6,6 +6,7 @@ import { SecureSessionStoreError } from './secure-session-store'
 import { isValidTenantTimezone } from './tenant-timezone'
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const PERMISSION_CODE_PATTERN = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/
 const SESSION_KEYS_V1 = [
   'companyId',
   'companySlug',
@@ -22,6 +23,20 @@ const SESSION_KEYS_V2 = [
   'companySlug',
   'email',
   'fullName',
+  'refreshToken',
+  'tenantHost',
+  'tenantOrigin',
+  'timezone',
+  'userId',
+  'version'
+] as const
+const SESSION_KEYS_V3 = [
+  'companyId',
+  'companyName',
+  'companySlug',
+  'email',
+  'fullName',
+  'permissionCodes',
   'refreshToken',
   'tenantHost',
   'tenantOrigin',
@@ -82,15 +97,25 @@ function parseSessionPayload(value: unknown): SecureSessionPayload {
   const keys = Object.keys(value).sort()
   const oldPayload = value.version === 1 && keys.length === SESSION_KEYS_V1.length &&
     keys.every((key, index) => key === SESSION_KEYS_V1[index])
-  const currentPayload = value.version === 2 && keys.length === SESSION_KEYS_V2.length &&
+  const previousPayload = value.version === 2 && keys.length === SESSION_KEYS_V2.length &&
     keys.every((key, index) => key === SESSION_KEYS_V2[index])
-  if (!oldPayload && !currentPayload) throw new Error('Session payload fields do not match the supported version')
+  const currentPayload = value.version === 3 && keys.length === SESSION_KEYS_V3.length &&
+    keys.every((key, index) => key === SESSION_KEYS_V3[index])
+  if (!oldPayload && !previousPayload && !currentPayload) {
+    throw new Error('Session payload fields do not match the supported version')
+  }
   if (!isNonEmptyString(value.refreshToken, 8_192)) throw new Error('Refresh token is invalid')
   if (!isNonEmptyString(value.tenantOrigin, 2_048)) throw new Error('Tenant origin is invalid')
   if (!isNonEmptyString(value.tenantHost, 255)) throw new Error('Tenant host is invalid')
   if (!isNonEmptyString(value.companySlug, 63)) throw new Error('Company slug is invalid')
+  if (currentPayload && !isNonEmptyString(value.companyName, 255)) throw new Error('Company name is invalid')
   if (!isNonEmptyString(value.email, 320)) throw new Error('Email is invalid')
   if (!isNonEmptyString(value.fullName, 512)) throw new Error('Display name is invalid')
+  const permissionCodes = currentPayload ? value.permissionCodes : []
+  if (!Array.isArray(permissionCodes) || permissionCodes.length > 256 ||
+    permissionCodes.some((code) => typeof code !== 'string' || !PERMISSION_CODE_PATTERN.test(code))) {
+    throw new Error('Permission projection is invalid')
+  }
   if (typeof value.companyId !== 'string' || !UUID_PATTERN.test(value.companyId)) {
     throw new Error('Company identity is invalid')
   }
@@ -119,16 +144,18 @@ function parseSessionPayload(value: unknown): SecureSessionPayload {
   }
 
   return {
-    version: 2,
+    version: 3,
     refreshToken: value.refreshToken,
     tenantOrigin: origin.origin,
     tenantHost: value.tenantHost.toLowerCase(),
     companyId: value.companyId.toLowerCase(),
+    companyName: currentPayload ? value.companyName as string : value.companySlug,
     companySlug: value.companySlug,
     userId: value.userId.toLowerCase(),
     email: value.email,
     fullName: value.fullName,
-    timezone
+    timezone,
+    permissionCodes: [...new Set(permissionCodes as string[])].sort((left, right) => left.localeCompare(right))
   }
 }
 

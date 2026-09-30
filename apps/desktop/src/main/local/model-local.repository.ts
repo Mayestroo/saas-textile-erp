@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3'
-import type { SyncPattaCreatePayload } from '@textile/sync-protocol'
+import type { OperationPriceChangeProjection, SyncPattaCreatePayload } from '@textile/sync-protocol'
 import { LocalDomainError } from './local-errors'
 import { canonicalUtcTimestamp } from './utc-timestamp'
 
@@ -120,9 +120,41 @@ export class ModelLocalRepository {
         )
         AND (model.status = 'ACTIVE' OR EXISTS (
           SELECT 1 FROM patta_hisob patta WHERE patta.model_id = model.id
+        ) OR EXISTS (
+          SELECT 1 FROM patta_sheets sheet WHERE sheet.model_id = model.id
+        ) OR EXISTS (
+          SELECT 1 FROM model_account_adjustments adjustment WHERE adjustment.model_id = model.id
         ))
       ORDER BY model.name COLLATE NOCASE, model.id
     `).all() as LocalModelOption[]
+  }
+
+  applyOnlinePriceChange(change: OperationPriceChangeProjection): void {
+    if (!this.database.inTransaction) throw new Error('Online price mirror update requires a SQLite transaction')
+    const operation = this.database.prepare(`
+      SELECT id, model_id, version FROM model_operations WHERE id = ?
+    `).get(change.operation_id) as { id: string; model_id: string; version: string } | undefined
+    if (!operation) throw notFound('OPERATION_NOT_FOUND', 'Operatsiya topilmadi', change.operation_id)
+    const closeCurrent = this.database.prepare(`
+      UPDATE model_operation_prices SET valid_to = ?
+      WHERE operation_id = ? AND valid_to IS NULL AND valid_from < ?
+    `).run(change.valid_from, change.operation_id, change.valid_from)
+    if (closeCurrent.changes === 0) {
+      const existing = this.database.prepare(`
+        SELECT id FROM model_operation_prices WHERE operation_id = ? AND id = ?
+      `).get(change.operation_id, change.id)
+      if (!existing) throw new LocalDomainError('OPERATION_PRICE_HISTORY_STALE', 'Mahalliy narx tarixi serverdagi o‘zgarishga mos emas')
+    }
+    this.database.prepare(`
+      INSERT INTO model_operation_prices (
+        id, operation_id, price, valid_from, valid_to, created_at, server_sequence
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL)
+      ON CONFLICT(id) DO UPDATE SET price = excluded.price, valid_from = excluded.valid_from,
+        valid_to = excluded.valid_to, created_at = excluded.created_at
+    `).run(change.id, change.operation_id, change.price, change.valid_from, change.valid_to,
+      change.created_at)
+    this.database.prepare('UPDATE model_operations SET version = ? WHERE id = ?')
+      .run(change.operation_version, change.operation_id)
   }
 
   snapshotAt(input: LocalPattaReferenceInput): LocalPattaReferenceSnapshot {

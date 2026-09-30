@@ -55,6 +55,7 @@ import { PlatformSessionRepository } from '../../master/platform-auth/platform-s
 import { PlatformRbacService } from '../../master/platform-rbac/platform-rbac.service.js';
 import { seedPlatformPermissions } from '../../master/platform-rbac/platform-permission.seed.js';
 import { TenantAuthController } from '../../tenant/auth/tenant-auth.controller.js';
+import { TenantPermissionsProjectionService } from '../../tenant/auth/tenant-permissions-projection.service.js';
 import { TenantAuthGuard } from '../../tenant/auth/tenant-auth.guard.js';
 import { TenantAuthService } from '../../tenant/auth/tenant-auth.service.js';
 import { TenantPermissionGuard } from '../../tenant/auth/tenant-permission.guard.js';
@@ -366,7 +367,7 @@ integrationDescribe(
         provisioningStatus: 'ACTIVE',
         failureStep: null,
         failureReason: null,
-        schemaVersion: 'AddPattaSheets20260928001100',
+        schemaVersion: 'AddModelAccountAdjustments20260929001300',
       });
       expect(JSON.stringify(result)).not.toContain(admin.password);
       await expect(
@@ -398,6 +399,7 @@ integrationDescribe(
           'bootstrap_items',
           'bootstrap_sessions',
           'login_rate_limits',
+          'model_account_adjustments',
           'model_operation_prices',
           'model_operations',
           'models',
@@ -436,6 +438,8 @@ integrationDescribe(
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
+        await migrationDataSource.undoLastMigration({ transaction: 'all' });
+        await migrationDataSource.undoLastMigration({ transaction: 'all' });
         const tablesAfterRevert: Array<{ table_name: string }> =
           await migrationDataSource.query(
             `SELECT "table_name" FROM "information_schema"."tables"
@@ -464,6 +468,8 @@ integrationDescribe(
           'AddSyncProtocolV2Sessions20260928000900',
           'AddPattaPrintBatchCorrections20260928001000',
           'AddPattaSheets20260928001100',
+          'AddStandalonePattaEntries20260929001200',
+          'AddModelAccountAdjustments20260929001300',
         ]);
         await new PattaSequenceInitializer().initialize(
           migrationDataSource,
@@ -742,6 +748,8 @@ integrationDescribe(
           'AddSyncProtocolV2Sessions20260928000900',
           'AddPattaPrintBatchCorrections20260928001000',
           'AddPattaSheets20260928001100',
+          'AddStandalonePattaEntries20260929001200',
+          'AddModelAccountAdjustments20260929001300',
         ]);
         const userCount: Array<{ count: string }> =
           await migrationDataSource.query(
@@ -791,6 +799,8 @@ integrationDescribe(
           'AddSyncProtocolV2Sessions20260928000900',
           'AddPattaPrintBatchCorrections20260928001000',
           'AddPattaSheets20260928001100',
+          'AddStandalonePattaEntries20260929001200',
+          'AddModelAccountAdjustments20260929001300',
         ]);
       } finally {
         await migrationDataSource.destroy();
@@ -998,6 +1008,7 @@ integrationDescribe(
           },
           { provide: PlatformAuthService, useValue: platformAuthService },
           { provide: TenantAuthService, useValue: tenantAuthService },
+          TenantPermissionsProjectionService,
           { provide: CompaniesService, useValue: companiesService },
           { provide: PlatformRbacService, useValue: platformRbacService },
           { provide: TenantRbacService, useValue: tenantRbacService },
@@ -1062,20 +1073,30 @@ integrationDescribe(
           access_token: string;
           refresh_token: string;
           user: { id: string };
-          company: { id: string; slug: string; timezone: string };
+          company: { id: string; name: string; slug: string; timezone: string };
         };
-        const timezoneRows: Array<{ timezone: string }> = await masterDataSource.query(
-          `SELECT "timezone" FROM "companies" WHERE "id" = $1`,
+        const companyRows: Array<{ name: string; timezone: string }> = await masterDataSource.query(
+          `SELECT "name", "timezone" FROM "companies" WHERE "id" = $1`,
           [companyA.companyId],
         );
         expect(tenantTokens.company).toEqual({
           id: companyA.companyId,
+          name: companyRows[0]?.name,
           slug: companyASlug,
-          timezone: timezoneRows[0]?.timezone,
+          timezone: companyRows[0]?.timezone,
         });
         expect(JSON.stringify(tenantLogin.body)).not.toContain(
           tenantAdminPassword,
         );
+
+        const permissionProjection = await request(app.getHttpServer())
+          .get('/api/v1/auth/permissions')
+          .set('Host', `${companyASlug}.erp.example.test`)
+          .set('Authorization', `Bearer ${tenantTokens.access_token}`)
+          .expect(200);
+        expect(permissionProjection.body.permission_codes).toContain('models.view');
+        expect(permissionProjection.body.permission_codes).toContain('patta.hisob.view');
+        expect(permissionProjection.body).not.toHaveProperty('roles');
 
         const tenantDataSource = await tenantConnectionManager.getDataSource(
           companyA.companyId,

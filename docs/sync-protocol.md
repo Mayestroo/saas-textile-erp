@@ -25,6 +25,38 @@ queues offline mutations with stable event IDs, and calculates Model hisob from
 active Entry rows. A v2 batch change-log entry is never interpreted as a v1
 `patta_hisob` projection.
 
+Protocol v3 is an additive superset for Standalone Patta Entries and manual
+Model hisob adjustments. A sheet is
+explicitly `PATTA_LINKED` or `STANDALONE`; linked sheets preserve their original
+Patta FK and product quantity, while standalone sheets have a null Patta FK,
+their own immutable model/quantity/product metadata snapshots, and model-price
+operation snapshots. The parent, operation-source, and row-quantity PostgreSQL
+triggers are replaced by migration `20260929001200-AddStandalonePattaEntries.js`
+to enforce both shapes. SQLite migration 6 transactionally rebuilds the sheet
+tables while preserving pending queue events, badge evidence, tombstones, and
+linked history. Standalone entry consumes no Patta or Partiya number allocation.
+
+Desktop sends push, pull, and bootstrap as `protocol_version: 3`. New V3
+`patta_sheet` events are still UUID-idempotent aggregate events through the
+existing queue and processor. `MODEL` and `CUSTOM` operation sources have no
+Patta-operation FK; `PATTA` sources remain linked-only. Every row quantity must
+match its parent Entry `ish_soni`; linked Entries additionally match their
+Patta. Historical unit-price snapshots remain immutable. The server resolves
+model, operation, badge, tenant-local business date, and effective historical
+price authoritatively.
+
+V1/V2 contracts remain unchanged. V2 REST and sync remain linked-only. V2 pull
+adapts a V3 linked sheet to the exact V2 projection; standalone V3 changes and
+tombstones produce `SYNC_PROTOCOL_UPGRADE_REQUIRED` before a V2 cursor can
+advance. V2 bootstrap similarly refuses a tenant containing Standalone Entries.
+V3 bootstrap upgrades sheet projections to the explicit V3 aggregate shape.
+Manual adjustments use V3 entity `model_account_adjustments`; CREATE/UPDATE
+events share the existing event processor/idempotency store, and soft-delete or
+restore is a versioned UPDATE rather than a physical DELETE. Their immutable
+effective-price snapshots are checked against the operation price history at
+`entered_at`. V1/V2 pull/bootstrap clients receive
+`SYNC_PROTOCOL_UPGRADE_REQUIRED` when a manual adjustment is present.
+
 ## Shared contracts and representations
 
 Wire DTOs live in `packages/sync-protocol` and are consumed by both `apps/api`
@@ -54,8 +86,9 @@ Representation rules:
   `created_at`/receipt time are distinct. Client timestamps are not security
   time; the API rejects client time more than 300 seconds in the future.
 - Event mutation operations are `CREATE`/`UPDATE`/`DELETE`; pull change
-  operations are `UPSERT`/`DELETE`. Projection version is explicit and currently
-  `1` for existing reference projections; new Patta aggregates use v2.
+  operations are `UPSERT`/`DELETE`. Projection version is explicit: existing
+  references use v1, print/linked aggregates use v2, and standalone-capable
+  Patta Sheet aggregates use v3.
 
 The protocol error codes include `VERSION_CONFLICT`, `PATTA_ALREADY_EXISTS`,
 `PATTA_NUMBER_OUTSIDE_BLOCK`, `PATTA_BLOCK_DEVICE_MISMATCH`,
@@ -83,6 +116,7 @@ tenant selector. Push is constrained to tenant permissions `sync.push` and
 | `POST /api/v1/patta-number-blocks/allocate` | Allocate the next server-owned block to a validated device. |
 | `POST /api/v1/patta-number-blocks/:id/usage` | Monotonically report workstation block usage. |
 | `POST /api/v2/patta-print-batches` | Create an online multi-size batch with product quantity and immutable operation snapshots. |
+| `/api/v3/patta-sheets` | Create/read/update/trash/restore/purge a linked or Standalone Entry using a V3 projection. |
 | `POST /api/v2/patta-partiya-number-blocks/allocate` | Allocate a Partiya range to a validated device. |
 | `POST /api/v2/patta-partiya-number-blocks/:id/usage` | Monotonically report Partiya block usage. |
 | `GET /api/v2/patta/lookup` | Read Patta metadata without creating an entry. |
@@ -103,7 +137,7 @@ savepoint around domain work:
 2. On duplicate, compare device/fingerprint and return the saved terminal result
    without rerunning the handler. Same UUID/different data returns
    `EVENT_ID_REUSE_MISMATCH`.
-3. Apply the supported `patta/CREATE` handler and its change-log records.
+3. Apply the supported entity handler and its versioned change-log records.
 4. Store `SYNCED`, `CONFLICT`, or `FAILED` result and commit.
 
 Business conflicts roll back to the event savepoint but preserve an immutable

@@ -11,6 +11,7 @@ import { PattaLocalRepository } from './patta-local.repository'
 import { PattaSheetRepository } from './patta-sheet.repository'
 import { PattaSheetService } from './patta-sheet.service'
 import { PattaSheetCustomOperationRepository } from './patta-sheet-custom-operation.repository'
+import { ModelLocalRepository } from './model-local.repository'
 import { SyncQueueRepository } from './sync-queue.repository'
 import { SyncStateRepository } from './sync-state.repository'
 
@@ -78,6 +79,7 @@ describe('ModelAccountRepository', () => {
     const service = new PattaSheetService({
       unitOfWork: new LocalUnitOfWork(database),
       pattaRepository: new PattaLocalRepository(database),
+      modelRepository: new ModelLocalRepository(database),
       sheetRepository: sheets,
       customOperationRepository: new PattaSheetCustomOperationRepository(database),
       badgeRepository: new BadgeLocalRepository(database),
@@ -123,5 +125,80 @@ describe('ModelAccountRepository', () => {
       worker_id: firstWorkerId, worker_name: 'Nodira', model_operation_id: operationId, quantity: '125'
     }])
     expect(sheets.getById(firstSheet.id)?.rows[0]?.worker_id).toBe(firstWorkerId)
+  })
+
+  it('includes Standalone sheet rows using the Entry model snapshot without requiring a Patta join', () => {
+    const database = createDatabase()
+    const { service } = (() => {
+      const queue = new SyncQueueRepository(database)
+      const service = new PattaSheetService({
+        unitOfWork: new LocalUnitOfWork(database),
+        pattaRepository: new PattaLocalRepository(database),
+        modelRepository: new ModelLocalRepository(database),
+        sheetRepository: new PattaSheetRepository(database),
+        customOperationRepository: new PattaSheetCustomOperationRepository(database),
+        badgeRepository: new BadgeLocalRepository(database),
+        queueRepository: queue,
+        syncStateRepository: new SyncStateRepository(database),
+        deviceId: 'device-1',
+        clock: { nowIsoUtc: () => timestamp },
+        idFactory: (() => {
+          let next = 30
+          return () => `00000000-0000-4000-8000-${String(next++).padStart(12, '0')}`
+        })()
+      })
+      return { service }
+    })()
+    const standaloneModelId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc'
+    const standaloneOperationId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+    database.prepare(`
+      INSERT INTO models (id, name, status, version, created_at, updated_at)
+      VALUES (?, 'Standalone model', 'ACTIVE', '1', ?, ?)
+    `).run(standaloneModelId, timestamp, timestamp)
+    database.prepare(`
+      INSERT INTO model_operations (id, model_id, name, sort_order, status, version, created_at, updated_at)
+      VALUES (?, ?, 'Tikish', 0, 'ACTIVE', '1', ?, ?)
+    `).run(standaloneOperationId, standaloneModelId, timestamp, timestamp)
+    database.prepare(`
+      INSERT INTO model_operation_prices (id, operation_id, price, valid_from, valid_to, created_at)
+      VALUES ('eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', ?, '21.50', '2026-01-01T00:00:00.000Z', NULL, ?)
+    `).run(standaloneOperationId, timestamp)
+    database.prepare(`
+      INSERT INTO worker_badge_history (id, badge_number, worker_id, valid_from, valid_to, created_at)
+      VALUES ('ffffffff-ffff-4fff-8fff-ffffffffffff', '0017', ?, '2026-01-01T00:00:00.000Z', NULL, ?)
+    `).run(firstWorkerId, timestamp)
+
+    service.create({
+      entry_kind: 'STANDALONE',
+      entered_at: timestamp,
+      model_id: standaloneModelId,
+      ish_soni: 95,
+      partiya_number_snapshot: null,
+      patta_number_snapshot: null,
+      rang_snapshot: null,
+      razmer_snapshot: 'M',
+      conveyor_snapshot: null,
+      assignments: [{ model_operation_id: standaloneOperationId, badge_number: '0017', nuqson: false }]
+    })
+
+    expect(new ModelAccountRepository(database).getModelAccountSheetV3(standaloneModelId, timestamp)).toEqual({
+      model_id: standaloneModelId,
+      model_name: 'Standalone model',
+      operations: [{
+        model_operation_id: standaloneOperationId, operation_name: 'Tikish', sort_order: 0, version: '1',
+        status: 'ACTIVE', current_price: '21.50', quantity: '95', patta_quantity: '0', standalone_quantity: '95',
+        manual_quantity: '0', gross_amount: '2042.50', patta_amount: '0.00',
+        standalone_amount: '2042.50', manual_amount: '0.00'
+      }],
+      rows: [{
+        worker_id: firstWorkerId, worker_name: 'Nodira', model_operation_id: standaloneOperationId,
+        patta_quantity: '0', standalone_quantity: '95', manual_quantity: '0', total_quantity: '95',
+        patta_amount: '0.00', standalone_amount: '2042.50', manual_amount: '0.00', gross_amount: '2042.50'
+      }]
+    })
+    expect(new ModelAccountRepository(database).getConveyorAccount()).toContainEqual({
+      conveyor_label: 'Noma’lum', model_id: standaloneModelId, model_name: 'Standalone model',
+      patta_count: '0', standalone_entry_count: '1', manual_adjustment_count: '0', ish_soni: '95'
+    })
   })
 })

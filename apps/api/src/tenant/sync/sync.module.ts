@@ -12,6 +12,7 @@ import { PattaPrintBatchSyncHandler } from './patta-print-batch-sync-handler.js'
 import { PattaPrintEventSyncHandler } from './patta-print-event-sync-handler.js';
 import { PattaSheetSyncHandler } from './patta-sheet-sync-handler.js';
 import { ModelOperationSyncHandler } from './model-operation-sync-handler.js';
+import { ModelAccountAdjustmentSyncHandler } from './model-account-adjustment-sync-handler.js';
 import { SyncController } from './sync.controller.js';
 import { SyncBootstrapService } from './sync-bootstrap.service.js';
 import { SyncEventProcessor } from './sync-event-processor.js';
@@ -42,16 +43,18 @@ import { SyncService } from './sync.service.js';
         printEventSyncHandler: PattaPrintEventSyncHandler,
         sheetSyncHandler: PattaSheetSyncHandler,
         modelOperationSyncHandler: ModelOperationSyncHandler,
+        modelAccountAdjustmentSyncHandler: ModelAccountAdjustmentSyncHandler,
       ) => [
         pattaSyncHandler,
         batchSyncHandler,
         printEventSyncHandler,
         sheetSyncHandler,
         modelOperationSyncHandler,
+        modelAccountAdjustmentSyncHandler,
       ],
       inject: [
         PattaSyncHandler, PattaPrintBatchSyncHandler, PattaPrintEventSyncHandler,
-        PattaSheetSyncHandler, ModelOperationSyncHandler,
+        PattaSheetSyncHandler, ModelOperationSyncHandler, ModelAccountAdjustmentSyncHandler,
       ],
     },
     SyncHandlerRegistry,
@@ -60,6 +63,7 @@ import { SyncService } from './sync.service.js';
     PattaPrintEventSyncHandler,
     PattaSheetSyncHandler,
     ModelOperationSyncHandler,
+    ModelAccountAdjustmentSyncHandler,
     SyncService,
     SyncBootstrapService,
   ],

@@ -1,4 +1,12 @@
-import type { PattaSheetProjection } from '@textile/sync-protocol'
+import type {
+  ConveyorAccountRow,
+  DesktopModelOperationOption,
+  ModelAccountAdjustmentProjection,
+  ModelAccountSheetV3,
+  ModelAccountWorkerDetail,
+  OperationPriceChangeProjection,
+  PattaSheetProjectionV3
+} from '@textile/sync-protocol'
 
 export type DesktopIpcChannel =
   | 'app:get-version'
@@ -12,8 +20,11 @@ export type DesktopIpcChannel =
   | 'patta-print:print-batch'
   | 'patta-print:record-event'
   | 'patta-sheet:lookup'
+  | 'patta-sheet:get'
   | 'patta-sheet:resolve-badge'
   | 'patta-sheet:models'
+  | 'patta-sheet:history-models'
+  | 'patta-sheet:model-operations'
   | 'patta-sheet:create'
   | 'patta-sheet:update'
   | 'patta-sheet:trash'
@@ -21,6 +32,16 @@ export type DesktopIpcChannel =
   | 'patta-sheet:purge'
   | 'patta-sheet:history'
   | 'model-account:get'
+  | 'model-account:models'
+  | 'model-account:add-manual'
+  | 'model-account:workers'
+  | 'model-account:update-manual'
+  | 'model-account:trash-manual'
+  | 'model-account:restore-manual'
+  | 'model-account:worker-details'
+  | 'model-account:conveyor-account'
+  | 'model-account:change-price'
+  | 'model-account:manual-operations'
   | 'auth:login'
   | 'auth:logout'
   | 'auth:status'
@@ -43,8 +64,9 @@ export interface DesktopAuthStatus {
 export interface DesktopSafeSession {
   state: DesktopAuthState
   user: { id: string; email: string; full_name: string } | null
-  company: { id: string; slug: string; timezone: string | null } | null
+  company: { id: string; name: string; slug: string; timezone: string | null } | null
   tenant_host: string | null
+  permission_codes: readonly string[]
 }
 
 export interface DesktopLoginInput {
@@ -169,13 +191,32 @@ export interface DesktopPattaPrintEvent {
   printed_at: string | null
 }
 
-export interface DesktopPattaSheetCreateInput {
+export interface DesktopPattaSheetLinkedCreateInput {
+  entry_kind?: 'PATTA_LINKED'
   partiya_number: string
   patta_number: string
   conveyor_snapshot: string | null
   assignments: readonly { model_operation_id: string; badge_number: string; nuqson: boolean }[]
   custom_operations?: readonly { id: string; name: string; initial_price: string }[]
 }
+
+export interface DesktopPattaSheetStandaloneCreateInput {
+  entry_kind: 'STANDALONE'
+  entered_at: string
+  model_id: string
+  ish_soni: number
+  partiya_number_snapshot: string | null
+  patta_number_snapshot: string | null
+  rang_snapshot: string | null
+  razmer_snapshot: string | null
+  conveyor_snapshot: string | null
+  assignments: readonly { model_operation_id: string; badge_number: string; nuqson: boolean }[]
+  custom_operations?: readonly { id: string; name: string; initial_price: string }[]
+}
+
+export type DesktopPattaSheetCreateInput =
+  | DesktopPattaSheetLinkedCreateInput
+  | DesktopPattaSheetStandaloneCreateInput
 
 export interface DesktopPattaSheetUpdateInput {
   sheet_id: string
@@ -187,7 +228,7 @@ export interface DesktopPattaSheetUpdateInput {
 
 export interface DesktopPattaSheetLookup {
   patta: DesktopPattaLookup
-  sheet: PattaSheetProjection | null
+  sheet: PattaSheetProjectionV3 | null
   rows: readonly DesktopPattaSheetRowDetail[]
 }
 
@@ -202,21 +243,25 @@ export interface DesktopPattaSheetRowDetail {
 }
 
 export interface DesktopPattaSheetHistoryItem {
-  patta: DesktopPattaLookup
-  sheet: PattaSheetProjection
+  patta: DesktopPattaLookup | null
+  sheet: PattaSheetProjectionV3
   rows: readonly DesktopPattaSheetRowDetail[]
 }
 
-export interface DesktopModelAccountSheet {
+export interface DesktopManualAdjustmentCreateInput {
   model_id: string
-  operations: readonly { model_operation_id: string; operation_name: string; sort_order: number }[]
-  rows: readonly {
-    worker_id: string
-    worker_name: string
-    model_operation_id: string
-    quantity: string
-  }[]
+  model_operation_id: string
+  worker_id: string
+  quantity: number
 }
+
+export interface DesktopOperationPriceChangeInput {
+  operation_id: string
+  expected_version: string
+  price: string
+}
+
+export type DesktopModelAccountSheet = ModelAccountSheetV3
 
 export interface ErpApi {
   app: {
@@ -239,17 +284,30 @@ export interface ErpApi {
   }
   pattaSheet: {
     models(): Promise<readonly DesktopModelOption[]>
+    historyModels(): Promise<readonly DesktopModelOption[]>
+    modelOperations(modelId: string, enteredAt: string): Promise<readonly DesktopModelOperationOption[]>
     lookup(partiyaNumber: string, pattaNumber: string): Promise<DesktopPattaSheetLookup | null>
+    get(sheetId: string): Promise<DesktopPattaSheetHistoryItem | null>
     resolveBadge(badgeNumber: string, enteredAt?: string): Promise<{ worker_id: string; full_name: string } | null>
-    create(input: DesktopPattaSheetCreateInput): Promise<PattaSheetProjection>
-    update(input: DesktopPattaSheetUpdateInput): Promise<PattaSheetProjection>
-    trash(sheetId: string, expectedVersion: string): Promise<PattaSheetProjection>
-    restore(sheetId: string, expectedVersion: string): Promise<PattaSheetProjection>
+    create(input: DesktopPattaSheetCreateInput): Promise<PattaSheetProjectionV3>
+    update(input: DesktopPattaSheetUpdateInput): Promise<PattaSheetProjectionV3>
+    trash(sheetId: string, expectedVersion: string): Promise<PattaSheetProjectionV3>
+    restore(sheetId: string, expectedVersion: string): Promise<PattaSheetProjectionV3>
     purge(sheetId: string, expectedVersion: string): Promise<void>
     history(modelId: string, includeDeleted?: boolean): Promise<readonly DesktopPattaSheetHistoryItem[]>
   }
   modelAccount: {
+    models(): Promise<readonly DesktopModelOption[]>
     get(modelId: string): Promise<DesktopModelAccountSheet>
+    manualOperations(modelId: string, enteredAt: string): Promise<readonly DesktopModelOperationOption[]>
+    changePrice(input: DesktopOperationPriceChangeInput): Promise<OperationPriceChangeProjection>
+    workers(): Promise<readonly DesktopModelOption[]>
+    addManual(input: DesktopManualAdjustmentCreateInput): Promise<ModelAccountAdjustmentProjection>
+    updateManual(adjustmentId: string, expectedVersion: string, quantity: number): Promise<ModelAccountAdjustmentProjection>
+    trashManual(adjustmentId: string, expectedVersion: string): Promise<ModelAccountAdjustmentProjection>
+    restoreManual(adjustmentId: string, expectedVersion: string): Promise<ModelAccountAdjustmentProjection>
+    workerDetails(workerId: string): Promise<readonly ModelAccountWorkerDetail[]>
+    conveyorAccount(): Promise<readonly ConveyorAccountRow[]>
   }
   auth: {
     login(input: DesktopLoginInput): Promise<DesktopAuthStatus>
@@ -296,6 +354,18 @@ function countValue(value: unknown, field: string): number {
 function nullableString(value: unknown, field: string): string | null {
   if (value === null) return null
   return stringValue(value, field)
+}
+
+function parsePermissionCodes(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.length > 256) throw new Error('Invalid safe session permissions')
+  const codes: string[] = []
+  for (const code of value as unknown[]) {
+    if (typeof code !== 'string' || !PERMISSION_CODE_PATTERN.test(code)) {
+      throw new Error('Invalid safe session permissions')
+    }
+    codes.push(code)
+  }
+  return [...new Set(codes)].sort((left, right) => left.localeCompare(right))
 }
 
 function parseSyncStatus(value: unknown): DesktopSyncStatus {
@@ -358,6 +428,7 @@ const AUTH_STATES: readonly DesktopAuthState[] = [
   'OFFLINE_SESSION_PENDING',
   'ERROR'
 ]
+const PERMISSION_CODE_PATTERN = /^[a-z][a-z0-9]*(?:[._][a-z0-9]+)*$/
 
 function authState(value: unknown): DesktopAuthState {
   if (typeof value !== 'string' || !AUTH_STATES.includes(value as DesktopAuthState)) {
@@ -379,9 +450,11 @@ function parseAuthStatus(value: unknown): DesktopAuthStatus {
 }
 
 function parseSafeSession(value: unknown): DesktopSafeSession {
-  if (!record(value) || Object.keys(value).length !== 4) {
+  const safeSessionKeys = ['company', 'permission_codes', 'state', 'tenant_host', 'user']
+  if (!record(value) || Object.keys(value).sort().join(',') !== safeSessionKeys.join(',')) {
     throw new Error('Invalid safe session response')
   }
+  const permissionCodes = parsePermissionCodes(value.permission_codes)
   const userValue = value.user
   const companyValue = value.company
   const tenantHost = value.tenant_host
@@ -398,12 +471,14 @@ function parseSafeSession(value: unknown): DesktopSafeSession {
     }
   }
   if (companyValue !== null) {
-    if (!record(companyValue) || Object.keys(companyValue).length !== 3 ||
+    if (!record(companyValue) || Object.keys(companyValue).length !== 4 ||
+      typeof companyValue.name !== 'string' || companyValue.name.length === 0 || companyValue.name.length > 255 ||
       (companyValue.timezone !== null && typeof companyValue.timezone !== 'string')) {
       throw new Error('Invalid safe session company')
     }
     company = {
       id: stringValue(companyValue.id, 'company.id'),
+      name: stringValue(companyValue.name, 'company.name'),
       slug: stringValue(companyValue.slug, 'company.slug'),
       timezone: nullableString(companyValue.timezone, 'company.timezone')
     }
@@ -411,7 +486,13 @@ function parseSafeSession(value: unknown): DesktopSafeSession {
   if (tenantHost !== null && typeof tenantHost !== 'string') {
     throw new Error('Invalid safe session tenant host')
   }
-  return { state: authState(value.state), user, company, tenant_host: tenantHost }
+  return {
+    state: authState(value.state),
+    user,
+    company,
+    tenant_host: tenantHost,
+    permission_codes: permissionCodes
+  }
 }
 
 function loginInput(value: unknown): DesktopLoginInput {
@@ -589,20 +670,20 @@ function parsePattaPrintEvent(value: unknown): DesktopPattaPrintEvent {
   }
 }
 
-function parsePattaSheetProjection(value: unknown): PattaSheetProjection {
+function parsePattaSheetProjection(value: unknown): PattaSheetProjectionV3 {
   if (!record(value) || !Array.isArray(value.operation_snapshots) || !Array.isArray(value.rows)) {
     throw new Error('Invalid Patta Sheet response')
   }
   const operationSnapshots = value.operation_snapshots.map((snapshot) => {
     if (!record(snapshot) || !Number.isSafeInteger(snapshot.sort_order) || (snapshot.sort_order as number) < 0 ||
-      !['PATTA', 'CUSTOM'].includes(String(snapshot.source_type))) {
+      !['PATTA', 'MODEL', 'CUSTOM'].includes(String(snapshot.source_type))) {
       throw new Error('Invalid Patta Sheet operation snapshot')
     }
     return {
       id: stringValue(snapshot.id, 'sheet.operation_snapshot.id'),
       patta_sheet_id: stringValue(snapshot.patta_sheet_id, 'sheet.operation_snapshot.patta_sheet_id'),
       model_operation_id: stringValue(snapshot.model_operation_id, 'sheet.operation_snapshot.model_operation_id'),
-      source_type: snapshot.source_type as 'PATTA' | 'CUSTOM',
+      source_type: snapshot.source_type as 'PATTA' | 'MODEL' | 'CUSTOM',
       source_patta_operation_snapshot_id: nullableString(snapshot.source_patta_operation_snapshot_id, 'sheet.operation_snapshot.source_id'),
       operation_name_snapshot: stringValue(snapshot.operation_name_snapshot, 'sheet.operation_snapshot.operation_name_snapshot'),
       unit_price_snapshot: stringValue(snapshot.unit_price_snapshot, 'sheet.operation_snapshot.unit_price_snapshot'),
@@ -631,9 +712,25 @@ function parsePattaSheetProjection(value: unknown): PattaSheetProjection {
   if (!/^(0|[1-9][0-9]*)$/.test(String(value.version))) {
     throw new Error('Invalid Patta Sheet version')
   }
+  const entryKind = value.entry_kind
+  if (entryKind !== 'PATTA_LINKED' && entryKind !== 'STANDALONE') {
+    throw new Error('Invalid Patta Sheet entry kind')
+  }
+  const quantity = value.ish_soni
+  if (!Number.isSafeInteger(quantity) || (quantity as number) < 1) {
+    throw new Error('Invalid Patta Sheet quantity')
+  }
   return {
     id: stringValue(value.id, 'sheet.id'),
-    patta_hisob_id: stringValue(value.patta_hisob_id, 'sheet.patta_hisob_id'),
+    entry_kind: entryKind,
+    patta_hisob_id: nullableString(value.patta_hisob_id, 'sheet.patta_hisob_id'),
+    model_id: stringValue(value.model_id, 'sheet.model_id'),
+    model_name_snapshot: stringValue(value.model_name_snapshot, 'sheet.model_name_snapshot'),
+    ish_soni: quantity as number,
+    partiya_number_snapshot: nullableString(value.partiya_number_snapshot, 'sheet.partiya_number_snapshot'),
+    patta_number_snapshot: nullableString(value.patta_number_snapshot, 'sheet.patta_number_snapshot'),
+    rang_snapshot: nullableString(value.rang_snapshot, 'sheet.rang_snapshot'),
+    razmer_snapshot: nullableString(value.razmer_snapshot, 'sheet.razmer_snapshot'),
     entered_at: stringValue(value.entered_at, 'sheet.entered_at'),
     business_date: stringValue(value.business_date, 'sheet.business_date'),
     conveyor_snapshot: nullableString(value.conveyor_snapshot, 'sheet.conveyor_snapshot'),
@@ -643,6 +740,7 @@ function parsePattaSheetProjection(value: unknown): PattaSheetProjection {
     updated_at: stringValue(value.updated_at, 'sheet.updated_at'),
     deleted_at: nullableString(value.deleted_at, 'sheet.deleted_at'),
     deleted_by: nullableString(value.deleted_by, 'sheet.deleted_by'),
+    deleted_by_name_snapshot: nullableString(value.deleted_by_name_snapshot, 'sheet.deleted_by_name_snapshot'),
     operation_snapshots: operationSnapshots,
     rows
   }
@@ -652,10 +750,26 @@ function parsePattaSheetHistory(value: unknown): readonly DesktopPattaSheetHisto
   if (!Array.isArray(value)) throw new Error('Invalid Patta Sheet history response')
   return value.map((item) => {
     if (!record(item)) throw new Error('Invalid Patta Sheet history item')
-    const patta = parsePattaLookup(item.patta)
-    if (!patta) throw new Error('Invalid Patta Sheet history Patta')
+    const patta = item.patta === null ? null : parsePattaLookup(item.patta)
+    if (item.patta !== null && !patta) throw new Error('Invalid Patta Sheet history Patta')
     if (!Array.isArray(item.rows)) throw new Error('Invalid Patta Sheet history rows')
     return { patta, sheet: parsePattaSheetProjection(item.sheet), rows: parsePattaSheetRowDetails(item.rows) }
+  })
+}
+
+function parseModelOperationOptions(value: unknown): readonly DesktopModelOperationOption[] {
+  if (!Array.isArray(value)) throw new Error('Invalid model operation options')
+  return value.map((operation) => {
+    if (!record(operation) || !Number.isSafeInteger(operation.sort_order) || (operation.sort_order as number) < 0) {
+      throw new Error('Invalid model operation option')
+    }
+    return {
+      model_operation_id: stringValue(operation.model_operation_id, 'operation.id'),
+      operation_name_snapshot: stringValue(operation.operation_name_snapshot, 'operation.name'),
+      unit_price_snapshot: stringValue(operation.unit_price_snapshot, 'operation.price'),
+      sort_order: operation.sort_order as number,
+      version: stringValue(operation.version, 'operation.version')
+    }
   })
 }
 
@@ -680,27 +794,153 @@ function parseModelAccountSheet(value: unknown): DesktopModelAccountSheet {
     throw new Error('Invalid Model hisob response')
   }
   const operations = value.operations.map((operation) => {
-    if (!record(operation) || !Number.isSafeInteger(operation.sort_order) || (operation.sort_order as number) < 0) {
+    if (!record(operation) || !Number.isSafeInteger(operation.sort_order) || (operation.sort_order as number) < 0 ||
+      !validIntegerString(operation.quantity) || !validIntegerString(operation.patta_quantity) ||
+      !validIntegerString(operation.standalone_quantity) || !validIntegerString(operation.manual_quantity) ||
+      !validMoneyString(operation.patta_amount) || !validMoneyString(operation.standalone_amount) ||
+      !validMoneyString(operation.manual_amount) || !validMoneyString(operation.gross_amount) ||
+      (operation.status !== 'ACTIVE' && operation.status !== 'INACTIVE') ||
+      (operation.current_price !== null && !validMoneyString(operation.current_price))) {
       throw new Error('Invalid Model hisob operation')
     }
+    const status: 'ACTIVE' | 'INACTIVE' = operation.status === 'INACTIVE' ? 'INACTIVE' : 'ACTIVE'
     return {
       model_operation_id: stringValue(operation.model_operation_id, 'operation.model_operation_id'),
       operation_name: stringValue(operation.operation_name, 'operation.operation_name'),
-      sort_order: operation.sort_order as number
+      sort_order: operation.sort_order as number,
+      version: stringValue(operation.version, 'operation.version'),
+      status,
+      current_price: nullableString(operation.current_price, 'operation.current_price'),
+      quantity: operation.quantity,
+      patta_quantity: operation.patta_quantity,
+      standalone_quantity: operation.standalone_quantity,
+      manual_quantity: operation.manual_quantity,
+      gross_amount: operation.gross_amount,
+      patta_amount: operation.patta_amount,
+      standalone_amount: operation.standalone_amount,
+      manual_amount: operation.manual_amount
     }
   })
   const rows = value.rows.map((row) => {
-    if (!record(row) || typeof row.quantity !== 'string' || !/^(0|[1-9][0-9]*)$/.test(row.quantity)) {
+    if (!record(row) || !validIntegerString(row.patta_quantity) || !validIntegerString(row.standalone_quantity) ||
+      !validIntegerString(row.manual_quantity) ||
+      !validIntegerString(row.total_quantity) || !validMoneyString(row.patta_amount) ||
+      !validMoneyString(row.standalone_amount) || !validMoneyString(row.manual_amount) ||
+      !validMoneyString(row.gross_amount)) {
       throw new Error('Invalid Model hisob worker total')
     }
     return {
       worker_id: stringValue(row.worker_id, 'row.worker_id'),
       worker_name: stringValue(row.worker_name, 'row.worker_name'),
       model_operation_id: stringValue(row.model_operation_id, 'row.model_operation_id'),
-      quantity: row.quantity
+      patta_quantity: row.patta_quantity,
+      standalone_quantity: row.standalone_quantity,
+      manual_quantity: row.manual_quantity,
+      total_quantity: row.total_quantity,
+      patta_amount: row.patta_amount,
+      standalone_amount: row.standalone_amount,
+      manual_amount: row.manual_amount,
+      gross_amount: row.gross_amount
     }
   })
-  return { model_id: stringValue(value.model_id, 'model_id'), operations, rows }
+  return {
+    model_id: stringValue(value.model_id, 'model_id'),
+    model_name: stringValue(value.model_name, 'model_name'),
+    operations,
+    rows
+  }
+}
+
+function validIntegerString(value: unknown): value is string {
+  return typeof value === 'string' && /^(0|[1-9][0-9]*)$/.test(value)
+}
+
+function validMoneyString(value: unknown): value is string {
+  return typeof value === 'string' && /^(0|[1-9][0-9]*)\.[0-9]{2}$/.test(value)
+}
+
+function parseManualAdjustment(value: unknown): ModelAccountAdjustmentProjection {
+  if (!record(value) || !Number.isSafeInteger(value.quantity) || (value.quantity as number) < 1 ||
+    !/^[1-9][0-9]*$/.test(String(value.version)) || !validMoneyString(value.unit_price_snapshot)) {
+    throw new Error('Invalid Model hisob manual adjustment')
+  }
+  return {
+    id: stringValue(value.id, 'adjustment.id'),
+    model_id: stringValue(value.model_id, 'adjustment.model_id'),
+    model_operation_id: stringValue(value.model_operation_id, 'adjustment.model_operation_id'),
+    worker_id: stringValue(value.worker_id, 'adjustment.worker_id'),
+    quantity: value.quantity as number,
+    unit_price_snapshot: value.unit_price_snapshot,
+    entered_at: stringValue(value.entered_at, 'adjustment.entered_at'),
+    business_date: stringValue(value.business_date, 'adjustment.business_date'),
+    version: stringValue(value.version, 'adjustment.version'),
+    created_by: stringValue(value.created_by, 'adjustment.created_by'),
+    created_device_id: stringValue(value.created_device_id, 'adjustment.created_device_id'),
+    created_at: stringValue(value.created_at, 'adjustment.created_at'),
+    updated_at: stringValue(value.updated_at, 'adjustment.updated_at'),
+    deleted_at: nullableString(value.deleted_at, 'adjustment.deleted_at'),
+    deleted_by: nullableString(value.deleted_by, 'adjustment.deleted_by')
+  }
+}
+
+function parseOperationPriceChange(value: unknown): OperationPriceChangeProjection {
+  if (!record(value) || !validMoneyString(value.price) || !/^[1-9][0-9]*$/.test(String(value.operation_version))) {
+    throw new Error('Invalid operation price change response')
+  }
+  return {
+    id: stringValue(value.id, 'price.id'),
+    operation_id: stringValue(value.operation_id, 'price.operation_id'),
+    price: value.price,
+    valid_from: stringValue(value.valid_from, 'price.valid_from'),
+    valid_to: nullableString(value.valid_to, 'price.valid_to'),
+    created_at: stringValue(value.created_at, 'price.created_at'),
+    created_by: nullableString(value.created_by, 'price.created_by'),
+    operation_version: stringValue(value.operation_version, 'price.operation_version')
+  }
+}
+
+function parseWorkerDetails(value: unknown): readonly ModelAccountWorkerDetail[] {
+  if (!Array.isArray(value)) throw new Error('Invalid worker Model hisob details')
+  return value.map((row) => {
+    if (!record(row) || !['PATTA', 'STANDALONE', 'MANUAL'].includes(String(row.source)) ||
+      !validIntegerString(row.quantity) || !validMoneyString(row.unit_price_snapshot) || !validMoneyString(row.gross_amount)) {
+      throw new Error('Invalid worker Model hisob detail row')
+    }
+    return {
+      model_id: stringValue(row.model_id, 'detail.model_id'),
+      model_name: stringValue(row.model_name, 'detail.model_name'),
+      model_operation_id: stringValue(row.model_operation_id, 'detail.model_operation_id'),
+      operation_name: stringValue(row.operation_name, 'detail.operation_name'),
+      source: row.source as 'PATTA' | 'STANDALONE' | 'MANUAL',
+      quantity: row.quantity,
+      unit_price_snapshot: row.unit_price_snapshot,
+      gross_amount: row.gross_amount,
+      entered_at: stringValue(row.entered_at, 'detail.entered_at'),
+      manual_adjustment_id: nullableString(row.manual_adjustment_id, 'detail.manual_adjustment_id'),
+      version: nullableString(row.version, 'detail.version'),
+      deleted_at: nullableString(row.deleted_at, 'detail.deleted_at'),
+      deleted_by: nullableString(row.deleted_by, 'detail.deleted_by')
+    }
+  })
+}
+
+function parseConveyorAccount(value: unknown): readonly ConveyorAccountRow[] {
+  if (!Array.isArray(value)) throw new Error('Invalid Konveyer hisobi')
+  return value.map((row) => {
+    if (!record(row) || !validIntegerString(row.patta_count) || !validIntegerString(row.standalone_entry_count) ||
+      !validIntegerString(row.manual_adjustment_count) || !validIntegerString(row.ish_soni)) {
+      throw new Error('Invalid Konveyer hisob qatori')
+    }
+    return {
+      conveyor_label: stringValue(row.conveyor_label, 'conveyor.label'),
+      model_id: stringValue(row.model_id, 'conveyor.model_id'),
+      model_name: stringValue(row.model_name, 'conveyor.model_name'),
+      patta_count: row.patta_count,
+      standalone_entry_count: row.standalone_entry_count,
+      manual_adjustment_count: row.manual_adjustment_count,
+      ish_soni: row.ish_soni
+    }
+  })
 }
 
 export function createErpApi(invoker: NarrowIpcInvoker): ErpApi {
@@ -732,6 +972,15 @@ export function createErpApi(invoker: NarrowIpcInvoker): ErpApi {
       async models() {
         return parseModelOptions(await invoker.invoke('patta-sheet:models'))
       },
+      async historyModels() {
+        return parseModelOptions(await invoker.invoke('patta-sheet:history-models'))
+      },
+      async modelOperations(modelId, enteredAt) {
+        return parseModelOperationOptions(await invoker.invoke('patta-sheet:model-operations', {
+          model_id: modelId,
+          entered_at: enteredAt
+        }))
+      },
       async lookup(partiyaNumber, pattaNumber) {
         const result = await invoker.invoke('patta-sheet:lookup', { partiyaNumber, pattaNumber })
         if (result === null) return null
@@ -740,6 +989,11 @@ export function createErpApi(invoker: NarrowIpcInvoker): ErpApi {
         if (!patta) return null
         const rows = parsePattaSheetRowDetails(result.rows)
         return { patta, sheet: result.sheet === null ? null : parsePattaSheetProjection(result.sheet), rows }
+      },
+      async get(sheetId) {
+        const result = await invoker.invoke('patta-sheet:get', sheetId)
+        if (result === null) return null
+        return parsePattaSheetHistory([result])[0] ?? null
       },
       async resolveBadge(badgeNumber, enteredAt) {
         const result = await invoker.invoke('patta-sheet:resolve-badge', {
@@ -774,8 +1028,51 @@ export function createErpApi(invoker: NarrowIpcInvoker): ErpApi {
       }
     },
     modelAccount: {
+      async models() {
+        return parseModelOptions(await invoker.invoke('model-account:models'))
+      },
       async get(modelId) {
         return parseModelAccountSheet(await invoker.invoke('model-account:get', { model_id: modelId }))
+      },
+      async manualOperations(modelId, enteredAt) {
+        return parseModelOperationOptions(await invoker.invoke('model-account:manual-operations', {
+          model_id: modelId,
+          entered_at: enteredAt
+        }))
+      },
+      async changePrice(input) {
+        return parseOperationPriceChange(await invoker.invoke('model-account:change-price', input))
+      },
+      async workers() {
+        return parseModelOptions(await invoker.invoke('model-account:workers'))
+      },
+      async addManual(input) {
+        return parseManualAdjustment(await invoker.invoke('model-account:add-manual', input))
+      },
+      async updateManual(adjustmentId, expectedVersion, quantity) {
+        return parseManualAdjustment(await invoker.invoke('model-account:update-manual', {
+          adjustment_id: adjustmentId,
+          expected_version: expectedVersion,
+          quantity
+        }))
+      },
+      async trashManual(adjustmentId, expectedVersion) {
+        return parseManualAdjustment(await invoker.invoke('model-account:trash-manual', {
+          adjustment_id: adjustmentId,
+          expected_version: expectedVersion
+        }))
+      },
+      async restoreManual(adjustmentId, expectedVersion) {
+        return parseManualAdjustment(await invoker.invoke('model-account:restore-manual', {
+          adjustment_id: adjustmentId,
+          expected_version: expectedVersion
+        }))
+      },
+      async workerDetails(workerId) {
+        return parseWorkerDetails(await invoker.invoke('model-account:worker-details', { worker_id: workerId }))
+      },
+      async conveyorAccount() {
+        return parseConveyorAccount(await invoker.invoke('model-account:conveyor-account'))
       }
     },
     pattaPrint: {

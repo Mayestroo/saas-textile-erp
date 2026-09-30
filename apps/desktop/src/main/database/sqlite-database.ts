@@ -4,6 +4,8 @@ import { tenantOwnershipMigration } from './migrations/002-tenant-ownership'
 import { pattaQuantityPrintBatchesMigration } from './migrations/003-patta-quantity-print-batches'
 import { pattaSheetsMigration } from './migrations/004-patta-sheets'
 import { pattaSheetSyncMetadataMigration } from './migrations/005-patta-sheet-sync-metadata'
+import { standalonePattaEntriesMigration } from './migrations/006-standalone-patta-entries'
+import { modelAccountAdjustmentsMigration } from './migrations/007-model-account-adjustments'
 import { applySqliteMigrations } from './sqlite-migration-runner'
 import type { SqliteMigration } from './sqlite-migration-runner'
 
@@ -12,7 +14,9 @@ export const SQLITE_MIGRATIONS: readonly SqliteMigration[] = [
   tenantOwnershipMigration,
   pattaQuantityPrintBatchesMigration,
   pattaSheetsMigration,
-  pattaSheetSyncMetadataMigration
+  pattaSheetSyncMetadataMigration,
+  standalonePattaEntriesMigration,
+  modelAccountAdjustmentsMigration
 ]
 
 export { applySqliteMigrations }

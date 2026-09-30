@@ -28,6 +28,7 @@ import { PattaPrintBatchesService } from './patta-print-batches.service.js';
 import { PattaService } from './patta.service.js';
 import { PattaTemplatesService } from './patta-templates.service.js';
 import { PattaSheetsService } from '../patta-sheets/patta-sheets.service.js';
+import { ModelAccountAdjustmentsService } from '../patta-sheets/model-account-adjustments.service.js';
 
 const TEST_DATABASE_VARIABLES = [
   'TEST_MASTER_DB_HOST',
@@ -60,6 +61,8 @@ const PRINT_BATCH_MIGRATION_NAME = 'AddPattaPrintBatches20260928000800';
 const SYNC_V2_MIGRATION_NAME = 'AddSyncProtocolV2Sessions20260928000900';
 const PRINT_CORRECTIONS_MIGRATION_NAME = 'AddPattaPrintBatchCorrections20260928001000';
 const SHEET_MIGRATION_NAME = 'AddPattaSheets20260928001100';
+const STANDALONE_SHEETS_MIGRATION_NAME = 'AddStandalonePattaEntries20260929001200';
+const MODEL_ACCOUNT_ADJUSTMENTS_MIGRATION_NAME = 'AddModelAccountAdjustments20260929001300';
 
 interface TenantFixture {
   companyId: string;
@@ -438,6 +441,7 @@ integrationDescribe(
         SYNC_V2_MIGRATION_NAME,
         PRINT_CORRECTIONS_MIGRATION_NAME,
         SHEET_MIGRATION_NAME,
+        STANDALONE_SHEETS_MIGRATION_NAME,
       ]);
       await initializer.initialize(emptyTenant.migrationDataSource, 77n, 88n);
       await tenantDatabaseManager.grantRuntimePrivileges(
@@ -1392,8 +1396,14 @@ integrationDescribe(
 
       await expectConstraintViolation(
         tenant.runtimeDataSource.query(
-          `INSERT INTO "patta_sheets" ("id", "patta_hisob_id", "entered_at", "business_date", "created_by")
-           VALUES ($1, $2, $3::timestamptz, $4::date, $5)`,
+          `INSERT INTO "patta_sheets" (
+             "id", "entry_kind", "patta_hisob_id", "model_id", "model_name_snapshot", "ish_soni",
+             "partiya_number_snapshot", "patta_number_snapshot", "rang_snapshot", "razmer_snapshot",
+             "entered_at", "business_date", "created_by"
+           )
+           SELECT $1, 'PATTA_LINKED', patta."id", patta."model_id", patta."model_name_snapshot", patta."ish_soni",
+             patta."partiya_number", patta."patta_number"::text, patta."rang", patta."razmer",
+             $3::timestamptz, $4::date, $5 FROM "patta_hisob" patta WHERE patta."id" = $2`,
           [randomUUID(), patta.id, enteredAt, businessDate, actorId],
         ),
         'uq_patta_sheets_patta',
@@ -1419,7 +1429,7 @@ integrationDescribe(
            VALUES ($1, $2, $3, $4::bigint, 124, false)`,
           [randomUUID(), sheetId, snapshotBId, workerId],
         ),
-        'ck_patta_sheet_row_quantity_matches_patta',
+        'ck_patta_sheet_row_quantity_matches_entry',
       );
       await expectConstraintViolation(
         tenant.runtimeDataSource.query(
@@ -1430,6 +1440,7 @@ integrationDescribe(
 
       await tenant.runtimeDataSource.query(
         `UPDATE "patta_sheets" SET "deleted_at" = transaction_timestamp(), "deleted_by" = $2,
+          "deleted_by_name_snapshot" = (SELECT "full_name" FROM "users" WHERE "id" = $2),
           "version" = "version" + 1, "updated_at" = transaction_timestamp() WHERE "id" = $1`,
         [sheetId, actorId],
       );
@@ -1441,10 +1452,386 @@ integrationDescribe(
       );
       expect(pattaStillExists).toEqual([{ id: patta.id }]);
       await expect(tenant.runtimeDataSource.query(
-        `INSERT INTO "patta_sheets" ("id", "patta_hisob_id", "entered_at", "business_date", "created_by")
-         VALUES ($1, $2, $3::timestamptz, $4::date, $5) RETURNING "id"`,
+        `INSERT INTO "patta_sheets" (
+           "id", "entry_kind", "patta_hisob_id", "model_id", "model_name_snapshot", "ish_soni",
+           "partiya_number_snapshot", "patta_number_snapshot", "rang_snapshot", "razmer_snapshot",
+           "entered_at", "business_date", "created_by"
+         )
+         SELECT $1, 'PATTA_LINKED', patta."id", patta."model_id", patta."model_name_snapshot", patta."ish_soni",
+           patta."partiya_number", patta."patta_number"::text, patta."rang", patta."razmer",
+           $3::timestamptz, $4::date, $5 FROM "patta_hisob" patta WHERE patta."id" = $2
+         RETURNING "id"`,
         [randomUUID(), patta.id, enteredAt, businessDate, actorId],
       )).resolves.toHaveLength(1);
+    }, 30_000);
+
+    it('enforces Standalone Entry model, source, quantity, lifecycle, and nullable Patta invariants', async () => {
+      const tenant = tenants[0];
+      if (!tenant) throw new Error('Tenant A fixture was not initialized');
+      const actorId = await createActor(tenant.runtimeDataSource);
+      const feature = featureServices();
+      const model = await feature.models.create(tenant.runtimeDataSource, actorId, {
+        name: `Standalone constraints model ${randomUUID()}`,
+      });
+      const operation = await feature.operations.create(tenant.runtimeDataSource, model.id, actorId, {
+        name: 'Yig‘ish', price: '12.50', sort_order: 0,
+      });
+      const otherModel = await feature.models.create(tenant.runtimeDataSource, actorId, {
+        name: `Standalone other model ${randomUUID()}`,
+      });
+      const wrongModelOperation = await feature.operations.create(tenant.runtimeDataSource, otherModel.id, actorId, {
+        name: 'Qadoqlash', price: '2.00', sort_order: 0,
+      });
+      const workerRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
+        `INSERT INTO "workers" ("full_name") VALUES ('Standalone Worker') RETURNING "id"::text AS "id"`,
+      );
+      const workerId = workerRows[0]?.id;
+      if (!workerId) throw new Error('Standalone test worker was not created');
+      const enteredAt = await futureTimestamp(tenant.runtimeDataSource, '12 hours');
+      const companyTimezones: Array<{ timezone: string }> = await masterDataSource.query(
+        `SELECT "timezone" FROM "companies" WHERE "id" = $1`, [tenant.companyId],
+      );
+      const timezone = companyTimezones[0]?.timezone;
+      if (!timezone) throw new Error('Tenant company timezone was not returned');
+      const businessDates: Array<{ business_date: string }> = await tenant.runtimeDataSource.query(
+        `SELECT (($1::timestamptz AT TIME ZONE $2::text)::date)::text AS "business_date"`,
+        [enteredAt, timezone],
+      );
+      const businessDate = businessDates[0]?.business_date;
+      if (!businessDate) throw new Error('Tenant local business date was not derived');
+
+      const sheetId = randomUUID();
+      const snapshotId = randomUUID();
+      const rowId = randomUUID();
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_sheets" (
+           "id", "entry_kind", "patta_hisob_id", "model_id", "model_name_snapshot", "ish_soni",
+           "partiya_number_snapshot", "patta_number_snapshot", "rang_snapshot", "razmer_snapshot",
+           "entered_at", "business_date", "conveyor_snapshot", "created_by"
+         ) VALUES ($1, 'STANDALONE', NULL, $2, $3, 95, NULL, NULL, 'Qora', 'M', $4::timestamptz, $5::date, NULL, $6)`,
+        [sheetId, model.id, model.name, enteredAt, businessDate, actorId],
+      );
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_sheet_operation_snapshots" (
+           "id", "patta_sheet_id", "model_operation_id", "source_type",
+           "source_patta_operation_snapshot_id", "operation_name_snapshot", "unit_price_snapshot", "sort_order"
+         ) VALUES ($1, $2, $3, 'MODEL', NULL, $4, '12.50', 0)`,
+        [snapshotId, sheetId, operation.id, operation.name],
+      );
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_sheet_rows" (
+           "id", "patta_sheet_id", "patta_sheet_operation_snapshot_id", "worker_id", "quantity_snapshot", "nuqson"
+         ) VALUES ($1, $2, $3, $4::bigint, 95, false)`,
+        [rowId, sheetId, snapshotId, workerId],
+      );
+      const secondSheetId = randomUUID();
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_sheets" (
+           "id", "entry_kind", "patta_hisob_id", "model_id", "model_name_snapshot", "ish_soni",
+           "entered_at", "business_date", "created_by"
+         ) VALUES ($1, 'STANDALONE', NULL, $2, $3, 1, $4::timestamptz, $5::date, $6)`,
+        [secondSheetId, model.id, model.name, enteredAt, businessDate, actorId],
+      );
+
+      expect(await tenant.runtimeDataSource.query(
+        `SELECT "entry_kind", "patta_hisob_id"::text AS "patta_hisob_id", "model_id"::text AS "model_id", "ish_soni"
+         FROM "patta_sheets" WHERE "id" = $1`, [sheetId],
+      )).toEqual([{ entry_kind: 'STANDALONE', patta_hisob_id: null, model_id: model.id, ish_soni: 95 }]);
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `INSERT INTO "patta_sheet_rows" (
+             "id", "patta_sheet_id", "patta_sheet_operation_snapshot_id", "worker_id", "quantity_snapshot", "nuqson"
+           ) VALUES ($1, $2, $3, $4::bigint, 94, false)`,
+          [randomUUID(), sheetId, snapshotId, workerId],
+        ),
+        'ck_patta_sheet_row_quantity_matches_entry',
+      );
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `INSERT INTO "patta_sheet_operation_snapshots" (
+             "id", "patta_sheet_id", "model_operation_id", "source_type",
+             "source_patta_operation_snapshot_id", "operation_name_snapshot", "unit_price_snapshot", "sort_order"
+           ) VALUES ($1, $2, $3, 'MODEL', NULL, $4, '2.00', 1)`,
+          [randomUUID(), sheetId, wrongModelOperation.id, wrongModelOperation.name],
+        ),
+        'ck_patta_sheet_operation_model',
+      );
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `UPDATE "patta_sheets" SET "ish_soni" = 96, "version" = "version" + 1 WHERE "id" = $1`,
+          [sheetId],
+        ),
+        'trg_patta_sheets_quantity_immutable',
+      );
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `INSERT INTO "patta_sheets" (
+             "id", "entry_kind", "patta_hisob_id", "model_id", "model_name_snapshot", "ish_soni",
+             "entered_at", "business_date", "created_by"
+           ) VALUES ($1, 'STANDALONE', $2, $3, $4, 1, $5::timestamptz, $6::date, $7)`,
+          [randomUUID(), randomUUID(), model.id, model.name, enteredAt, businessDate, actorId],
+        ),
+        'ck_patta_sheets_entry_kind',
+      );
+
+      await tenant.runtimeDataSource.query(
+        `UPDATE "patta_sheets" SET "deleted_at" = transaction_timestamp(), "deleted_by" = $2,
+          "deleted_by_name_snapshot" = (SELECT "full_name" FROM "users" WHERE "id" = $2),
+          "version" = "version" + 1, "updated_at" = transaction_timestamp() WHERE "id" = $1`,
+        [sheetId, actorId],
+      );
+      const trashActor: Array<{ deleted_by_name_snapshot: string | null }> = await tenant.runtimeDataSource.query(
+        `SELECT "deleted_by_name_snapshot" FROM "patta_sheets" WHERE "id" = $1`, [sheetId],
+      );
+      expect(trashActor[0]?.deleted_by_name_snapshot).toBeTruthy();
+      await tenant.runtimeDataSource.query(
+        `UPDATE "patta_sheets" SET "deleted_at" = NULL, "deleted_by" = NULL,
+          "deleted_by_name_snapshot" = NULL, "version" = "version" + 1,
+          "updated_at" = transaction_timestamp() WHERE "id" = $1`,
+        [sheetId],
+      );
+      await tenant.runtimeDataSource.query(
+        `UPDATE "patta_sheets" SET "deleted_at" = transaction_timestamp(), "deleted_by" = $2,
+          "deleted_by_name_snapshot" = (SELECT "full_name" FROM "users" WHERE "id" = $2),
+          "version" = "version" + 1, "updated_at" = transaction_timestamp() WHERE "id" = $1`,
+        [sheetId, actorId],
+      );
+      await tenant.runtimeDataSource.query(
+        `UPDATE "patta_sheets" SET "deleted_at" = transaction_timestamp(), "deleted_by" = $2,
+          "deleted_by_name_snapshot" = (SELECT "full_name" FROM "users" WHERE "id" = $2),
+          "version" = "version" + 1, "updated_at" = transaction_timestamp() WHERE "id" = $1`,
+        [secondSheetId, actorId],
+      );
+      await tenant.runtimeDataSource.query(`DELETE FROM "patta_sheet_rows" WHERE "patta_sheet_id" = $1`, [sheetId]);
+      await tenant.runtimeDataSource.query(`DELETE FROM "patta_sheet_operation_snapshots" WHERE "patta_sheet_id" = $1`, [sheetId]);
+      await tenant.runtimeDataSource.query(`DELETE FROM "patta_sheets" WHERE "id" = ANY($1::uuid[])`, [[sheetId, secondSheetId]]);
+    }, 30_000);
+
+    it('backfills pre-V3 linked sheets and refuses rollback after standalone data exists', async () => {
+      const companyId = await createMasterCompany();
+      const deviceId = await createMasterDevice(companyId, 'ACTIVE');
+      const tenant = await createTenant(companyId);
+      const lastMigration: Array<{ name: string }> = await tenant.migrationDataSource.query(
+        'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp" DESC LIMIT 1',
+      );
+      if (lastMigration[0]?.name !== MODEL_ACCOUNT_ADJUSTMENTS_MIGRATION_NAME) {
+        throw new Error('Model hisob adjustments migration is not the latest tenant migration');
+      }
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      const standaloneLastMigration: Array<{ name: string }> = await tenant.migrationDataSource.query(
+        'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp" DESC LIMIT 1',
+      );
+      if (standaloneLastMigration[0]?.name !== STANDALONE_SHEETS_MIGRATION_NAME) {
+        throw new Error('Standalone Patta Entries migration is not the latest tenant migration');
+      }
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+
+      const actorId = await createActor(tenant.runtimeDataSource);
+      const feature = featureServices();
+      const model = await feature.models.create(tenant.runtimeDataSource, actorId, {
+        name: `V3 backfill model ${randomUUID()}`,
+      });
+      await feature.operations.create(tenant.runtimeDataSource, model.id, actorId, {
+        name: 'Tikish', price: '8.00', sort_order: 0,
+      });
+      const device = await new DeviceAccessService(masterDataSource).assertActiveDevice(companyId, deviceId);
+      const batch = await feature.printBatches.create(tenant.runtimeDataSource, actorId, device.id, {
+        model_id: model.id, ish_soni: 125, rang: 'Qora', device_id: device.id,
+        size_distribution: [{ razmer: 'M', patta_count: 1, sort_order: 0 }],
+      });
+      const patta = batch.pattas[0];
+      const pattaOperation = patta?.operations[0];
+      if (!patta || !pattaOperation) throw new Error('Backfill fixture Patta was not created');
+      const workerRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
+        `INSERT INTO "workers" ("full_name") VALUES ('Backfill Worker') RETURNING "id"::text AS "id"`,
+      );
+      const workerId = workerRows[0]?.id;
+      if (!workerId) throw new Error('Backfill worker was not created');
+      const enteredAt = await futureTimestamp(tenant.runtimeDataSource, '12 hours');
+      const timezoneRows: Array<{ timezone: string }> = await masterDataSource.query(
+        `SELECT "timezone" FROM "companies" WHERE "id" = $1`, [companyId],
+      );
+      const timezone = timezoneRows[0]?.timezone;
+      if (!timezone) throw new Error('Backfill tenant timezone was not returned');
+      const businessDateRows: Array<{ business_date: string }> = await tenant.runtimeDataSource.query(
+        `SELECT (($1::timestamptz AT TIME ZONE $2::text)::date)::text AS "business_date"`,
+        [enteredAt, timezone],
+      );
+      const businessDate = businessDateRows[0]?.business_date;
+      if (!businessDate) throw new Error('Backfill business date was not returned');
+      const sheetId = randomUUID();
+      const sheetSnapshotId = randomUUID();
+      const rowId = randomUUID();
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_sheets" ("id", "patta_hisob_id", "entered_at", "business_date", "created_by")
+         VALUES ($1, $2, $3::timestamptz, $4::date, $5)`,
+        [sheetId, patta.id, enteredAt, businessDate, actorId],
+      );
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_sheet_operation_snapshots" (
+           "id", "patta_sheet_id", "model_operation_id", "source_type",
+           "source_patta_operation_snapshot_id", "operation_name_snapshot", "unit_price_snapshot", "sort_order"
+         ) VALUES ($1, $2, $3, 'PATTA', $4, $5, $6::numeric(14,2), $7)`,
+        [sheetSnapshotId, sheetId, pattaOperation.operation_id, pattaOperation.id,
+          pattaOperation.operation_name_snapshot, pattaOperation.unit_price_snapshot, pattaOperation.sort_order],
+      );
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_sheet_rows" (
+           "id", "patta_sheet_id", "patta_sheet_operation_snapshot_id", "worker_id", "quantity_snapshot", "nuqson"
+         ) VALUES ($1, $2, $3, $4::bigint, 125, false)`,
+        [rowId, sheetId, sheetSnapshotId, workerId],
+      );
+
+      const applied = await tenant.migrationDataSource.runMigrations({ transaction: 'all' });
+      expect(applied.map(({ name }) => name)).toEqual([
+        STANDALONE_SHEETS_MIGRATION_NAME,
+        MODEL_ACCOUNT_ADJUSTMENTS_MIGRATION_NAME,
+      ]);
+      const backfilled: Array<{
+        entry_kind: string; patta_hisob_id: string; model_id: string; model_name_snapshot: string; ish_soni: number;
+        partiya_number_snapshot: string; patta_number_snapshot: string;
+      }> = await tenant.runtimeDataSource.query(
+        `SELECT "entry_kind", "patta_hisob_id"::text AS "patta_hisob_id", "model_id"::text AS "model_id",
+            "model_name_snapshot", "ish_soni", "partiya_number_snapshot", "patta_number_snapshot"
+         FROM "patta_sheets" WHERE "id" = $1`, [sheetId],
+      );
+      expect(backfilled).toEqual([{
+        entry_kind: 'PATTA_LINKED', patta_hisob_id: patta.id, model_id: model.id,
+        model_name_snapshot: patta.model_name_snapshot, ish_soni: 125,
+        partiya_number_snapshot: patta.partiya_number, patta_number_snapshot: patta.patta_number,
+      }]);
+      expect(await tenant.runtimeDataSource.query(
+        `SELECT "id"::text AS "id", "quantity_snapshot" FROM "patta_sheet_rows" WHERE "id" = $1`, [rowId],
+      )).toEqual([{ id: rowId, quantity_snapshot: 125 }]);
+
+      await tenant.runtimeDataSource.query(
+        `INSERT INTO "patta_sheets" (
+           "id", "entry_kind", "patta_hisob_id", "model_id", "model_name_snapshot", "ish_soni",
+           "entered_at", "business_date", "created_by"
+         ) VALUES ($1, 'STANDALONE', NULL, $2, $3, 1, $4::timestamptz, $5::date, $6)`,
+        [randomUUID(), model.id, model.name, enteredAt, businessDate, actorId],
+      );
+      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await expect(tenant.migrationDataSource.undoLastMigration({ transaction: 'all' }))
+        .rejects.toThrow(/cannot revert Standalone Patta Entry schema while V3 data or sessions exist/);
+    }, 60_000);
+
+    it('persists manual Model hisob adjustments with immutable effective price and versioned lifecycle', async () => {
+      const tenant = tenants[0];
+      if (!tenant) throw new Error('Tenant A fixture was not initialized');
+      const actorId = await createActor(tenant.runtimeDataSource);
+      const feature = featureServices();
+      const model = await feature.models.create(tenant.runtimeDataSource, actorId, {
+        name: `Manual account model ${randomUUID()}`,
+      });
+      const operation = await feature.operations.create(tenant.runtimeDataSource, model.id, actorId, {
+        name: 'Tikish', price: '8.00', sort_order: 0,
+      });
+      const activeDeviceId = await createMasterDevice(tenant.companyId, 'ACTIVE');
+      const device = await new DeviceAccessService(masterDataSource)
+        .assertActiveDevice(tenant.companyId, activeDeviceId);
+      const workerRows: Array<{ id: string }> = await tenant.runtimeDataSource.query(
+        `INSERT INTO "workers" ("full_name") VALUES ('Manual account worker') RETURNING "id"::text AS "id"`,
+      );
+      const workerId = workerRows[0]?.id;
+      if (!workerId) throw new Error('Manual adjustment worker was not created');
+      const enteredAt = await futureTimestamp(tenant.runtimeDataSource, '0 seconds');
+      const timezoneRows: Array<{ timezone: string }> = await masterDataSource.query(
+        `SELECT "timezone" FROM "companies" WHERE "id" = $1`, [tenant.companyId],
+      );
+      const timezone = timezoneRows[0]?.timezone;
+      if (!timezone) throw new Error('Manual adjustment timezone was not returned');
+      const businessDateRows: Array<{ business_date: string }> = await tenant.runtimeDataSource.query(
+        `SELECT (($1::timestamptz AT TIME ZONE $2::text)::date)::text AS "business_date"`,
+        [enteredAt, timezone],
+      );
+      const businessDate = businessDateRows[0]?.business_date;
+      if (!businessDate) throw new Error('Manual adjustment business date was not returned');
+      const adjustments = new ModelAccountAdjustmentsService(
+        feature.audit, feature.prices, new SyncChangeRecorder(),
+      );
+      const adjustmentId = randomUUID();
+      const input = {
+        model_id: model.id,
+        model_operation_id: operation.id,
+        worker_id: workerId,
+        quantity: 20,
+        unit_price_snapshot: '8.00',
+        entered_at: enteredAt,
+        business_date: businessDate,
+        deleted_at: null,
+        deleted_by: null,
+        depends_on_event_ids: [],
+      };
+      const created = await tenant.runtimeDataSource.transaction((manager) => adjustments.createInTransaction(
+        manager, actorId, device.id, timezone, adjustmentId, input,
+      ));
+      expect(created).toMatchObject({
+        id: adjustmentId, model_id: model.id, model_operation_id: operation.id,
+        worker_id: workerId, quantity: 20, unit_price_snapshot: '8.00', version: '1',
+      });
+      const changes: Array<{ projection_version: number; payload: Record<string, unknown> }> =
+        await tenant.runtimeDataSource.query(
+          `SELECT "projection_version", "payload_json"->'data' AS "payload"
+           FROM "server_change_log" WHERE "entity_type" = 'model_account_adjustments'
+             AND "entity_id" = $1 ORDER BY "sequence_id" DESC LIMIT 1`,
+          [adjustmentId],
+        );
+      expect(changes).toMatchObject([{
+        projection_version: 3,
+        payload: {
+          id: adjustmentId,
+          model_id: model.id,
+          model_operation_id: operation.id,
+          worker_id: workerId,
+          quantity: 20,
+          unit_price_snapshot: '8.00',
+        },
+      }]);
+
+      const updated = await tenant.runtimeDataSource.transaction((manager) => adjustments.updateInTransaction(
+        manager, actorId, device.id, adjustmentId, '1', { ...input, quantity: 25 },
+      ));
+      expect(updated).toMatchObject({ version: '2', quantity: 25, unit_price_snapshot: '8.00', entered_at: created.entered_at });
+      await expect(tenant.runtimeDataSource.transaction((manager) => adjustments.updateInTransaction(
+        manager, actorId, device.id, adjustmentId, '1', { ...input, quantity: 30 },
+      ))).rejects.toMatchObject({ response: { code: 'VERSION_CONFLICT' } });
+
+      const trashed = await tenant.runtimeDataSource.transaction((manager) => adjustments.setTrashedInTransaction(
+        manager, actorId, device.id, adjustmentId, '2', true,
+      ));
+      expect(trashed).toMatchObject({ version: '3', deleted_by: actorId, quantity: 25 });
+      const restored = await tenant.runtimeDataSource.transaction((manager) => adjustments.setTrashedInTransaction(
+        manager, actorId, device.id, adjustmentId, '3', false,
+      ));
+      expect(restored).toMatchObject({ version: '4', deleted_at: null, deleted_by: null, unit_price_snapshot: '8.00' });
+
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `INSERT INTO "model_account_adjustments" (
+             "id", "model_id", "model_operation_id", "worker_id", "quantity", "unit_price_snapshot",
+             "entered_at", "business_date", "created_by", "created_device_id"
+           ) VALUES ($1, $2, $3, $4::bigint, 0, '8.00', $5::timestamptz, $6::date, $7, $8)`,
+          [randomUUID(), model.id, operation.id, workerId, enteredAt, businessDate, actorId, device.id],
+        ),
+        'ck_model_account_adjustments_quantity',
+      );
+      const otherModel = await feature.models.create(tenant.runtimeDataSource, actorId, {
+        name: `Wrong operation model ${randomUUID()}`,
+      });
+      const wrongOperation = await feature.operations.create(tenant.runtimeDataSource, otherModel.id, actorId, {
+        name: 'Qadoqlash', price: '2.00', sort_order: 0,
+      });
+      await expectConstraintViolation(
+        tenant.runtimeDataSource.query(
+          `INSERT INTO "model_account_adjustments" (
+             "id", "model_id", "model_operation_id", "worker_id", "quantity", "unit_price_snapshot",
+             "entered_at", "business_date", "created_by", "created_device_id"
+           ) VALUES ($1, $2, $3, $4::bigint, 1, '2.00', $5::timestamptz, $6::date, $7, $8)`,
+          [randomUUID(), model.id, wrongOperation.id, workerId, enteredAt, businessDate, actorId, device.id],
+        ),
+        'ck_model_account_adjustments_operation_model',
+      );
     }, 30_000);
 
     it('registers offline Patta IDs and historical snapshots only against matching references', async () => {

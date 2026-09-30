@@ -1,27 +1,28 @@
 import { useEffect, useState } from 'react'
 import type {
   DesktopAuthStatus,
+  DesktopModelOption,
   DesktopSafeSession,
   DesktopSyncRunResult,
   DesktopSyncStatus
 } from '../../preload/erp-api'
-import { PattaPrintPage } from './pages/PattaPrintPage'
+import { AppHeader } from './components/AppHeader'
+import type { AppSidebarItem, FactoryScreen } from './components/AppSidebar'
+import { AppSidebar } from './components/AppSidebar'
+import { NewModelModal } from './components/modals/NewModelModal'
+import { Button } from './components/ui/Button'
+import { TextField } from './components/ui/TextField'
+import { ConveyorAccountPage } from './pages/ConveyorAccountPage'
+import { ModelAccountPage } from './pages/ModelAccountPage'
 import { PattaEntryPage } from './pages/PattaEntryPage'
 import { PattaHistoryPage } from './pages/PattaHistoryPage'
+import { PattaPrintPage } from './pages/PattaPrintPage'
 import { PattaTrashPage } from './pages/PattaTrashPage'
-import { ModelAccountPage } from './pages/ModelAccountPage'
 
 const EMPTY_AUTH_STATUS: DesktopAuthStatus = {
   state: 'REFRESHING',
   errorCode: null,
   message: null
-}
-
-function connectivityLabel(connectivity: DesktopSyncStatus['connectivity']): string {
-  if (connectivity === 'ONLINE') return 'Onlayn'
-  if (connectivity === 'AUTH_REQUIRED') return 'Tizimga kirish kerak'
-  if (connectivity === 'DEVICE_NOT_CONFIGURED') return 'Qurilma ro‘yxatdan o‘tkazilmagan'
-  return 'Oflayn'
 }
 
 function syncErrorMessage(code: string | null): string | null {
@@ -66,7 +67,8 @@ function App(): React.JSX.Element {
   const [isSyncing, setIsSyncing] = useState(false)
   const [syncMessage, setSyncMessage] = useState<string | null>(null)
   const [appVersion, setAppVersion] = useState<string | null>(null)
-  const [factoryScreen, setFactoryScreen] = useState<'print' | 'entry' | 'history' | 'trash' | 'account'>('print')
+  const [factoryScreen, setFactoryScreen] = useState<FactoryScreen>('print')
+  const [entrySheetId, setEntrySheetId] = useState<string | null>(null)
 
   useEffect(() => {
     let isMounted = true
@@ -170,169 +172,184 @@ function App(): React.JSX.Element {
 
   const sessionIsAvailable = hasLocalSession(session, authStatus.state)
   const deviceMessage = syncErrorMessage(syncStatus?.errorCode ?? null)
+  const permissionCodes = new Set(session?.permission_codes ?? [])
+  const canViewPrint = permissionCodes.has('patta.chiqarish.view') || permissionCodes.has('patta.chiqarish.create')
+  const canViewEntry = permissionCodes.has('patta_varaq.view') || permissionCodes.has('patta_varaq.create') ||
+    permissionCodes.has('patta_varaq.edit')
+  const canViewTrash = permissionCodes.has('patta_varaq.view')
+  const canViewAccounts = permissionCodes.has('patta.hisob.view')
+  const navigationItems: readonly AppSidebarItem[] = [
+    { screen: 'print', label: 'Patta chiqarish', mark: 'P', group: 'Ishlab chiqarish', visible: canViewPrint },
+    { screen: 'entry', label: 'Patta kiritish', mark: 'K', group: 'Ishlab chiqarish', visible: canViewEntry },
+    { screen: 'history', label: 'Kiritilgan Pattalar', mark: 'T', group: 'Ishlab chiqarish', visible: canViewEntry },
+    { screen: 'trash', label: 'Korzinka', mark: 'K', group: 'Ishlab chiqarish', visible: canViewTrash },
+    { screen: 'conveyor', label: 'Konveyer hisobi', mark: 'H', group: 'Hisob', visible: canViewAccounts },
+    { screen: 'account', label: 'Model hisob', mark: 'M', group: 'Hisob', visible: canViewAccounts }
+  ]
+  const activeScreen = navigationItems.find((item) => item.screen === factoryScreen && item.visible)?.screen ??
+    navigationItems.find((item) => item.visible)?.screen ?? 'print'
+  const pageTitles: Record<FactoryScreen, string> = {
+    print: 'Patta chiqarish',
+    entry: 'Patta kiritish',
+    history: 'Kiritilgan Pattalar',
+    trash: 'Korzinka',
+    conveyor: 'Konveyer hisobi',
+    account: 'Model hisob'
+  }
 
-  return (
-    <main className={`erp-shell ${sessionIsAvailable ? 'has-session' : ''}`}>
-      <header className="erp-header">
-        <p className="erp-eyebrow">To‘qimachilik korxonasi</p>
-        <h1>Textile ERP</h1>
-        <p className="erp-subtitle">Mahalliy ma’lumotlar internet bo‘lmaganda ham saqlanadi</p>
-      </header>
+  const [isNewModelModalOpen, setIsNewModelModalOpen] = useState(false)
+  const [availableModels, setAvailableModels] = useState<readonly DesktopModelOption[]>([])
 
-      {sessionIsAvailable && session ? (
-        <>
-          <section className="session-card" aria-labelledby="session-heading">
-            <div className="session-heading">
-              <div>
-                <p className="session-eyebrow">Korxona</p>
-                <h2 id="session-heading">{session.company?.slug}</h2>
-                <p className="session-user">{session.user?.full_name}</p>
-              </div>
-              <button className="logout-button" type="button" onClick={() => void logout()}>
-                Chiqish
-              </button>
-            </div>
+  useEffect(() => {
+    let mounted = true
+    if (sessionIsAvailable && window.erp?.modelAccount?.models) {
+      window.erp.modelAccount.models().then((res) => {
+        if (mounted) setAvailableModels(res)
+      }).catch(() => undefined)
+    }
+    return () => { mounted = false }
+  }, [sessionIsAvailable])
+
+  // Ctrl+S global shortcut for runSync
+  useEffect(() => {
+    const handleGlobalKeys = (e: KeyboardEvent): void => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        e.preventDefault()
+        void runSync()
+      }
+    }
+    window.addEventListener('keydown', handleGlobalKeys)
+    return () => window.removeEventListener('keydown', handleGlobalKeys)
+  }, [])
+
+  if (sessionIsAvailable && session) {
+    const page = activeScreen === 'print' && canViewPrint ? <PattaPrintPage />
+      : activeScreen === 'entry' && canViewEntry ? <PattaEntryPage key={entrySheetId ?? 'new-entry'} initialSheetId={entrySheetId} />
+        : activeScreen === 'history' && canViewEntry ? <PattaHistoryPage onEdit={(sheetId) => {
+          setEntrySheetId(sheetId)
+          setFactoryScreen('entry')
+        }} />
+          : activeScreen === 'trash' && canViewTrash ? <PattaTrashPage />
+            : activeScreen === 'conveyor' && canViewAccounts ? <ConveyorAccountPage />
+              : activeScreen === 'account' && canViewAccounts ? <ModelAccountPage /> : null
+
+    return (
+      <div className="excel-app erp-shell" style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', overflow: 'hidden' }}>
+        <AppHeader
+          pageTitle={pageTitles[activeScreen]}
+          companyName={session.company?.name || session.company?.slug || 'Korxona'}
+          userName={session.user?.full_name || session.user?.email || 'Foydalanuvchi'}
+          connectivity={syncStatus?.connectivity ?? null}
+          unsyncedCount={syncStatus?.unsyncedCount ?? 0}
+          conflictCount={syncStatus?.conflictCount ?? 0}
+          syncing={isSyncing}
+          onSync={() => void runSync()}
+          onLogout={() => void logout()}
+        />
+        <div className="erp-main-column" style={{ flex: 1, display: 'flex', flexDirection: 'row', overflow: 'hidden', position: 'relative', minHeight: 0 }}>
+          <AppSidebar
+            activeScreen={activeScreen}
+            items={navigationItems}
+            onNavigate={(screen) => {
+              if (screen === 'entry') setEntrySheetId(null)
+              setFactoryScreen(screen)
+            }}
+            onOpenNewModel={() => setIsNewModelModalOpen(true)}
+          />
+          <main className="erp-page-viewport" id="main-content" style={{ flex: 1, width: '100%', height: '100%', overflow: 'auto', display: 'flex', flexDirection: 'column' }}>
+            {deviceMessage ? <p className="erp-global-message erp-global-message--danger" role="status">{deviceMessage}</p> : null}
+            {syncMessage ? <p className="erp-global-message" role="status">{syncMessage}</p> : null}
             {authStatus.state === 'OFFLINE_SESSION_PENDING' ? (
-              <p className="state-message offline-message" role="status">
+              <p className="erp-global-message erp-global-message--offline" role="status">
                 Internet bilan aloqa yo‘q. Mahalliy ma’lumotlar saqlanadi.
               </p>
-            ) : authStatus.state === 'REFRESHING' ? (
-              <p className="state-message" role="status">Sessiya tekshirilmoqda…</p>
             ) : null}
-          </section>
+            {authStatus.state === 'REFRESHING' ? <p className="erp-global-message" role="status">Sessiya tekshirilmoqda…</p> : null}
+            {page ?? <section className="permission-empty" role="status">Sizga ko‘rish ruxsati berilgan sahifa topilmadi.</section>}
+            {appVersion ? <footer className="erp-app-version">Dastur versiyasi {appVersion}</footer> : null}
+          </main>
+        </div>
 
-          <section className="sync-card" aria-labelledby="sync-heading">
-            <div className="sync-card-heading">
-              <div>
-                <h2 id="sync-heading">Sinxronlash</h2>
-                <p className="sync-connectivity" aria-live="polite">
-                  {syncStatus ? connectivityLabel(syncStatus.connectivity) : 'Holat aniqlanmoqda'}
-                </p>
-              </div>
-              <span
-                className={`sync-indicator ${syncStatus?.connectivity.toLowerCase() ?? 'unknown'}`}
-                aria-hidden="true"
-              />
-            </div>
+        <NewModelModal
+          isOpen={isNewModelModalOpen}
+          models={availableModels}
+          onClose={() => setIsNewModelModalOpen(false)}
+          onSubmit={async (name) => {
+            setSyncMessage(`Yangi model "${name}" yaratish so‘rovi qabul qilindi`)
+          }}
+        />
+      </div>
+    )
+  }
 
-            <dl className="sync-counts">
-              <div>
-                <dt>Sinxronlanmagan</dt>
-                <dd>{syncStatus?.unsyncedCount ?? '—'}</dd>
-              </div>
-              <div>
-                <dt>Ochiq ziddiyatlar</dt>
-                <dd>{syncStatus?.conflictCount ?? '—'}</dd>
-              </div>
-            </dl>
-
-            {deviceMessage ? <p className="sync-message error-message" role="status">{deviceMessage}</p> : null}
-            {syncMessage ? <p className="sync-message" role="status">{syncMessage}</p> : null}
-            <button
-              className="sync-button"
-              type="button"
-              disabled={isSyncing || syncStatus?.connectivity === 'DEVICE_NOT_CONFIGURED'}
-              onClick={() => void runSync()}
-            >
-              {isSyncing ? 'Sinxronlanmoqda…' : 'Hozir sinxronlash'}
-            </button>
-          </section>
-          <nav className="factory-navigation" aria-label="Ish bo‘limlari">
-            <button type="button" className={factoryScreen === 'print' ? 'factory-nav-active' : ''}
-              aria-current={factoryScreen === 'print' ? 'page' : undefined} onClick={() => setFactoryScreen('print')}>
-              Patta chiqarish
-            </button>
-            <button type="button" className={factoryScreen === 'entry' ? 'factory-nav-active' : ''}
-              aria-current={factoryScreen === 'entry' ? 'page' : undefined} onClick={() => setFactoryScreen('entry')}>
-              Patta kiritish
-            </button>
-            <button type="button" className={factoryScreen === 'history' ? 'factory-nav-active' : ''}
-              aria-current={factoryScreen === 'history' ? 'page' : undefined} onClick={() => setFactoryScreen('history')}>
-              Kiritilgan Pattalar
-            </button>
-            <button type="button" className={factoryScreen === 'trash' ? 'factory-nav-active' : ''}
-              aria-current={factoryScreen === 'trash' ? 'page' : undefined} onClick={() => setFactoryScreen('trash')}>
-              Korzinka
-            </button>
-            <button type="button" className={factoryScreen === 'account' ? 'factory-nav-active' : ''}
-              aria-current={factoryScreen === 'account' ? 'page' : undefined} onClick={() => setFactoryScreen('account')}>
-              Model hisob
-            </button>
-            <span>Offline ish stoli</span>
-          </nav>
-          {factoryScreen === 'print' ? <PattaPrintPage /> : null}
-          {factoryScreen === 'entry' ? <PattaEntryPage /> : null}
-          {factoryScreen === 'history' ? <PattaHistoryPage /> : null}
-          {factoryScreen === 'trash' ? <PattaTrashPage /> : null}
-          {factoryScreen === 'account' ? <ModelAccountPage /> : null}
-        </>
-      ) : authStatus.state === 'REFRESHING' || authStatus.state === 'AUTHENTICATING' ? (
+  if (authStatus.state === 'REFRESHING' || authStatus.state === 'AUTHENTICATING') {
+    return (
+      <main className="erp-auth-shell">
         <section className="auth-card loading-card" aria-live="polite">
           <span className="loading-mark" aria-hidden="true" />
           <p>Sessiya tekshirilmoqda…</p>
         </section>
-      ) : (
-        <form className="auth-card" onSubmit={(event) => void submitLogin(event)}>
-          <div className="auth-card-heading">
-            <h2>Kirish</h2>
-            <p>Korxona hisobiga kiring</p>
-          </div>
+      </main>
+    )
+  }
 
-          <label className="form-field">
-            <span>Korxona manzili</span>
-            <input
-              autoComplete="url"
-              autoCapitalize="none"
-              spellCheck={false}
-              type="text"
-              inputMode="url"
-              value={tenantUrl}
-              onChange={(event) => setTenantUrl(event.target.value)}
-              placeholder="korxona.example.uz"
-              maxLength={2_048}
-              required
-              disabled={isSubmitting}
-            />
-          </label>
-
-          <label className="form-field">
-            <span>Email</span>
-            <input
-              autoComplete="username"
-              autoCapitalize="none"
-              spellCheck={false}
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
-              maxLength={320}
-              required
-              disabled={isSubmitting}
-            />
-          </label>
-
-          <label className="form-field">
-            <span>Parol</span>
-            <input
-              autoComplete="current-password"
-              type="password"
-              value={password}
-              onChange={(event) => setPassword(event.target.value)}
-              maxLength={1_024}
-              required
-              disabled={isSubmitting}
-            />
-          </label>
-
-          {authStatus.message ? (
-            <p className="auth-message error-message" role="alert">{authStatus.message}</p>
-          ) : null}
-          <button className="login-button" type="submit" disabled={isSubmitting}>
-            {isSubmitting ? 'Tekshirilmoqda…' : 'Kirish'}
-          </button>
-        </form>
-      )}
-
-      {appVersion ? <p className="app-version">Dastur versiyasi {appVersion}</p> : null}
+  return (
+    <main className="erp-auth-shell">
+      <section className="auth-brand" aria-label="Textile ERP">
+        <span className="auth-brand__mark" aria-hidden="true">T</span>
+        <p className="auth-brand__eyebrow">TO‘QIMACHILIK KORXONASI</p>
+        <h1>Textile ERP</h1>
+        <p className="auth-brand__description">Ishlab chiqarish ma’lumotlari avval qurilmada saqlanadi.</p>
+      </section>
+      <form className="auth-card" onSubmit={(event) => void submitLogin(event)}>
+        <div className="auth-card-heading">
+          <p className="auth-card__eyebrow">XAVFSIZ KIRISH</p>
+          <h2>Kirish</h2>
+          <p>Korxona hisobiga kiring</p>
+        </div>
+        <TextField
+          autoComplete="url"
+          autoCapitalize="none"
+          disabled={isSubmitting}
+          inputMode="url"
+          label="Korxona"
+          maxLength={2_048}
+          onChange={(event) => setTenantUrl(event.target.value)}
+          placeholder="korxona.example.uz"
+          required
+          spellCheck={false}
+          type="text"
+          value={tenantUrl}
+        />
+        <TextField
+          autoComplete="username"
+          autoCapitalize="none"
+          disabled={isSubmitting}
+          label="Email"
+          maxLength={320}
+          onChange={(event) => setEmail(event.target.value)}
+          required
+          spellCheck={false}
+          type="email"
+          value={email}
+        />
+        <TextField
+          autoComplete="current-password"
+          disabled={isSubmitting}
+          label="Parol"
+          maxLength={1_024}
+          onChange={(event) => setPassword(event.target.value)}
+          required
+          type="password"
+          value={password}
+        />
+        {authStatus.message ? <p className="auth-message" role="alert">{authStatus.message}</p> : null}
+        <Button className="auth-submit" disabled={isSubmitting} type="submit" variant="primary">
+          {isSubmitting ? 'Tekshirilmoqda…' : 'Kirish'}
+        </Button>
+        <p className="auth-offline-note">Internet vaqtincha uzilsa, mavjud mahalliy ma’lumotlardan foydalanish davom etadi.</p>
+      </form>
+      {appVersion ? <p className="auth-version">Dastur versiyasi {appVersion}</p> : null}
     </main>
   )
 }

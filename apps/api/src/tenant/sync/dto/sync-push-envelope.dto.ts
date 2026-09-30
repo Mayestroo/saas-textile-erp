@@ -5,8 +5,8 @@ export class SyncPushEnvelopeDto {
   device_id!: string;
 
   @IsOptional()
-  @IsIn([1, 2])
-  protocol_version?: 1 | 2;
+  @IsIn([1, 2, 3])
+  protocol_version?: 1 | 2 | 3;
 
   @IsArray()
   events!: unknown[];

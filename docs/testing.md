@@ -201,6 +201,8 @@ Run focused checks from the repository root:
 npm run test --workspace=apps/api -- src/tenant/patta/patta.config.spec.ts src/database/tenant/patta-sequence.initializer.spec.ts src/master/devices/device-access.service.spec.ts src/tenant/patta/patta-templates.service.spec.ts src/tenant/patta/patta-number-blocks.service.spec.ts src/tenant/patta/patta.service.spec.ts src/tenant/patta/patta-offline-registration.validator.spec.ts
 npm run test:e2e --workspace=apps/api -- src/tenant/patta/patta.e2e-spec.ts
 npm run test:patta --workspace=apps/api
+npm run test:patta-sheets --workspace=apps/api
+npm run test:model-account-adjustments --workspace=apps/api
 ```
 
 The Patta PostgreSQL suite applies/down/reapplies the additive migration,
@@ -225,6 +227,21 @@ unit/e2e run does not substitute for the real PostgreSQL suite. The feature
 completion run also includes Master DB, tenant provisioning, models/operations,
 workers/badges regressions, API lint, typecheck, and build.
 
+`test:patta-sheets` reuses the isolated Patta tenant fixture. Its migration case
+downgrades a fresh tenant only to the pre-V3 schema, creates a linked sheet with
+operation/worker rows, reapplies migration 012, and checks the backfilled model,
+quantity and product snapshots without losing children. Trigger cases cover
+nullable-FK Standalone entries, `MODEL` source/model membership, header-row
+quantity equality, immutable Standalone quantity, deletion actor snapshots, and
+the rollback guard. As with `test:patta`, the suite is blocked/skipped without
+all five dedicated `_test` database settings.
+
+`test:model-account-adjustments` verifies PostgreSQL reference association,
+positive quantity and price constraints, V3 change-log/audit writes, stale
+version rejection, and trash/restore while retaining the original price
+snapshot. Its PostgreSQL fixture is likewise blocked/skipped without a dedicated
+`_test` database.
+
 ## Offline synchronization (PostgreSQL and Electron SQLite)
 
 Desktop SQLite tests run with the workspace's pinned Electron binary in
@@ -242,9 +259,13 @@ Coverage includes exclusive versioned migrations and rollback, Patta/queue
 atomicity, stable event ID retries, stale `SYNCING` recovery, conflict retention,
 idempotent bootstrap page staging, page-three restart, atomic baseline
 reconciliation, tombstones, echo identity, local historical price/badge
-resolution, multi-connection block allocation, promotion/exhaustion and the
-exact 80% prefetch threshold. A failed migration or pull page must not delete
-existing local data or advance `last_server_cursor`.
+resolution, linked-sheet backfill through SQLite migration 6, Standalone
+nullable-Patta persistence/model-operation source/quantity triggers,
+manual adjustment transaction/queue persistence, price-snapshot retention and
+soft-delete/restore,
+multi-connection block allocation, promotion/exhaustion and the exact 80%
+prefetch threshold. A failed migration or pull page must not delete existing
+local data or advance `last_server_cursor`.
 
 Real tenant PostgreSQL sync integration uses only all five `TEST_MASTER_DB_*`
 settings, requires `TEST_MASTER_DB_NAME` to end in `_test`, and generates/cleans
@@ -261,8 +282,11 @@ The PostgreSQL suite checks additive migration/revert/reapply, runtime grants,
 bootstrap from reference rows that predate the sync migration, ten serial and
 two concurrent duplicate deliveries, fingerprint reuse, stored-conflict replay,
 reservation rollback/retry, partial `SYNCED/CONFLICT/SYNCED` outcomes, ordered
-pull pagination, two-tenant overlapping identities, and a writer committing
-while bootstrap projection materialization is barrier-blocked. It also starts a
+pull pagination, two-tenant overlapping identities, V3 linked-sheet projection
+compatibility, Standalone V3 create/pull, manual adjustment two-client pull and
+duplicate idempotency, V2 upgrade-required behavior without cursor advancement,
+and a writer committing while bootstrap projection
+materialization is barrier-blocked. It also starts a
 real authenticated Nest API on loopback and asynchronously spawns both the
 Electron two-client sync test and real desktop tenant login/authenticated-sync
 acceptance. PC-1 loses a successful push response and retries the same event ID;

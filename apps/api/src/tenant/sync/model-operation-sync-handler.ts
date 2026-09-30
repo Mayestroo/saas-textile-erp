@@ -50,7 +50,7 @@ export class ModelOperationSyncHandler implements SyncEntityHandler {
   }
 
   async apply(manager: EntityManager, context: SyncApplyContext, event: SyncEvent): Promise<SyncHandlerResult> {
-    if (context.protocolVersion !== 2 || event.base_version !== '0' || !event.entity_id) {
+    if ((context.protocolVersion !== 2 && context.protocolVersion !== 3) || event.base_version !== '0' || !event.entity_id) {
       throw new ConflictException({ code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED', message: 'Yangi model operatsiyasini sinxronlash uchun v2 kerak', details: {} });
     }
     const input = parsePayload(event.payload, event.entity_id);
