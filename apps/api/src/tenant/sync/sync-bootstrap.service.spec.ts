@@ -170,6 +170,27 @@ describe('SyncBootstrapService', () => {
     expect(String(materializationCalls[1]?.[0])).toContain("'patta_print_batches'");
   });
 
+  it('upgrades Patta Sheet bootstrap items to protocol V3 for Standalone-capable clients', async () => {
+    const harness = queryRunnerHarness();
+    const service = new SyncBootstrapService(loadSyncConfiguration({}));
+
+    await service.create(harness.dataSource, deviceId, 3);
+    expect(harness.commands.some((sql) => sql.includes('UPDATE "bootstrap_items" item') &&
+      sql.includes("'deleted_by_name_snapshot'"))).toBe(true);
+    expect(harness.commands.filter((sql) => sql.includes('INSERT INTO "bootstrap_items"'))).toHaveLength(3);
+    expect(harness.runner.commitTransaction).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a V2 bootstrap if Standalone sheet data is present', async () => {
+    const harness = queryRunnerHarness(true);
+    const service = new SyncBootstrapService(loadSyncConfiguration({}));
+
+    await expect(service.create(harness.dataSource, deviceId, 2))
+      .rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
+    expect(harness.runner.rollbackTransaction).toHaveBeenCalledOnce();
+    expect(harness.runner.commitTransaction).not.toHaveBeenCalled();
+  });
+
   it('returns a structured upgrade error when a v1 bootstrap page would expose Patta data', async () => {
     const query = vi.fn(async (sql: string) => {
       if (sql.includes('FROM "bootstrap_sessions"')) return [bootstrapSessionQueryRow()];

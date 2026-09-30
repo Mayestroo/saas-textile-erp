@@ -1,7 +1,7 @@
 export type SyncMutationOperation = 'CREATE' | 'UPDATE' | 'DELETE';
 export type SyncChangeOperation = 'UPSERT' | 'DELETE';
 export type SyncResultStatus = 'SYNCED' | 'CONFLICT' | 'FAILED';
-export type SyncProtocolVersion = 1 | 2;
+export type SyncProtocolVersion = 1 | 2 | 3;
 
 export type SyncEntityType =
   | 'workers'
@@ -24,6 +24,8 @@ export type SyncV2EntityType =
   | 'patta_sheets'
   | 'patta_sheet_operation_snapshots'
   | 'patta_sheet_rows';
+
+export type SyncV3EntityType = SyncEntityType | SyncV2EntityType | 'model_account_adjustments';
 
 export interface SyncEvent<TEntityType extends string = string, TPayload = unknown> {
   event_id: string;
@@ -106,7 +108,7 @@ export type SyncPushResult =
       event_id: string;
       status: 'SYNCED';
       entity_version: string | null;
-      projection: SyncProjection | SyncProjectionV2 | null;
+      projection: SyncProjection | SyncProjectionV2 | SyncProjectionV3 | null;
       change_sequence: string;
     }
   | {
@@ -136,12 +138,12 @@ export interface SyncFailure {
 
 export interface SyncChange {
   sequence_id: string;
-  entity_type: SyncEntityType | SyncV2EntityType;
+  entity_type: SyncV3EntityType;
   entity_id: string;
   operation: SyncChangeOperation;
   entity_version: string | null;
-  projection_version: 1 | 2;
-  payload: SyncProjection | SyncProjectionV2 | null;
+  projection_version: 1 | 2 | 3;
+  payload: SyncProjection | SyncProjectionV2 | SyncProjectionV3 | null;
   changed_at: string;
 }
 
@@ -258,14 +260,14 @@ export type SyncProjectionV2 =
       entity_type: 'patta_sheets';
       entity_id: string;
       entity_version: string;
-      data: PattaSheetProjection;
+      data: PattaSheetProjectionV2;
     }
   | {
       projection_version: 2;
       entity_type: 'patta_sheet_operation_snapshots';
       entity_id: string;
       entity_version: null;
-      data: PattaSheetOperationSnapshotProjection;
+      data: PattaSheetOperationSnapshotProjectionV2;
     }
   | {
       projection_version: 2;
@@ -280,6 +282,24 @@ export type SyncProjectionV2 =
       entity_id: string;
       entity_version: string;
       data: SyncOperationProjection;
+    };
+
+export type SyncProjectionV3 =
+  | SyncProjection
+  | SyncProjectionV2
+  | {
+      projection_version: 3;
+      entity_type: 'patta_sheets';
+      entity_id: string;
+      entity_version: string;
+      data: PattaSheetProjectionV3;
+    }
+  | {
+      projection_version: 3;
+      entity_type: 'model_account_adjustments';
+      entity_id: string;
+      entity_version: string;
+      data: ModelAccountAdjustmentProjection;
     };
 
 export interface SyncWorkerProjection {
@@ -488,7 +508,7 @@ export interface PattaPrintEventProjection {
   printed_at: string | null;
 }
 
-export interface PattaSheetOperationSnapshotProjection {
+export interface PattaSheetOperationSnapshotProjectionV2 {
   id: string;
   patta_sheet_id: string;
   model_operation_id: string;
@@ -499,6 +519,28 @@ export interface PattaSheetOperationSnapshotProjection {
   sort_order: number;
   created_at: string;
 }
+
+export interface OperationPriceChangeProjection extends SyncPriceProjection {
+  created_by: string | null;
+  operation_version: string;
+}
+
+export interface PattaSheetOperationSnapshotProjectionV3 extends Omit<PattaSheetOperationSnapshotProjectionV2, 'source_type'> {
+  source_type: 'PATTA' | 'MODEL' | 'CUSTOM';
+}
+
+export interface DesktopModelOperationOption {
+  model_operation_id: string;
+  operation_name_snapshot: string;
+  unit_price_snapshot: string;
+  sort_order: number;
+  version: string;
+}
+
+// Keep the unversioned aliases on the legacy V2 shape until each consumer
+// explicitly opts into V3. This prevents a protocol upgrade from silently
+// changing the existing /api/v2 contract.
+export type PattaSheetOperationSnapshotProjection = PattaSheetOperationSnapshotProjectionV2;
 
 export interface PattaSheetRowProjection {
   id: string;
@@ -513,7 +555,7 @@ export interface PattaSheetRowProjection {
   updated_at: string;
 }
 
-export interface PattaSheetProjection {
+export interface PattaSheetProjectionV2 {
   id: string;
   patta_hisob_id: string;
   entered_at: string;
@@ -525,35 +567,194 @@ export interface PattaSheetProjection {
   updated_at: string;
   deleted_at: string | null;
   deleted_by: string | null;
-  operation_snapshots: readonly PattaSheetOperationSnapshotProjection[];
+  operation_snapshots: readonly PattaSheetOperationSnapshotProjectionV2[];
   rows: readonly PattaSheetRowProjection[];
 }
 
-export interface PattaSheetOperationSnapshotInput extends Omit<PattaSheetOperationSnapshotProjection, 'patta_sheet_id' | 'created_at'> {}
+export interface PattaSheetProjectionV3 {
+  id: string;
+  entry_kind: 'PATTA_LINKED' | 'STANDALONE';
+  patta_hisob_id: string | null;
+  model_id: string;
+  model_name_snapshot: string;
+  ish_soni: number;
+  partiya_number_snapshot: string | null;
+  patta_number_snapshot: string | null;
+  rang_snapshot: string | null;
+  razmer_snapshot: string | null;
+  entered_at: string;
+  business_date: string;
+  conveyor_snapshot: string | null;
+  version: string;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+  deleted_by: string | null;
+  deleted_by_name_snapshot: string | null;
+  operation_snapshots: readonly PattaSheetOperationSnapshotProjectionV3[];
+  rows: readonly PattaSheetRowProjection[];
+}
+
+export interface ModelAccountAdjustmentProjection {
+  id: string;
+  model_id: string;
+  model_operation_id: string;
+  worker_id: string;
+  quantity: number;
+  unit_price_snapshot: string;
+  entered_at: string;
+  business_date: string;
+  version: string;
+  created_by: string;
+  created_device_id: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+  deleted_by: string | null;
+}
+
+export interface ModelAccountOperationTotal {
+  model_operation_id: string;
+  operation_name: string;
+  sort_order: number;
+  version: string;
+  status: 'ACTIVE' | 'INACTIVE';
+  current_price: string | null;
+  quantity: string;
+  patta_quantity: string;
+  standalone_quantity: string;
+  manual_quantity: string;
+  gross_amount: string;
+  patta_amount: string;
+  standalone_amount: string;
+  manual_amount: string;
+}
+
+export interface ModelAccountContributionRow {
+  worker_id: string;
+  worker_name: string;
+  model_operation_id: string;
+  patta_quantity: string;
+  standalone_quantity: string;
+  manual_quantity: string;
+  total_quantity: string;
+  patta_amount: string;
+  standalone_amount: string;
+  manual_amount: string;
+  gross_amount: string;
+}
+
+export interface ModelAccountSheetV3 {
+  model_id: string;
+  model_name: string;
+  operations: readonly ModelAccountOperationTotal[];
+  rows: readonly ModelAccountContributionRow[];
+}
+
+export interface ModelAccountWorkerDetail {
+  model_id: string;
+  model_name: string;
+  model_operation_id: string;
+  operation_name: string;
+  source: 'PATTA' | 'STANDALONE' | 'MANUAL';
+  quantity: string;
+  unit_price_snapshot: string;
+  gross_amount: string;
+  entered_at: string;
+  manual_adjustment_id: string | null;
+  version: string | null;
+  deleted_at: string | null;
+  deleted_by: string | null;
+}
+
+export interface ConveyorAccountRow {
+  conveyor_label: string;
+  model_id: string;
+  model_name: string;
+  patta_count: string;
+  standalone_entry_count: string;
+  manual_adjustment_count: string;
+  ish_soni: string;
+}
+
+export interface ModelAccountAdjustmentMutationPayload {
+  model_id: string;
+  model_operation_id: string;
+  worker_id: string;
+  quantity: number;
+  unit_price_snapshot: string;
+  entered_at: string;
+  business_date: string;
+  deleted_at: string | null;
+  deleted_by: string | null;
+  depends_on_event_ids: readonly string[];
+}
+
+export type ModelAccountAdjustmentSyncEvent = Omit<
+  SyncEvent<'model_account_adjustment', ModelAccountAdjustmentMutationPayload>,
+  'entity_id' | 'base_version'
+> & {
+  entity_id: string;
+  base_version: string;
+  operation: 'CREATE' | 'UPDATE';
+};
+
+export type PattaSheetProjection = PattaSheetProjectionV2;
+
+export interface PattaSheetOperationSnapshotInputV2 extends Omit<PattaSheetOperationSnapshotProjectionV2, 'patta_sheet_id' | 'created_at'> {}
+export interface PattaSheetOperationSnapshotInputV3 extends Omit<PattaSheetOperationSnapshotProjectionV3, 'patta_sheet_id' | 'created_at'> {}
+export interface PattaSheetOperationSnapshotInput extends PattaSheetOperationSnapshotInputV2 {}
 
 export interface PattaSheetRowInput extends Omit<PattaSheetRowProjection, 'patta_sheet_id' | 'created_at' | 'updated_at'> {
   entered_badge_number: string;
 }
 
-export interface PattaSheetMutationPayload {
+export interface PattaSheetMutationPayloadV2 {
   patta_hisob_id: string;
   entered_at: string;
   business_date: string;
   conveyor_snapshot: string | null;
   deleted_at: string | null;
   deleted_by: string | null;
-  operation_snapshots: readonly PattaSheetOperationSnapshotInput[];
+  operation_snapshots: readonly PattaSheetOperationSnapshotInputV2[];
   rows: readonly PattaSheetRowInput[];
   depends_on_event_ids: readonly string[];
 }
 
-export type PattaSheetSyncEvent = Omit<
-  SyncEvent<'patta_sheet', PattaSheetMutationPayload>,
+export interface PattaSheetMutationPayloadV3 extends Omit<PattaSheetMutationPayloadV2, 'patta_hisob_id' | 'operation_snapshots'> {
+  entry_kind: 'PATTA_LINKED' | 'STANDALONE';
+  patta_hisob_id: string | null;
+  model_id: string;
+  model_name_snapshot: string;
+  ish_soni: number;
+  partiya_number_snapshot: string | null;
+  patta_number_snapshot: string | null;
+  rang_snapshot: string | null;
+  razmer_snapshot: string | null;
+  deleted_by_name_snapshot: string | null;
+  operation_snapshots: readonly PattaSheetOperationSnapshotInputV3[];
+}
+
+export type PattaSheetMutationPayload = PattaSheetMutationPayloadV2;
+
+export type PattaSheetSyncEventV2 = Omit<
+  SyncEvent<'patta_sheet', PattaSheetMutationPayloadV2>,
   'entity_id' | 'base_version'
 > & {
   entity_id: string;
   base_version: string;
 };
+
+export type PattaSheetSyncEventV3 = Omit<
+  SyncEvent<'patta_sheet', PattaSheetMutationPayloadV3>,
+  'entity_id' | 'base_version'
+> & {
+  entity_id: string;
+  base_version: string;
+};
+
+export type PattaSheetSyncEvent = PattaSheetSyncEventV2;
 
 export interface PattaSizeDistributionItem {
   id: string;
@@ -630,7 +831,7 @@ export interface SyncBootstrapSession {
 export interface SyncBootstrapPage {
   session_id: string;
   watermark: string;
-  items: readonly { order_key: string; projection: SyncProjection | SyncProjectionV2 }[];
+  items: readonly { order_key: string; projection: SyncProjection | SyncProjectionV2 | SyncProjectionV3 }[];
   next_order_key: string | null;
   has_more: boolean;
 }

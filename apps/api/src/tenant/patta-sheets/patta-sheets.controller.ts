@@ -11,6 +11,7 @@ import { CreatePattaSheetDto, UpdatePattaSheetDto } from './dto/patta-sheet-inpu
 import { ModelAccountQueryService } from './model-account-query.service.js';
 import { PattaSheetsService } from './patta-sheets.service.js';
 import { CreatePattaSheetOperationDto } from './dto/create-patta-sheet-operation.dto.js';
+import { CreatePattaSheetV3Dto, UpdatePattaSheetV3Dto } from './dto/patta-sheet-v3-input.dto.js';
 
 @Controller('api/v2/patta-sheets')
 @UseGuards(TenantAuthGuard, TenantPermissionGuard)
@@ -107,6 +108,98 @@ export class PattaSheetsController {
     const { dataSource, actorUserId, companyId, timezone } = requireTenantContext(request);
     const device = await this.deviceAccess.assertActiveDevice(companyId, input.device_id);
     return this.sheets.purge(dataSource, { actorUserId, validatedDeviceId: device.id, timezone }, sheetId, input.expected_version);
+  }
+}
+
+@Controller('api/v3/patta-sheets')
+@UseGuards(TenantAuthGuard, TenantPermissionGuard)
+export class PattaSheetsV3Controller {
+  constructor(
+    private readonly deviceAccess: DeviceAccessService,
+    private readonly sheets: PattaSheetsService,
+  ) {}
+
+  @Get(':id')
+  @TenantPermissions('patta_varaq.view')
+  getById(@Req() request: TenantAuthenticatedRequest, @Param('id', new ParseUUIDPipe()) sheetId: string) {
+    const { dataSource } = requireTenantContext(request);
+    return this.sheets.getProjectionV3(dataSource, sheetId);
+  }
+
+  @Post()
+  @TenantPermissions('patta_varaq.create')
+  async create(@Req() request: TenantAuthenticatedRequest, @Body() input: CreatePattaSheetV3Dto) {
+    const { dataSource, actorUserId, companyId, timezone } = requireTenantContext(request);
+    const device = await this.deviceAccess.assertActiveDevice(companyId, input.device_id);
+    return this.sheets.createV3(dataSource, {
+      actorUserId,
+      validatedDeviceId: device.id,
+      timezone,
+    }, input);
+  }
+
+  @Patch(':id')
+  @TenantPermissions('patta_varaq.edit')
+  async update(
+    @Req() request: TenantAuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) sheetId: string,
+    @Body() input: UpdatePattaSheetV3Dto,
+  ) {
+    const { dataSource, actorUserId, companyId, timezone } = requireTenantContext(request);
+    const device = await this.deviceAccess.assertActiveDevice(companyId, input.device_id);
+    return this.sheets.updateV3(dataSource, {
+      actorUserId,
+      validatedDeviceId: device.id,
+      timezone,
+    }, sheetId, input);
+  }
+
+  @Patch(':id/trash')
+  @TenantPermissions('patta_varaq.delete')
+  async trash(
+    @Req() request: TenantAuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) sheetId: string,
+    @Body() input: PattaSheetLifecycleDto,
+  ) {
+    const { dataSource, actorUserId, companyId, timezone } = requireTenantContext(request);
+    const device = await this.deviceAccess.assertActiveDevice(companyId, input.device_id);
+    return this.sheets.trashV3(dataSource, {
+      actorUserId,
+      validatedDeviceId: device.id,
+      timezone,
+    }, sheetId, input.expected_version);
+  }
+
+  @Patch(':id/restore')
+  @TenantPermissions('patta_varaq.restore')
+  async restore(
+    @Req() request: TenantAuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) sheetId: string,
+    @Body() input: PattaSheetLifecycleDto,
+  ) {
+    const { dataSource, actorUserId, companyId, timezone } = requireTenantContext(request);
+    const device = await this.deviceAccess.assertActiveDevice(companyId, input.device_id);
+    return this.sheets.restoreV3(dataSource, {
+      actorUserId,
+      validatedDeviceId: device.id,
+      timezone,
+    }, sheetId, input.expected_version);
+  }
+
+  @Delete(':id/purge')
+  @TenantPermissions('patta_varaq.purge')
+  async purge(
+    @Req() request: TenantAuthenticatedRequest,
+    @Param('id', new ParseUUIDPipe()) sheetId: string,
+    @Body() input: PattaSheetLifecycleDto,
+  ) {
+    const { dataSource, actorUserId, companyId, timezone } = requireTenantContext(request);
+    const device = await this.deviceAccess.assertActiveDevice(companyId, input.device_id);
+    return this.sheets.purgeV3(dataSource, {
+      actorUserId,
+      validatedDeviceId: device.id,
+      timezone,
+    }, sheetId, input.expected_version);
   }
 }
 

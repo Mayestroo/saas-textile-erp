@@ -153,8 +153,8 @@ export const MATERIALIZE_BOOTSTRAP_ITEMS_SQL = `
          row_number() OVER (ORDER BY "entity_order", "entity_id")::bigint,
          "entity_type", "entity_id", 1, "payload_json"
   FROM reference_projection
-  WHERE "entity_type" NOT LIKE 'patta%'
-     OR ($2::smallint = 2 AND "entity_type" IN ('patta_templates', 'patta_number_blocks'))
+   WHERE "entity_type" NOT LIKE 'patta%'
+      OR ($2::smallint IN (2, 3) AND "entity_type" IN ('patta_templates', 'patta_number_blocks'))
   ORDER BY "entity_order", "entity_id"
 `;
 
@@ -357,4 +357,114 @@ export const MATERIALIZE_PATTA_V2_BOOTSTRAP_ITEMS_SQL = `
          "entity_type", "entity_id", 2, "payload_json"
   FROM patta_projection
   ORDER BY "entity_order", "entity_id"
+`;
+
+export const UPGRADE_PATTA_SHEET_BOOTSTRAP_ITEMS_TO_V3_SQL = `
+  UPDATE "bootstrap_items" item
+  SET "projection_version" = 3,
+      "payload_json" = jsonb_build_object(
+        'projection_version', 3,
+        'entity_type', 'patta_sheets',
+        'entity_id', sheet."id"::text,
+        'entity_version', sheet."version"::text,
+        'data', jsonb_build_object(
+          'id', sheet."id"::text,
+          'entry_kind', sheet."entry_kind",
+          'patta_hisob_id', sheet."patta_hisob_id"::text,
+          'model_id', sheet."model_id"::text,
+          'model_name_snapshot', sheet."model_name_snapshot",
+          'ish_soni', sheet."ish_soni",
+          'partiya_number_snapshot', sheet."partiya_number_snapshot",
+          'patta_number_snapshot', sheet."patta_number_snapshot",
+          'rang_snapshot', sheet."rang_snapshot",
+          'razmer_snapshot', sheet."razmer_snapshot",
+          'entered_at', to_char(sheet."entered_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+          'business_date', sheet."business_date"::text,
+          'conveyor_snapshot', sheet."conveyor_snapshot",
+          'version', sheet."version"::text,
+          'created_by', sheet."created_by"::text,
+          'created_at', to_char(sheet."created_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+          'updated_at', to_char(sheet."updated_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+          'deleted_at', CASE WHEN sheet."deleted_at" IS NULL THEN NULL ELSE
+            to_char(sheet."deleted_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') END,
+          'deleted_by', sheet."deleted_by"::text,
+          'deleted_by_name_snapshot', sheet."deleted_by_name_snapshot",
+          'operation_snapshots', COALESCE((
+            SELECT jsonb_agg(jsonb_build_object(
+              'id', snapshot."id"::text,
+              'patta_sheet_id', snapshot."patta_sheet_id"::text,
+              'model_operation_id', snapshot."model_operation_id"::text,
+              'source_type', snapshot."source_type",
+              'source_patta_operation_snapshot_id', snapshot."source_patta_operation_snapshot_id"::text,
+              'operation_name_snapshot', snapshot."operation_name_snapshot",
+              'unit_price_snapshot', snapshot."unit_price_snapshot"::text,
+              'sort_order', snapshot."sort_order",
+              'created_at', to_char(snapshot."created_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+            ) ORDER BY snapshot."sort_order", snapshot."model_operation_id")
+            FROM "patta_sheet_operation_snapshots" snapshot
+            WHERE snapshot."patta_sheet_id" = sheet."id"
+          ), '[]'::jsonb),
+          'rows', COALESCE((
+            SELECT jsonb_agg(jsonb_build_object(
+              'id', sheet_row."id"::text,
+              'patta_sheet_id', sheet_row."patta_sheet_id"::text,
+              'patta_sheet_operation_snapshot_id', sheet_row."patta_sheet_operation_snapshot_id"::text,
+              'worker_id', sheet_row."worker_id"::text,
+              'quantity_snapshot', sheet_row."quantity_snapshot",
+              'nuqson', sheet_row."nuqson",
+              'deleted_at', CASE WHEN sheet_row."deleted_at" IS NULL THEN NULL ELSE
+                to_char(sheet_row."deleted_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') END,
+              'deleted_by', sheet_row."deleted_by"::text,
+              'created_at', to_char(sheet_row."created_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+              'updated_at', to_char(sheet_row."updated_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
+            ) ORDER BY sheet_row."created_at", sheet_row."id")
+            FROM "patta_sheet_rows" sheet_row WHERE sheet_row."patta_sheet_id" = sheet."id"
+          ), '[]'::jsonb)
+        )
+      )
+  FROM "patta_sheets" sheet
+  WHERE item."session_id" = $1::uuid
+    AND item."entity_type" = 'patta_sheets'
+    AND item."entity_id" = sheet."id"::text
+`;
+
+export const MATERIALIZE_MODEL_ACCOUNT_ADJUSTMENT_BOOTSTRAP_ITEMS_SQL = `
+  INSERT INTO "bootstrap_items"
+    ("session_id", "order_key", "entity_type", "entity_id", "projection_version", "payload_json")
+  SELECT $1::uuid,
+    (SELECT count(*) FROM "bootstrap_items" WHERE "session_id" = $1::uuid)
+      + row_number() OVER (ORDER BY adjustment."id"),
+    'model_account_adjustments', adjustment."id"::text, 3,
+    jsonb_build_object(
+      'projection_version', 3,
+      'entity_type', 'model_account_adjustments',
+      'entity_id', adjustment."id"::text,
+      'entity_version', adjustment."version"::text,
+      'data', jsonb_build_object(
+        'id', adjustment."id"::text,
+        'model_id', adjustment."model_id"::text,
+        'model_operation_id', adjustment."model_operation_id"::text,
+        'worker_id', adjustment."worker_id"::text,
+        'quantity', adjustment."quantity",
+        'unit_price_snapshot', adjustment."unit_price_snapshot"::text,
+        'entered_at', to_char(adjustment."entered_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+        'business_date', adjustment."business_date"::text,
+        'version', adjustment."version"::text,
+        'created_by', adjustment."created_by"::text,
+        'created_device_id', adjustment."created_device_id"::text,
+        'created_at', to_char(adjustment."created_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+        'updated_at', to_char(adjustment."updated_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"'),
+        'deleted_at', CASE WHEN adjustment."deleted_at" IS NULL THEN NULL ELSE
+          to_char(adjustment."deleted_at" AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') END,
+        'deleted_by', adjustment."deleted_by"::text
+      )
+    )
+  FROM "model_account_adjustments" adjustment
+  WHERE NOT EXISTS (
+    SELECT 1 FROM "server_change_log" change
+    WHERE change."entity_type" = 'model_account_adjustments'
+      AND change."entity_id" = adjustment."id"::text
+      AND change."operation" = 'DELETE'
+  )
+  ORDER BY adjustment."id"
 `;

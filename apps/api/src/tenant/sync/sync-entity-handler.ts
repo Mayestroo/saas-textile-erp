@@ -4,6 +4,7 @@ import type {
   SyncEvent,
   SyncMutationOperation,
   SyncProjection,
+  SyncProjectionV3,
 } from '@textile/sync-protocol';
 
 export interface SyncApplyContext {
@@ -16,7 +17,7 @@ export interface SyncApplyContext {
 
 export interface SyncHandlerResult {
   entityVersion: string | null;
-  projection: SyncProjection | import('@textile/sync-protocol').SyncProjectionV2 | null;
+  projection: SyncProjection | import('@textile/sync-protocol').SyncProjectionV2 | SyncProjectionV3 | null;
   changeSequence: string;
 }
 

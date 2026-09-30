@@ -9,9 +9,11 @@ import { TenantSyncCoreModule } from '../sync/sync-core.module.js';
 import { TenantConnectionModule } from '../tenant-connection/tenant-connection.module.js';
 import { TenantResolverModule } from '../tenant-resolver/tenant-resolver.module.js';
 import { WorkersModule } from '../workers/workers.module.js';
-import { ModelAccountController, PattaSheetsController } from './patta-sheets.controller.js';
+import { ModelAccountController, PattaSheetsController, PattaSheetsV3Controller } from './patta-sheets.controller.js';
 import { ModelAccountQueryService } from './model-account-query.service.js';
 import { PattaSheetsService } from './patta-sheets.service.js';
+import { ModelAccountAdjustmentsService } from './model-account-adjustments.service.js';
+import { ModelAccountV3Controller } from './model-account-v3.controller.js';
 
 @Module({
   imports: [
@@ -24,8 +26,8 @@ import { PattaSheetsService } from './patta-sheets.service.js';
     WorkersModule,
     OperationsModule,
   ],
-  controllers: [PattaSheetsController, ModelAccountController],
-  providers: [PattaSheetsService, ModelAccountQueryService, TenantAuthGuard, TenantPermissionGuard],
-  exports: [PattaSheetsService, ModelAccountQueryService],
+  controllers: [PattaSheetsController, PattaSheetsV3Controller, ModelAccountController, ModelAccountV3Controller],
+  providers: [PattaSheetsService, ModelAccountAdjustmentsService, ModelAccountQueryService, TenantAuthGuard, TenantPermissionGuard],
+  exports: [PattaSheetsService, ModelAccountAdjustmentsService, ModelAccountQueryService],
 })
 export class PattaSheetsModule {}

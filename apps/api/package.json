@@ -30,6 +30,8 @@
     "test:models-operations": "vitest run src/tenant/models/models-operations.integration.spec.ts",
     "test:workers-badges": "vitest run src/tenant/workers/workers-badges.integration.spec.ts",
     "test:patta": "vitest run src/tenant/patta/patta.integration.spec.ts",
+    "test:patta-sheets": "vitest run src/tenant/patta/patta.integration.spec.ts -t \"Patta Sheet|Standalone Entry|pre-V3 linked sheets\"",
+    "test:model-account-adjustments": "vitest run src/tenant/patta/patta.integration.spec.ts -t \"manual Model hisob adjustments\"",
     "test:sync": "vitest run src/tenant/sync/sync.integration.spec.ts",
     "watch:compile": "swc src --out-dir dist --config-file .swcrc --ignore \"**/*.spec.ts\" --strip-leading-paths --watch",
     "typecheck": "tsc --noEmit -p tsconfig.build.json"

@@ -10,6 +10,7 @@ export const TENANT_PERMISSION_SEEDS = [
   { code: 'patta.chiqarish.create', description: 'Patta yaratish' },
   { code: 'patta.chiqarish.correct', description: 'Patta chiqarilgan yozuvlarini tuzatish' },
   { code: 'patta.hisob.view', description: 'Patta hisobini ko‘rish' },
+  { code: 'patta.hisob.manual_manage', description: 'Patta hisobiga qo‘lda yozuv qo‘shish va tahrirlash' },
   { code: 'patta_varaq.view', description: 'Patta varag‘ini ko‘rish' },
   { code: 'patta_varaq.create', description: 'Patta varag‘i yaratish' },
   { code: 'patta_varaq.edit', description: 'Patta varag‘ini tahrirlash' },

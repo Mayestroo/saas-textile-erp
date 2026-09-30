@@ -15,8 +15,8 @@ export class SyncBootstrapPageQueryDto {
 
   @IsOptional()
   @Transform(({ value }) => integerQueryValue(value))
-  @IsIn([1, 2])
-  protocol_version?: 1 | 2;
+  @IsIn([1, 2, 3])
+  protocol_version?: 1 | 2 | 3;
 
   @IsOptional()
   @IsString()

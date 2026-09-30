@@ -50,6 +50,52 @@ function workerProjection(id: string, version: string): SyncProjection {
   };
 }
 
+function pattaSheetV3Projection(entryKind: 'PATTA_LINKED' | 'STANDALONE'): Record<string, unknown> {
+  const pattaId = entryKind === 'PATTA_LINKED' ? '88888888-8888-4888-8888-888888888888' : null;
+  return {
+    projection_version: 3,
+    entity_type: 'patta_sheets',
+    entity_id: '99999999-9999-4999-8999-999999999999',
+    entity_version: '1',
+    data: {
+      id: '99999999-9999-4999-8999-999999999999',
+      entry_kind: entryKind,
+      patta_hisob_id: pattaId,
+      model_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      model_name_snapshot: 'Atlas',
+      ish_soni: 95,
+      partiya_number_snapshot: entryKind === 'PATTA_LINKED' ? '9' : null,
+      patta_number_snapshot: entryKind === 'PATTA_LINKED' ? '100' : null,
+      rang_snapshot: 'Qora',
+      razmer_snapshot: 'M',
+      entered_at: '2026-09-28T10:00:00.000000Z',
+      business_date: '2026-09-28',
+      conveyor_snapshot: null,
+      version: '1',
+      created_by: null,
+      created_at: '2026-09-28T10:00:00.000000Z',
+      updated_at: '2026-09-28T10:00:00.000000Z',
+      deleted_at: null,
+      deleted_by: null,
+      deleted_by_name_snapshot: null,
+      operation_snapshots: [{
+        id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        patta_sheet_id: '99999999-9999-4999-8999-999999999999',
+        model_operation_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+        source_type: entryKind === 'PATTA_LINKED' ? 'PATTA' : 'MODEL',
+        source_patta_operation_snapshot_id: entryKind === 'PATTA_LINKED'
+          ? 'dddddddd-dddd-4ddd-8ddd-dddddddddddd'
+          : null,
+        operation_name_snapshot: 'Tikish',
+        unit_price_snapshot: '10.00',
+        sort_order: 0,
+        created_at: '2026-09-28T10:00:00.000000Z',
+      }],
+      rows: [],
+    },
+  };
+}
+
 describe('SyncService', () => {
   it('returns independent outcomes for a mixed batch and preserves input order', async () => {
     const outcomes: SyncPushResult[] = [
@@ -148,6 +194,104 @@ describe('SyncService', () => {
     await expect(service.push(context(dataSource), deviceId, [{ ...event(0), entity_type: 'patta' }], 2))
       .rejects.toMatchObject({ response: { code: 'PATTA_PRINT_BATCH_REQUIRED' } });
     expect(processor.process).not.toHaveBeenCalled();
+  });
+
+  it('adapts a V3 linked sheet to the exact V2 pull shape for a linked-only client', async () => {
+    const projection = pattaSheetV3Projection('PATTA_LINKED');
+    const query = vi.fn(async () => [{
+      sequence_id: '43', entity_type: 'patta_sheets',
+      entity_id: '99999999-9999-4999-8999-999999999999', operation: 'UPSERT',
+      entity_version: '1', projection_version: 3, payload: projection,
+      changed_at: '2026-09-28T10:00:00.000000Z',
+    }]);
+    const service = new SyncService(
+      { process: vi.fn() } as unknown as SyncEventProcessor,
+      loadSyncConfiguration({}),
+    );
+
+    const response = await service.pull({ query } as unknown as DataSource, '0', 100, 2);
+    expect(response.changes[0]).toMatchObject({
+      projection_version: 2,
+      payload: {
+        projection_version: 2,
+        entity_type: 'patta_sheets',
+        data: { patta_hisob_id: '88888888-8888-4888-8888-888888888888' },
+      },
+    });
+    expect(response.changes[0]?.payload && 'data' in response.changes[0].payload &&
+      'entry_kind' in response.changes[0].payload.data).toBe(false);
+  });
+
+  it('returns upgrade-required without advancing a V2 page that contains a V3 Standalone sheet', async () => {
+    const query = vi.fn(async () => [{
+      sequence_id: '44', entity_type: 'patta_sheets',
+      entity_id: '99999999-9999-4999-8999-999999999999', operation: 'UPSERT',
+      entity_version: '1', projection_version: 3, payload: pattaSheetV3Projection('STANDALONE'),
+      changed_at: '2026-09-28T10:00:00.000000Z',
+    }]);
+    const service = new SyncService(
+      { process: vi.fn() } as unknown as SyncEventProcessor,
+      loadSyncConfiguration({}),
+    );
+
+    await expect(service.pull({ query } as unknown as DataSource, '43', 100, 2))
+      .rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
+  });
+
+  it('delivers the Standalone sheet projection to a V3 client', async () => {
+    const projection = pattaSheetV3Projection('STANDALONE');
+    const query = vi.fn(async () => [{
+      sequence_id: '44', entity_type: 'patta_sheets',
+      entity_id: '99999999-9999-4999-8999-999999999999', operation: 'UPSERT',
+      entity_version: '1', projection_version: 3, payload: projection,
+      changed_at: '2026-09-28T10:00:00.000000Z',
+    }]);
+    const service = new SyncService(
+      { process: vi.fn() } as unknown as SyncEventProcessor,
+      loadSyncConfiguration({}),
+    );
+
+    const response = await service.pull({ query } as unknown as DataSource, '43', 100, 3);
+    expect(response.changes[0]).toMatchObject({
+      projection_version: 3,
+      payload: { projection_version: 3, data: { entry_kind: 'STANDALONE', patta_hisob_id: null } },
+    });
+  });
+
+  it('requires V3 for manual adjustment changes seen by a V2 pull cursor', async () => {
+    const adjustment = {
+      id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      model_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      model_operation_id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      worker_id: '17',
+      quantity: 20,
+      unit_price_snapshot: '21.50',
+      entered_at: '2026-09-28T10:00:00.000000Z',
+      business_date: '2026-09-28',
+      version: '1',
+      created_by: actorUserId,
+      created_device_id: deviceId,
+      created_at: '2026-09-28T10:00:00.000000Z',
+      updated_at: '2026-09-28T10:00:00.000000Z',
+      deleted_at: null,
+      deleted_by: null,
+    };
+    const query = vi.fn(async () => [{
+      sequence_id: '45', entity_type: 'model_account_adjustments', entity_id: adjustment.id,
+      operation: 'UPSERT', entity_version: '1', projection_version: 3,
+      payload: {
+        projection_version: 3, entity_type: 'model_account_adjustments', entity_id: adjustment.id,
+        entity_version: '1', data: adjustment,
+      },
+      changed_at: adjustment.created_at,
+    }]);
+    const service = new SyncService(
+      { process: vi.fn() } as unknown as SyncEventProcessor,
+      loadSyncConfiguration({}),
+    );
+
+    await expect(service.pull({ query } as unknown as DataSource, '44', 100, 2))
+      .rejects.toMatchObject({ response: { code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED' } });
   });
 
   it('returns a structured upgrade error instead of a projection failure when a v1 pull reaches Patta data', async () => {

@@ -19,6 +19,13 @@
 - Preserve linked one-Patta-one-Entry uniqueness; Standalone metadata values are informational, not Patta keys.
 - All offline writes commit local state and stable sync event IDs atomically; API validates again.
 
+## Execution Status — 2026-09-30
+
+- Core protocol, API, SQLite, sync, renderer, and documentation changes are implemented.
+- PostgreSQL validation passed: Master DB 12 tests, tenant provisioning 7 tests, Standalone/Patta Sheet migration 3 targeted tests, and sync integration 21 tests.
+- The sync integration spawned the Electron two-PC acceptance and desktop tenant-auth suites; all 3 acceptance tests passed, including PC-1 Standalone Entry → PC-2 pull and manual adjustment → PC-2 pull.
+- API/Desktop typecheck and production builds passed; API lint passed. Desktop lint exited successfully with existing Prettier/line-ending warnings. Electron’s full interactive UI has not been manually launched.
+
 ## File map
 
 - Shared contract: `packages/sync-protocol/src/index.ts` (protocol V3, preserving V1/V2 types).
@@ -119,7 +126,7 @@ expect(api.pattaSheet.create).toHaveBeenCalledWith(expect.objectContaining({
 **Files:**
 - Create: `database/tenant-migrations/20260929001200-AddStandalonePattaEntries.js`; in the same transaction replace the bootstrap-session protocol check with `protocol_version IN (1,2,3)`.
 - Migration discovery: `apps/api/src/database/tenant/tenant-database.config.ts` already globs `database/tenant-migrations/*.js`; no registry edit is needed.
-- Create integration test: `apps/api/src/tenant/patta-sheets/patta-sheets.integration.spec.ts`.
+- Extend: `apps/api/src/tenant/patta/patta.integration.spec.ts` reusing its isolated tenant database fixture for schema/backfill/trigger assertions.
 - Modify: `apps/api/package.json` to add a focused `test:patta-sheets` script.
 
 - [ ] Write a migration test that first creates linked rows with current migration `20260928001100`, applies the new migration, and verifies every old sheet remains `PATTA_LINKED` and retains its Patta FK, rows, and snapshots.
@@ -135,7 +142,8 @@ expect(rows[0]).toEqual({ entry_kind: 'PATTA_LINKED', patta_hisob_id: pattaId, i
 
 - [ ] Make `patta_sheets.patta_hisob_id` nullable, replace the unconditional unique constraint with a partial unique constraint for non-null Patta IDs, and add an entry-kind consistency check.
 - [ ] Add model ID/name and positive `ish_soni` snapshots plus nullable Partiya/Patta/Rang/Razmer snapshots; backfill existing linked rows from `patta_hisob` before enforcing non-null model/quantity fields.
-- [ ] Extend source-type constraints to `PATTA`, `MODEL`, and `CUSTOM`; `MODEL` and `CUSTOM` have no Patta snapshot source. Extend row quantity trigger to compare with parent Patta `ish_soni` for linked sheets and sheet `ish_soni` for standalone sheets.
+- [ ] Extend source-type constraints to `PATTA`, `MODEL`, and `CUSTOM`; `MODEL` and `CUSTOM` have no Patta snapshot source. Replace all three sheet trigger-function bodies: parent identity/model/quantity/lifecycle guard, operation source/model guard, and row quantity guard. Recreate the parent trigger with `INSERT` included; the previous operation/row functions inner-join `patta_hisob` and therefore reject valid nullable-FK Standalone entries.
+- [ ] Keep linked quantity corrections authorized only by the existing correction ledgers; row quantity validation uses the Patta snapshot for linked sheets and the immutable sheet `ish_soni` for Standalone sheets.
 - [ ] Add `deleted_by_name_snapshot`; set it only on trash and preserve it in sync projection. Existing rows without historical name data remain null.
 - [ ] Test linked unique-Pata behavior, multiple Standalone entries with null Patta FK, FK and trigger failures, model/operation validation, backfill preservation, and migration rollback guards.
 - [ ] Run `npm run test:patta-sheets --workspace=apps/api`; if test database settings are absent, report the integration suite as skipped/blocked, not passed.

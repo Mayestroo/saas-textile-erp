@@ -1,0 +1,71 @@
+:root {
+  color-scheme: light;
+
+  --ui-canvas: #f2f6f3;
+  --ui-surface: #ffffff;
+  --ui-paper: #ffffff;
+  --ui-surface-soft: #f7faf8;
+  --ui-surface-raised: #ffffff;
+  --ui-text: #1c2a21;
+  --ui-text-secondary: #4d6254;
+  --ui-text-muted: #718176;
+  --ui-border: #dce6de;
+  --ui-border-strong: #c2d1c5;
+  --ui-accent: #147a4c;
+  --ui-accent-strong: #0e613b;
+  --ui-accent-soft: #e8f4ec;
+  --ui-success: #1c7046;
+  --ui-success-soft: #e8f4ec;
+  --ui-warning: #8a5c12;
+  --ui-warning-soft: #fff5df;
+  --ui-danger: #a43b31;
+  --ui-danger-soft: #fff0ed;
+  --ui-focus: #218153;
+  --ui-focus-soft: rgb(20 122 76 / 12%);
+  --ui-table-head: #f2f7f3;
+  --ui-table-hover: #f7faf8;
+  --ui-table-total: #edf5ef;
+  --ui-table-total-strong: #e5f1e8;
+  --ui-grid-line: #edf1ee;
+
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 20px;
+  --ui-space-6: 24px;
+  --ui-space-8: 32px;
+
+  --ui-radius-sm: 5px;
+  --ui-radius-md: 8px;
+  --ui-radius-lg: 12px;
+  --ui-radius-pill: 999px;
+  --ui-shadow-sm: 0 1px 3px rgb(26 56 38 / 8%);
+  --ui-shadow-md: 0 8px 24px rgb(26 56 38 / 10%);
+  --ui-font-sans: "Segoe UI", Arial, sans-serif;
+  --ui-font-mono: Consolas, "Courier New", monospace;
+
+  /* Keep the starter CSS aliases working while pages migrate to semantic tokens. */
+  --ev-c-white: var(--ui-surface);
+  --ev-c-white-soft: var(--ui-surface-soft);
+  --ev-c-white-mute: #edf3ef;
+  --ev-c-black: #1c2a21;
+  --ev-c-black-soft: #25362b;
+  --ev-c-black-mute: #304438;
+  --ev-c-gray-1: #d3dfd6;
+  --ev-c-gray-2: #e1e9e3;
+  --ev-c-gray-3: #f2f6f3;
+  --ev-c-text-1: var(--ui-text);
+  --ev-c-text-2: var(--ui-text-secondary);
+  --ev-c-text-3: var(--ui-text-muted);
+  --ev-button-alt-border: var(--ui-border);
+  --ev-button-alt-text: var(--ui-text);
+  --ev-button-alt-bg: var(--ui-surface-soft);
+  --ev-button-alt-hover-border: var(--ui-border-strong);
+  --ev-button-alt-hover-text: var(--ui-text);
+  --ev-button-alt-hover-bg: var(--ui-accent-soft);
+  --color-background: var(--ui-canvas);
+  --color-background-soft: var(--ui-surface);
+  --color-background-mute: var(--ui-surface-soft);
+  --color-text: var(--ui-text);
+}

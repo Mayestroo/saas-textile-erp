@@ -9,6 +9,19 @@ export interface LocalWorkerRecord {
 export class WorkerLocalRepository {
   constructor(private readonly database: Database.Database) {}
 
+  listActiveWorkers(): readonly LocalWorkerRecord[] {
+    return this.database.prepare(`
+      SELECT worker.id, worker.full_name, worker.status
+      FROM workers AS worker
+      WHERE worker.status = 'ACTIVE'
+        AND NOT EXISTS (
+          SELECT 1 FROM sync_tombstones AS tombstone
+          WHERE tombstone.entity_type = 'workers' AND tombstone.entity_id = worker.id
+        )
+      ORDER BY worker.full_name COLLATE NOCASE, worker.id
+    `).all() as LocalWorkerRecord[]
+  }
+
   getById(workerId: string): LocalWorkerRecord | null {
     const worker = this.database
       .prepare(

@@ -67,6 +67,7 @@ const TEST_DATABASE_VARIABLES = [
   'TEST_MASTER_DB_USER',
   'TEST_MASTER_DB_PASSWORD',
 ] as const;
+const SYNC_V2_MIGRATION_NAME = 'AddSyncProtocolV2Sessions20260928000900';
 
 const configuredVariables = TEST_DATABASE_VARIABLES.filter((key) =>
   Boolean(process.env[key]?.trim()),
@@ -388,6 +389,24 @@ integrationDescribe(
       };
     }
 
+    async function undoThroughMigration(targetMigrationName: string): Promise<void> {
+      const knownMigrations: Array<{ name: string }> = await tenant.migrationDataSource.query(
+        'SELECT "name" FROM "tenant_typeorm_migrations"',
+      );
+      if (!knownMigrations.some(({ name }) => name === targetMigrationName)) {
+        throw new Error(`Tenant migration ${targetMigrationName} is not applied`);
+      }
+      while (true) {
+        const latestMigrations: Array<{ name: string }> = await tenant.migrationDataSource.query(
+          'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp" DESC LIMIT 1',
+        );
+        const latestName = latestMigrations[0]?.name;
+        if (!latestName) throw new Error('Tenant migration history ended before its rollback target');
+        await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+        if (latestName === targetMigrationName) return;
+      }
+    }
+
     function variantEvent(
       event: OfflinePattaCreateEvent,
       overrides: {
@@ -644,14 +663,7 @@ integrationDescribe(
         `INSERT INTO "workers" ("full_name") VALUES ('Bootstrap rollback sentinel')`,
       );
 
-      await tenant.migrationDataSource.undoLastMigration({
-        transaction: 'all',
-      });
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
-      await tenant.migrationDataSource.undoLastMigration({ transaction: 'all' });
+      await undoThroughMigration('AddOfflineSyncInfrastructure20260926000600');
       const removedTables: TableNameRow[] =
         await tenant.migrationDataSource.query(
           `SELECT "table_name" FROM information_schema.tables
@@ -2714,6 +2726,7 @@ integrationDescribe(
               SYNC_TEST_BADGE_PC1: badgePc1,
               SYNC_TEST_BADGE_PC2: badgePc2,
               SYNC_TEST_USER_ID: authUserId,
+              SYNC_TEST_USER_NAME: 'Two PC Sync Actor',
               SYNC_TEST_TENANT_TIMEZONE: 'Asia/Tashkent',
               SYNC_TEST_LOCAL_DATA_DIR: localDataDirectory,
               DESKTOP_AUTH_TEST_TENANT_URL:
@@ -2792,8 +2805,21 @@ integrationDescribe(
            VALUES ('patta_print_batches', $1, 'UPSERT', 2, '{}'::jsonb)`,
           [randomUUID()],
         );
-        await fixture.migrationDataSource.undoLastMigration({ transaction: 'all' });
-        await fixture.migrationDataSource.undoLastMigration({ transaction: 'all' });
+        const appliedMigrations: Array<{ name: string }> = await fixture.migrationDataSource.query(
+          'SELECT "name" FROM "tenant_typeorm_migrations"',
+        );
+        if (!appliedMigrations.some(({ name }) => name === SYNC_V2_MIGRATION_NAME)) {
+          throw new Error('Sync V2 migration is not applied');
+        }
+        while (true) {
+          const latestMigrations: Array<{ name: string }> = await fixture.migrationDataSource.query(
+            'SELECT "name" FROM "tenant_typeorm_migrations" ORDER BY "timestamp" DESC LIMIT 1',
+          );
+          const latestName = latestMigrations[0]?.name;
+          if (!latestName) throw new Error('Tenant migration history ended before Sync V2 rollback');
+          if (latestName === SYNC_V2_MIGRATION_NAME) break;
+          await fixture.migrationDataSource.undoLastMigration({ transaction: 'all' });
+        }
         await expect(
           fixture.migrationDataSource.undoLastMigration({ transaction: 'all' }),
         ).rejects.toThrow('cannot revert sync protocol v2');

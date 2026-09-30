@@ -181,7 +181,8 @@ export class TenantDatabaseManager implements OnModuleDestroy {
               "patta_print_batches", "patta_print_batch_sizes", "patta_print_events",
               "patta_print_batch_corrections", "patta_legacy_quantity_corrections",
               "patta_hisob", "patta_operation_snapshots",
-              "patta_sheets", "patta_sheet_operation_snapshots", "patta_sheet_rows",
+               "patta_sheets", "patta_sheet_operation_snapshots", "patta_sheet_rows",
+               "model_account_adjustments",
             "processed_sync_events", "server_change_log",
             "bootstrap_sessions", "bootstrap_items"
           TO ${role}`,

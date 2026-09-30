@@ -55,6 +55,7 @@ import { PlatformSessionRepository } from '../../master/platform-auth/platform-s
 import { PlatformRbacService } from '../../master/platform-rbac/platform-rbac.service.js';
 import { seedPlatformPermissions } from '../../master/platform-rbac/platform-permission.seed.js';
 import { TenantAuthController } from '../../tenant/auth/tenant-auth.controller.js';
+import { TenantPermissionsProjectionService } from '../../tenant/auth/tenant-permissions-projection.service.js';
 import { TenantAuthGuard } from '../../tenant/auth/tenant-auth.guard.js';
 import { TenantAuthService } from '../../tenant/auth/tenant-auth.service.js';
 import { TenantPermissionGuard } from '../../tenant/auth/tenant-permission.guard.js';
@@ -366,7 +367,7 @@ integrationDescribe(
         provisioningStatus: 'ACTIVE',
         failureStep: null,
         failureReason: null,
-        schemaVersion: 'AddPattaSheets20260928001100',
+        schemaVersion: 'AddModelAccountAdjustments20260929001300',
       });
       expect(JSON.stringify(result)).not.toContain(admin.password);
       await expect(
@@ -398,6 +399,7 @@ integrationDescribe(
           'bootstrap_items',
           'bootstrap_sessions',
           'login_rate_limits',
+          'model_account_adjustments',
           'model_operation_prices',
           'model_operations',
           'models',
@@ -436,6 +438,8 @@ integrationDescribe(
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
         await migrationDataSource.undoLastMigration({ transaction: 'all' });
+        await migrationDataSource.undoLastMigration({ transaction: 'all' });
+        await migrationDataSource.undoLastMigration({ transaction: 'all' });
         const tablesAfterRevert: Array<{ table_name: string }> =
           await migrationDataSource.query(
             `SELECT "table_name" FROM "information_schema"."tables"
@@ -464,6 +468,8 @@ integrationDescribe(
           'AddSyncProtocolV2Sessions20260928000900',
           'AddPattaPrintBatchCorrections20260928001000',
           'AddPattaSheets20260928001100',
+          'AddStandalonePattaEntries20260929001200',
+          'AddModelAccountAdjustments20260929001300',
         ]);
         await new PattaSequenceInitializer().initialize(
           migrationDataSource,
@@ -742,6 +748,8 @@ integrationDescribe(
           'AddSyncProtocolV2Sessions20260928000900',
           'AddPattaPrintBatchCorrections20260928001000',
           'AddPattaSheets20260928001100',
+          'AddStandalonePattaEntries20260929001200',
+          'AddModelAccountAdjustments20260929001300',
         ]);
         const userCount: Array<{ count: string }> =
           await migrationDataSource.query(
@@ -791,6 +799,8 @@ integrationDescribe(
           'AddSyncProtocolV2Sessions20260928000900',
           'AddPattaPrintBatchCorrections20260928001000',
           'AddPattaSheets20260928001100',
+          'AddStandalonePattaEntries20260929001200',
+          'AddModelAccountAdjustments20260929001300',
         ]);
       } finally {
         await migrationDataSource.destroy();
@@ -998,6 +1008,7 @@ integrationDescribe(
           },
           { provide: PlatformAuthService, useValue: platformAuthService },
           { provide: TenantAuthService, useValue: tenantAuthService },
+          TenantPermissionsProjectionService,
           { provide: CompaniesService, useValue: companiesService },
           { provide: PlatformRbacService, useValue: platformRbacService },
           { provide: TenantRbacService, useValue: tenantRbacService },

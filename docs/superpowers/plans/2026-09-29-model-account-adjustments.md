@@ -20,6 +20,13 @@
 - Use the existing two-way sync/idempotency pipeline; no parallel queue or renderer network/database access.
 - Use `patta.hisob.view` for read access and `patta.hisob.manual_manage` for adjustment mutations.
 
+## Execution Status — 2026-09-30
+
+- Core protocol, API, SQLite, sync, account aggregation, IPC, and renderer changes are implemented.
+- PostgreSQL validation passed: Master DB 12 tests, tenant provisioning 7 tests, manual adjustment integration 1 targeted test, and sync integration 21 tests.
+- The sync integration spawned the Electron two-PC acceptance and desktop tenant-auth suites; all 3 acceptance tests passed, including manual adjustment → PC-2 pull.
+- API/Desktop typecheck and production builds passed; API lint passed. Desktop lint exited successfully with existing Prettier/line-ending warnings. Electron’s full interactive UI has not been manually launched.
+
 ## File map
 
 - Shared types: `packages/sync-protocol/src/index.ts`.
@@ -111,11 +118,17 @@ interface ModelAccountOperationTotal {
   model_operation_id: string
   operation_name: string
   sort_order: number
-  current_price: string
+  current_price: string | null
+  version: string
+  status: 'ACTIVE' | 'INACTIVE'
   quantity: string
   patta_quantity: string
+  standalone_quantity: string
   manual_quantity: string
   gross_amount: string
+  patta_amount: string
+  standalone_amount: string
+  manual_amount: string
 }
 
 interface ModelAccountContributionRow {
@@ -123,9 +136,11 @@ interface ModelAccountContributionRow {
   worker_name: string
   model_operation_id: string
   patta_quantity: string
+  standalone_quantity: string
   manual_quantity: string
   total_quantity: string
   patta_amount: string
+  standalone_amount: string
   manual_amount: string
   gross_amount: string
 }
@@ -135,12 +150,15 @@ interface ModelAccountWorkerDetail {
   model_name: string
   model_operation_id: string
   operation_name: string
-  source: 'PATTA' | 'MANUAL'
+  source: 'PATTA' | 'STANDALONE' | 'MANUAL'
   quantity: string
   unit_price_snapshot: string
   gross_amount: string
   entered_at: string
   manual_adjustment_id: string | null
+  version: string | null
+  deleted_at: string | null
+  deleted_by: string | null
 }
 
 interface ConveyorAccountRow {
@@ -160,6 +178,7 @@ interface ConveyorAccountRow {
 expect(sheet.rows.find((row) => row.worker_id === workerId && row.model_operation_id === operationId))
   .toMatchObject({
     patta_quantity: '125',
+    standalone_quantity: '0',
     manual_quantity: '20',
     total_quantity: '145',
     gross_amount: '1550.00'

@@ -3,6 +3,7 @@ import type {
   SyncChange,
   SyncProjection,
   SyncProjectionV2,
+  SyncProjectionV3,
   PattaV2LookupMirror
 } from '@textile/sync-protocol'
 import { assertPostgresBigint, compareDecimalStrings, parsePostgresBigint } from './decimal-string'
@@ -10,6 +11,8 @@ import type { BootstrapStagingRepository } from './bootstrap-staging.repository'
 import { LocalUnitOfWork } from './local-unit-of-work'
 import { SyncStateRepository } from './sync-state.repository'
 import { LocalDomainError } from './local-errors'
+import { PattaSheetRepository } from './patta-sheet.repository'
+import { ModelAccountAdjustmentRepository } from './model-account-adjustment.repository'
 
 interface ExistingBlockState {
   local_next_number: string | null
@@ -60,7 +63,8 @@ const SERVER_MIRRORS: readonly {
   { entityType: 'patta_print_events', table: 'patta_print_events', onlyServerOwned: false },
   { entityType: 'patta_sheets', table: 'patta_sheets', onlyServerOwned: true },
   { entityType: 'patta_sheet_operation_snapshots', table: 'patta_sheet_operation_snapshots', onlyServerOwned: true },
-  { entityType: 'patta_sheet_rows', table: 'patta_sheet_rows', onlyServerOwned: true }
+  { entityType: 'patta_sheet_rows', table: 'patta_sheet_rows', onlyServerOwned: true },
+  { entityType: 'model_account_adjustments', table: 'model_account_adjustments', onlyServerOwned: true }
 ]
 
 function matchesLocalPatta(
@@ -220,10 +224,14 @@ function validateBlockNumbers(
 
 function applyProjection(
   database: Database.Database,
-  projection: SyncProjection | SyncProjectionV2,
+  projection: SyncProjectionV3,
   sequence: string,
   mode: 'BOOTSTRAP' | 'PULL'
 ): void {
+  if (projection.projection_version === 3) {
+    applyProjectionV3(database, projection, sequence)
+    return
+  }
   if (projection.projection_version === 2) {
     applyProjectionV2(database, projection, sequence)
     return
@@ -627,6 +635,27 @@ function applyProjection(
   }
 }
 
+function applyProjectionV3(
+  database: Database.Database,
+  projection: Extract<SyncProjectionV3, { projection_version: 3 }>,
+  sequence: string
+): void {
+  if (projection.entity_type === 'patta_sheets') {
+    const pendingPurge = database.prepare(`
+      SELECT 1 FROM sync_queue WHERE entity_type = 'patta_sheet' AND entity_id = ?
+        AND operation = 'DELETE' AND status IN ('PENDING', 'SYNCING', 'CONFLICT', 'FAILED')
+    `).get(projection.entity_id)
+    if (pendingPurge) return
+    new PattaSheetRepository(database).applyServerProjection(projection.data, sequence)
+    return
+  }
+  if (projection.entity_type === 'model_account_adjustments') {
+    new ModelAccountAdjustmentRepository(database).applyServerProjection(projection.data, sequence)
+    return
+  }
+  throw new Error('Unsupported V3 projection entity')
+}
+
 function applyProjectionV2(
   database: Database.Database,
   projection: SyncProjectionV2,
@@ -865,66 +894,7 @@ function applyProjectionV2(
       const current = database.prepare('SELECT ownership_state FROM patta_sheets WHERE id = ?')
         .get(sheet.id) as LocalOwnershipState | undefined
       if (current && current.ownership_state !== 'SERVER_SYNCED') return
-      const applySheet = database.transaction(() => {
-        database.prepare(`
-          INSERT INTO patta_sheets (
-            id, patta_hisob_id, entered_at, business_date, conveyor_snapshot, version, created_by,
-            created_at, updated_at, deleted_at, deleted_by, ownership_state, server_sequence
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SERVER_SYNCED', ?)
-          ON CONFLICT(id) DO UPDATE SET patta_hisob_id = excluded.patta_hisob_id,
-            entered_at = excluded.entered_at, business_date = excluded.business_date,
-            conveyor_snapshot = excluded.conveyor_snapshot, version = excluded.version,
-            created_by = excluded.created_by, created_at = excluded.created_at,
-            updated_at = excluded.updated_at, deleted_at = excluded.deleted_at,
-            deleted_by = excluded.deleted_by, ownership_state = 'SERVER_SYNCED',
-            server_sequence = excluded.server_sequence
-        `).run(
-          sheet.id, sheet.patta_hisob_id, sheet.entered_at, sheet.business_date,
-          sheet.conveyor_snapshot, sheet.version, sheet.created_by, sheet.created_at,
-          sheet.updated_at, sheet.deleted_at, sheet.deleted_by, sequence
-        )
-        for (const snapshot of sheet.operation_snapshots) {
-          const existing = database.prepare(`
-            SELECT patta_sheet_id, model_operation_id, source_type, source_patta_operation_snapshot_id,
-              operation_name_snapshot, unit_price_snapshot, sort_order
-            FROM patta_sheet_operation_snapshots WHERE id = ?
-          `).get(snapshot.id) as Omit<typeof snapshot, 'id' | 'created_at'> | undefined
-          if (existing && (
-            existing.patta_sheet_id !== sheet.id || existing.model_operation_id !== snapshot.model_operation_id ||
-            existing.source_type !== snapshot.source_type ||
-            existing.source_patta_operation_snapshot_id !== snapshot.source_patta_operation_snapshot_id ||
-            existing.operation_name_snapshot !== snapshot.operation_name_snapshot ||
-            existing.unit_price_snapshot !== snapshot.unit_price_snapshot || existing.sort_order !== snapshot.sort_order
-          )) {
-            throw new LocalDomainError('PATTA_SHEET_SNAPSHOT_MISMATCH', 'Server varaq operatsiya tarixi mahalliy nusxaga mos emas')
-          }
-          database.prepare(`
-            INSERT INTO patta_sheet_operation_snapshots (
-              id, patta_sheet_id, model_operation_id, source_type, source_patta_operation_snapshot_id,
-              operation_name_snapshot, unit_price_snapshot, sort_order, created_at, ownership_state, server_sequence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SERVER_SYNCED', ?)
-            ON CONFLICT(id) DO UPDATE SET ownership_state = 'SERVER_SYNCED', server_sequence = excluded.server_sequence
-          `).run(snapshot.id, sheet.id, snapshot.model_operation_id, snapshot.source_type,
-            snapshot.source_patta_operation_snapshot_id, snapshot.operation_name_snapshot,
-            snapshot.unit_price_snapshot, snapshot.sort_order, snapshot.created_at, sequence)
-        }
-        for (const row of sheet.rows) {
-          database.prepare(`
-            INSERT INTO patta_sheet_rows (
-              id, patta_sheet_id, patta_sheet_operation_snapshot_id, worker_id, quantity_snapshot,
-              nuqson, deleted_at, deleted_by, created_at, updated_at, ownership_state, server_sequence
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SERVER_SYNCED', ?)
-            ON CONFLICT(id) DO UPDATE SET patta_sheet_operation_snapshot_id = excluded.patta_sheet_operation_snapshot_id,
-              worker_id = excluded.worker_id, quantity_snapshot = excluded.quantity_snapshot,
-              nuqson = excluded.nuqson, deleted_at = excluded.deleted_at, deleted_by = excluded.deleted_by,
-              updated_at = excluded.updated_at, ownership_state = 'SERVER_SYNCED',
-              server_sequence = excluded.server_sequence
-          `).run(row.id, sheet.id, row.patta_sheet_operation_snapshot_id, row.worker_id,
-            row.quantity_snapshot, row.nuqson ? 1 : 0, row.deleted_at, row.deleted_by,
-            row.created_at, row.updated_at, sequence)
-        }
-      })
-      applySheet.immediate()
+      new PattaSheetRepository(database).applyServerProjection(sheet, sequence)
       return
     }
     case 'patta_sheet_operation_snapshots':

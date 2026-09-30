@@ -3,7 +3,7 @@ import type {
   SyncProtocolVersion,
   SyncChange,
   SyncProjectionV2,
-  SyncProjection,
+  SyncProjectionV3,
   SyncPullResponse,
   SyncPushResult,
   SyncPushResponse,
@@ -32,6 +32,7 @@ const SYNC_ENTITY_TYPES: ReadonlySet<string> = new Set([
   'patta_sheets',
   'patta_sheet_operation_snapshots',
   'patta_sheet_rows',
+  'model_account_adjustments',
 ]);
 
 interface ServerChangeRow {
@@ -99,15 +100,53 @@ function parseCursor(value: string): bigint {
 function projectionForChange(
   row: ServerChangeRow,
   protocolVersion: SyncProtocolVersion,
-): SyncProjection | SyncProjectionV2 | null {
+): SyncProjectionV3 | null {
   if (!SYNC_ENTITY_TYPES.has(row.entity_type)) {
     throw new Error('Server change log contains an unknown sync entity type');
   }
   if (row.operation !== 'UPSERT' && row.operation !== 'DELETE') {
     throw new Error('Server change log contains an invalid change operation');
   }
-  if (row.projection_version !== 1 && row.projection_version !== 2) {
+  if (row.projection_version !== 1 && row.projection_version !== 2 && row.projection_version !== 3) {
     throw new Error('Server change log contains an unsupported projection version');
+  }
+  if (row.projection_version === 3 && protocolVersion === 2 && row.entity_type === 'patta_sheets' &&
+    row.operation === 'UPSERT' && isRecord(row.payload)) {
+    const data = Reflect.get(row.payload, 'data');
+    if (!isRecord(data) || data['entry_kind'] !== 'PATTA_LINKED' ||
+      typeof data['patta_hisob_id'] !== 'string' || !Array.isArray(data['operation_snapshots']) ||
+      !Array.isArray(data['rows']) || data['operation_snapshots'].some((snapshot) =>
+        !isRecord(snapshot) || (snapshot['source_type'] !== 'PATTA' && snapshot['source_type'] !== 'CUSTOM'))) {
+      throw pattaProtocolUpgradeRequired();
+    }
+    return {
+      projection_version: 2,
+      entity_type: 'patta_sheets',
+      entity_id: row.entity_id,
+      entity_version: row.entity_version ?? '1',
+      data: {
+        id: String(data['id']),
+        patta_hisob_id: data['patta_hisob_id'],
+        entered_at: String(data['entered_at']),
+        business_date: String(data['business_date']),
+        conveyor_snapshot: typeof data['conveyor_snapshot'] === 'string' ? data['conveyor_snapshot'] : null,
+        version: String(data['version']),
+        created_by: typeof data['created_by'] === 'string' ? data['created_by'] : null,
+        created_at: String(data['created_at']),
+        updated_at: String(data['updated_at']),
+        deleted_at: typeof data['deleted_at'] === 'string' ? data['deleted_at'] : null,
+        deleted_by: typeof data['deleted_by'] === 'string' ? data['deleted_by'] : null,
+        operation_snapshots: data['operation_snapshots'] as Extract<
+          SyncProjectionV2,
+          { entity_type: 'patta_sheets' }
+        >['data']['operation_snapshots'],
+        rows: data['rows'] as Extract<SyncProjectionV2, { entity_type: 'patta_sheets' }>['data']['rows'],
+      },
+    };
+  }
+  if (row.projection_version === 3 && protocolVersion !== 3) throw pattaProtocolUpgradeRequired();
+  if (row.projection_version === 2 && protocolVersion === 1) {
+    throw pattaProtocolUpgradeRequired();
   }
   if (row.payload === null) {
     if (row.operation === 'UPSERT') {
@@ -124,13 +163,13 @@ function projectionForChange(
     throw new Error('Server change log projection identity does not match its change');
   }
   if (row.projection_version === 2) {
-    if (protocolVersion !== 2 || !row.entity_type.startsWith('patta')) {
+    if (protocolVersion !== 2 && protocolVersion !== 3) {
       throw pattaProtocolUpgradeRequired();
     }
     return row.payload as unknown as SyncProjectionV2;
   }
 
-  if (protocolVersion === 2 && row.entity_type === 'patta_hisob') {
+  if ((protocolVersion === 2 || protocolVersion === 3) && row.entity_type === 'patta_hisob') {
     const legacyData = Reflect.get(row.payload, 'data');
     if (!isRecord(legacyData) || typeof legacyData['ish_soni'] !== 'number') {
       throw new Error('Legacy Patta projection has no historical operation-count value');
@@ -153,13 +192,13 @@ function projectionForChange(
       },
     } as SyncProjectionV2;
   }
-  if (protocolVersion === 2 && row.entity_type === 'patta_operation_snapshots') {
+  if ((protocolVersion === 2 || protocolVersion === 3) && row.entity_type === 'patta_operation_snapshots') {
     return {
       ...(row.payload as Record<string, unknown>),
       projection_version: 2,
     } as unknown as SyncProjectionV2;
   }
-  return row.payload as unknown as SyncProjection;
+  return row.payload as unknown as SyncProjectionV3;
 }
 
 function serializeChange(row: ServerChangeRow, protocolVersion: SyncProtocolVersion): SyncChange {
@@ -179,7 +218,7 @@ function serializeChange(row: ServerChangeRow, protocolVersion: SyncProtocolVers
     entity_id: row.entity_id,
     operation: row.operation,
     entity_version: row.entity_version,
-    projection_version: projectionVersion as 1 | 2,
+  projection_version: projectionVersion as 1 | 2 | 3,
     payload,
     changed_at: row.changed_at,
   };
@@ -208,7 +247,7 @@ export class SyncService {
     })) {
       throw pattaProtocolUpgradeRequired();
     }
-    if (protocolVersion === 2 && events.some((event) =>
+    if ((protocolVersion === 2 || protocolVersion === 3) && events.some((event) =>
       isRecord(event) && event['entity_type'] === 'patta')) {
       throw pattaBatchRequired();
     }

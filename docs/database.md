@@ -284,6 +284,52 @@ Partiya blocks, print events or related audit history. Untouched singleton
 sequence rows alone permit an empty-schema down/up cycle; any advanced sequence
 prevents rollback.
 
+## Patta Sheet V3 and Standalone Entries
+
+Additive tenant migration
+`20260929001200-AddStandalonePattaEntries.js` backfills every existing sheet as
+`PATTA_LINKED` from its authoritative Patta before making the new model ID/name
+and positive `ish_soni` snapshots required. `patta_hisob_id` becomes nullable;
+the Patta uniqueness rule is retained as a partial unique index for non-null IDs.
+An entry-kind check permits only `PATTA_LINKED` with a Patta FK or `STANDALONE`
+without one. Standalone Partiya/Patta/Rang/Razmer snapshots are informational,
+not number-allocation or duplicate keys.
+
+The migration replaces `guard_patta_sheet_mutation`,
+`guard_patta_sheet_operation_snapshot_mutation`, and
+`guard_patta_sheet_row_mutation`, and adds INSERT to the parent guard trigger.
+The parent guard validates linked snapshots against the Patta, keeps standalone
+quantity/model identity immutable, and permits linked quantity changes only
+when an existing authorized Patta correction ledger matches. The snapshot guard
+enforces model membership and allows `MODEL` sources only for standalone sheets;
+`PATTA` and `CUSTOM` keep their respective source rules. The row guard requires
+every row quantity to match the immutable sheet header, plus the current Patta
+quantity for linked sheets. `deleted_by_name_snapshot` is set from the server
+user at trash time, cleared on restore, and retained in the typed V3 projection.
+Existing deleted rows keep a null actor-name snapshot rather than inventing
+history.
+
+The linked-only `/api/v2/patta-sheets` shape remains unchanged. Standalone-capable
+REST and sync use V3 projections. V2 clients can continue linked-only pulls, but
+encountering a V3-only projection/tombstone or bootstrapping a tenant with a
+Standalone sheet returns `SYNC_PROTOCOL_UPGRADE_REQUIRED` without cursor
+advancement. Reverting migration 012 is blocked while Standalone rows, V3 change
+log entries, or protocol-3 bootstrap sessions remain.
+
+## Manual Model hisob adjustments
+
+Additive tenant migration `20260929001300-AddModelAccountAdjustments.js` adds a
+first-class adjustment table separate from Patta Sheets. Each UUID row references
+one model, model operation and permanent worker; quantity is positive, effective
+price is immutable `NUMERIC(14,2)`, and `entered_at`/tenant-local `business_date`
+are preserved across quantity edits. Versions protect stale updates. Trash and
+restore are soft lifecycle updates; physical deletion is guarded. The migration
+adds the `patta.hisob.manual_manage` permission for the system administrator,
+extends audit action/entity checks, and creates indexes for model/operation/
+worker aggregation. SQLite migration 7 preserves existing queue/conflict/
+dependency/tombstone/bootstrap state while extending sync entity allowlists and
+adding the local adjustment mirror.
+
 ## Offline synchronization database boundaries
 
 The additive tenant migration
@@ -349,6 +395,12 @@ pinned Electron `44.4.5`. SQLite uses `schema_migrations`, exclusive
 per-migration transactions, foreign keys, WAL and a bounded busy timeout. A
 failed migration rolls back its DDL and leaves the existing database intact;
 it is never deleted/recreated as recovery.
+
+SQLite migration 6 rebuilds the Patta Sheet parent/children in one migration
+transaction to make the Patta FK nullable and add the V3 Entry discriminator and
+snapshots. It preserves existing linked data, local ownership/server sequences,
+queued event JSON, worker/badge evidence, and tombstones, recreates all sheet
+triggers/indexes, and requires an empty `PRAGMA foreign_key_check` before commit.
 
 The versioned mirror includes workers/badges, models/operations/effective price
 history, templates, Patta/block/snapshot data, queue/state/conflicts, bootstrap

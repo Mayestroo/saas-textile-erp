@@ -433,6 +433,27 @@ describe('main-process IPC handlers', () => {
     })).toThrow('Patta bosma to‘plami ma’lumoti yaroqsiz')
   })
 
+  it('fails closed for manual account mutations without the cached manage permission', () => {
+    const database = createDatabase()
+    const services = createMainProcessIpcServices({
+      appVersion: () => '1.2.3',
+      authService: createAuthService('AUTHENTICATED'),
+      tenantRuntime: createTenantRuntime(new PattaLocalRepository(database))
+    })
+
+    expect(() => services.addModelAccountAdjustment({
+      model_id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      model_operation_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      worker_id: '17',
+      quantity: 1
+    })).toThrow('Ushbu amal uchun korxona ruxsati yetarli emas')
+    expect(() => services.changeModelOperationPrice({
+      operation_id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      expected_version: '1',
+      price: '25.00'
+    })).toThrow('Ushbu amal uchun korxona ruxsati yetarli emas')
+  })
+
   it('registers only the approved auth, version, sync, and sanitized local Patta handlers', async () => {
     const database = createDatabase()
     const pattaRepository = new PattaLocalRepository(database)
@@ -454,16 +475,29 @@ describe('main-process IPC handlers', () => {
       'auth:logout',
         'auth:session',
         'auth:status',
+        'model-account:add-manual',
+        'model-account:change-price',
+        'model-account:conveyor-account',
         'model-account:get',
+        'model-account:manual-operations',
+        'model-account:models',
+        'model-account:restore-manual',
+        'model-account:trash-manual',
+        'model-account:update-manual',
+        'model-account:worker-details',
+        'model-account:workers',
         'patta-print:correct-batch',
       'patta-print:create-batch',
       'patta-print:get-batch',
       'patta-print:models',
       'patta-print:print-batch',
-      'patta-print:record-event',
+        'patta-print:record-event',
         'patta-sheet:create',
+        'patta-sheet:get',
         'patta-sheet:history',
+        'patta-sheet:history-models',
         'patta-sheet:lookup',
+        'patta-sheet:model-operations',
         'patta-sheet:models',
         'patta-sheet:purge',
         'patta-sheet:resolve-badge',

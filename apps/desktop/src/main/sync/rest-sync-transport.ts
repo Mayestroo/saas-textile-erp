@@ -1,5 +1,6 @@
 import type {
   PattaNumberBlockProjection,
+  OperationPriceChangeProjection,
   PattaPartiyaNumberBlockProjection,
   PattaV2LookupMirror,
   SyncBootstrapPage,
@@ -69,7 +70,7 @@ export class RestSyncTransport implements AuthenticatedSyncTransport {
   async push(request: Omit<SyncPushRequest, 'device_id'>): Promise<SyncPushResponse> {
     const response = await this.request('POST', '/api/v1/sync/push', {
       device_id: this.deviceId(),
-      protocol_version: 2,
+      protocol_version: 3,
       events: request.events
     })
     return parseSyncPushResponse(response)
@@ -79,7 +80,7 @@ export class RestSyncTransport implements AuthenticatedSyncTransport {
     const query = new URLSearchParams({
       device_id: this.deviceId(),
       cursor: request.cursor,
-      protocol_version: '2'
+      protocol_version: '3'
     })
     if (request.limit !== undefined) query.set('limit', String(request.limit))
     const response = await this.request('GET', `/api/v1/sync/pull?${query.toString()}`)
@@ -89,7 +90,7 @@ export class RestSyncTransport implements AuthenticatedSyncTransport {
   async createBootstrap(): Promise<SyncBootstrapSession> {
     const response = await this.request('POST', '/api/v1/sync/bootstrap', {
       device_id: this.deviceId(),
-      protocol_version: 2
+      protocol_version: 3
     })
     const session = parseSyncBootstrapSession(response)
     if (session.device_id.toLowerCase() !== this.deviceId()) {
@@ -109,7 +110,7 @@ export class RestSyncTransport implements AuthenticatedSyncTransport {
     const query = new URLSearchParams({
       device_id: this.deviceId(),
       limit: String(limit),
-      protocol_version: '2'
+      protocol_version: '3'
     })
     if (after !== null) query.set('after', assertPostgresBigint(after, 'Bootstrap order cursor'))
     const response = await this.request(
@@ -213,6 +214,43 @@ export class RestSyncTransport implements AuthenticatedSyncTransport {
       patta_number: pattaNumber
     })
     return parsePattaV2LookupMirror(await this.request('GET', `/api/v2/patta/lookup?${query.toString()}`))
+  }
+
+  async changeOperationPrice(
+    operationId: string,
+    expectedVersion: string,
+    price: string
+  ): Promise<OperationPriceChangeProjection> {
+    if (!UUID_PATTERN.test(operationId) || !/^[1-9][0-9]*$/.test(expectedVersion) ||
+      !/^(0|[1-9][0-9]*)\.[0-9]{2}$/.test(price)) {
+      throw new LocalDomainError('OPERATION_PRICE_INPUT_INVALID', 'Operatsiya narxini o‘zgartirish ma’lumoti yaroqsiz')
+    }
+    const response = await this.request(
+      'POST',
+      `/api/v1/operations/${encodeURIComponent(operationId.toLowerCase())}/price`,
+      { expected_version: expectedVersion, price }
+    )
+    if (typeof response !== 'object' || response === null || Array.isArray(response)) {
+      throw new SyncProtocolValidationError('operation price change response')
+    }
+    const id = Reflect.get(response, 'id')
+    const operation_id = Reflect.get(response, 'operation_id')
+    const nextPrice = Reflect.get(response, 'price')
+    const valid_from = Reflect.get(response, 'valid_from')
+    const valid_to = Reflect.get(response, 'valid_to')
+    const created_by = Reflect.get(response, 'created_by')
+    const created_at = Reflect.get(response, 'created_at')
+    const operation_version = Reflect.get(response, 'operation_version')
+    if (typeof id !== 'string' || !UUID_PATTERN.test(id) || typeof operation_id !== 'string' ||
+      operation_id.toLowerCase() !== operationId.toLowerCase() || typeof nextPrice !== 'string' ||
+      !/^(0|[1-9][0-9]*)\.[0-9]{2}$/.test(nextPrice) || typeof valid_from !== 'string' ||
+      !Number.isFinite(Date.parse(valid_from)) || (valid_to !== null && typeof valid_to !== 'string') ||
+      (created_by !== null && typeof created_by !== 'string') || typeof created_at !== 'string' ||
+      !Number.isFinite(Date.parse(created_at)) || typeof operation_version !== 'string' ||
+      !/^[1-9][0-9]*$/.test(operation_version)) {
+      throw new SyncProtocolValidationError('operation price change response')
+    }
+    return { id, operation_id, price: nextPrice, valid_from, valid_to, created_by, created_at, operation_version }
   }
 
   private request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown> {

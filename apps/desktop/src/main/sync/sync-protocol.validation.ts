@@ -7,8 +7,7 @@ import type {
   SyncBootstrapPage,
   SyncBootstrapSession,
   SyncChange,
-  SyncProjection,
-  SyncProjectionV2,
+  SyncProjectionV3,
   SyncPullResponse,
   SyncPushResponse
 } from '@textile/sync-protocol'
@@ -35,7 +34,8 @@ const entityTypeSchema = z.enum([
   'patta_print_events',
   'patta_sheets',
   'patta_sheet_operation_snapshots',
-  'patta_sheet_rows'
+  'patta_sheet_rows',
+  'model_account_adjustments'
 ])
 
 const workerDataSchema = z
@@ -309,6 +309,61 @@ const pattaSheetDataSchema = z.object({
   rows: z.array(pattaSheetRowSchema)
 }).strict()
 
+const pattaSheetOperationSnapshotV3Schema = z.object({
+  id: nonEmptyStringSchema,
+  patta_sheet_id: nonEmptyStringSchema,
+  model_operation_id: nonEmptyStringSchema,
+  source_type: z.enum(['PATTA', 'MODEL', 'CUSTOM']),
+  source_patta_operation_snapshot_id: nonEmptyStringSchema.nullable(),
+  operation_name_snapshot: nonEmptyStringSchema,
+  unit_price_snapshot: priceSchema,
+  sort_order: z.number().int().nonnegative(),
+  created_at: timestampSchema
+}).strict()
+
+const pattaSheetDataV3Schema = z.object({
+  id: nonEmptyStringSchema,
+  entry_kind: z.enum(['PATTA_LINKED', 'STANDALONE']),
+  patta_hisob_id: nonEmptyStringSchema.nullable(),
+  model_id: nonEmptyStringSchema,
+  model_name_snapshot: nonEmptyStringSchema,
+  ish_soni: z.number().int().positive(),
+  partiya_number_snapshot: nonEmptyStringSchema.nullable(),
+  patta_number_snapshot: positiveDecimalSchema.nullable(),
+  rang_snapshot: nonEmptyStringSchema.nullable(),
+  razmer_snapshot: nonEmptyStringSchema.nullable(),
+  entered_at: timestampSchema,
+  business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  conveyor_snapshot: nonEmptyStringSchema.nullable(),
+  version: positiveDecimalSchema,
+  created_by: nonEmptyStringSchema.nullable(),
+  created_at: timestampSchema,
+  updated_at: timestampSchema,
+  deleted_at: timestampSchema.nullable(),
+  deleted_by: nonEmptyStringSchema.nullable(),
+  deleted_by_name_snapshot: nonEmptyStringSchema.nullable(),
+  operation_snapshots: z.array(pattaSheetOperationSnapshotV3Schema).min(1),
+  rows: z.array(pattaSheetRowSchema)
+}).strict().superRefine((sheet, context) => {
+  if ((sheet.entry_kind === 'PATTA_LINKED') !== (sheet.patta_hisob_id !== null)) {
+    context.addIssue({ code: 'custom', message: 'Patta Entry kind does not match its Patta identity' })
+  }
+  if ((sheet.deleted_at === null) !== (sheet.deleted_by === null) ||
+    (sheet.deleted_at === null && sheet.deleted_by_name_snapshot !== null)) {
+    context.addIssue({ code: 'custom', message: 'Patta Entry deletion metadata is inconsistent' })
+  }
+  for (const snapshot of sheet.operation_snapshots) {
+    if ((snapshot.source_type === 'PATTA') !== (snapshot.source_patta_operation_snapshot_id !== null) ||
+      (snapshot.source_type === 'PATTA' && sheet.entry_kind !== 'PATTA_LINKED') ||
+      (snapshot.source_type === 'MODEL' && sheet.entry_kind !== 'STANDALONE')) {
+      context.addIssue({ code: 'custom', message: 'Patta Entry operation source is inconsistent' })
+    }
+  }
+  if (sheet.rows.some((row) => row.quantity_snapshot !== sheet.ish_soni)) {
+    context.addIssue({ code: 'custom', message: 'Patta Entry row quantity differs from its header quantity' })
+  }
+})
+
 const projectionV1Schema = z
   .discriminatedUnion('entity_type', [
     z
@@ -449,7 +504,42 @@ const projectionV2Schema = z.discriminatedUnion('entity_type', [
   }
 })
 
-const projectionSchema = z.union([projectionV1Schema, projectionV2Schema])
+const modelAccountAdjustmentDataSchema = z.object({
+  id: nonEmptyStringSchema,
+  model_id: nonEmptyStringSchema,
+  model_operation_id: nonEmptyStringSchema,
+  worker_id: positiveDecimalSchema,
+  quantity: z.number().int().positive(),
+  unit_price_snapshot: priceSchema,
+  entered_at: timestampSchema,
+  business_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  version: positiveDecimalSchema,
+  created_by: nonEmptyStringSchema.nullable(),
+  created_device_id: nonEmptyStringSchema,
+  created_at: timestampSchema,
+  updated_at: timestampSchema,
+  deleted_at: timestampSchema.nullable(),
+  deleted_by: nonEmptyStringSchema.nullable()
+}).strict().refine((adjustment) => (adjustment.deleted_at === null) === (adjustment.deleted_by === null), {
+  message: 'Manual adjustment deletion metadata is inconsistent'
+})
+
+const projectionV3Schema = z.union([
+  z.object({
+    projection_version: z.literal(3), entity_type: z.literal('patta_sheets'),
+    entity_id: nonEmptyStringSchema, entity_version: positiveDecimalSchema, data: pattaSheetDataV3Schema
+  }).strict(),
+  z.object({
+    projection_version: z.literal(3), entity_type: z.literal('model_account_adjustments'),
+    entity_id: nonEmptyStringSchema, entity_version: positiveDecimalSchema, data: modelAccountAdjustmentDataSchema
+  }).strict()
+]).superRefine((projection, context) => {
+  if (projection.entity_id !== projection.data.id) {
+    context.addIssue({ code: 'custom', message: 'Projection entity ID does not match its data ID' })
+  }
+})
+
+const projectionSchema = z.union([projectionV1Schema, projectionV2Schema, projectionV3Schema])
 
 const changeSchema = z
   .object({
@@ -458,7 +548,7 @@ const changeSchema = z
     entity_id: nonEmptyStringSchema,
     operation: z.enum(['UPSERT', 'DELETE']),
     entity_version: positiveDecimalSchema.nullable(),
-    projection_version: z.union([z.literal(1), z.literal(2)]),
+    projection_version: z.union([z.literal(1), z.literal(2), z.literal(3)]),
     payload: projectionSchema.nullable(),
     changed_at: timestampSchema
   })
@@ -626,8 +716,8 @@ function validated<T>(schema: z.ZodType<T>, input: unknown, label: string): T {
   return result.data
 }
 
-export function parseSyncProjection(input: unknown): SyncProjection | SyncProjectionV2 {
-  return validated(projectionSchema, input, 'projection') as SyncProjection | SyncProjectionV2
+export function parseSyncProjection(input: unknown): SyncProjectionV3 {
+  return validated(projectionSchema, input, 'projection') as SyncProjectionV3
 }
 
 export function parseSyncChange(input: unknown): SyncChange {

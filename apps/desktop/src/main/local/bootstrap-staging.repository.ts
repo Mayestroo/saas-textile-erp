@@ -3,8 +3,7 @@ import type {
   SyncBootstrapPage,
   SyncBootstrapSession,
   SyncChange,
-  SyncProjection,
-  SyncProjectionV2
+  SyncProjectionV3
 } from '@textile/sync-protocol'
 import { compareDecimalStrings, parsePostgresBigint } from './decimal-string'
 import { isJsonObject, parseLocalJson, serializeLocalJson } from './local-json'
@@ -26,7 +25,8 @@ const SYNC_ENTITY_TYPES: ReadonlySet<string> = new Set([
   'patta_print_events',
   'patta_sheets',
   'patta_sheet_operation_snapshots',
-  'patta_sheet_rows'
+  'patta_sheet_rows',
+  'model_account_adjustments'
 ])
 
 interface BootstrapStateRow {
@@ -56,17 +56,17 @@ export interface StagedBootstrapItem {
   order_key: string
   entity_type: SyncChange['entity_type']
   entity_id: string
-  projection: SyncProjection | SyncProjectionV2
+  projection: SyncProjectionV3
 }
 
-function projectionIdentity(value: unknown): SyncProjection | SyncProjectionV2 {
+function projectionIdentity(value: unknown): SyncProjectionV3 {
   if (!isJsonObject(value) || !isJsonObject(value.data)) {
     throw new Error('Bootstrap item does not contain a projection object')
   }
   const entityType = value.entity_type
   const entityId = value.entity_id
   if (
-    (value.projection_version !== 1 && value.projection_version !== 2) ||
+    (value.projection_version !== 1 && value.projection_version !== 2 && value.projection_version !== 3) ||
     typeof entityType !== 'string' ||
     !SYNC_ENTITY_TYPES.has(entityType) ||
     typeof entityId !== 'string' ||
@@ -74,7 +74,7 @@ function projectionIdentity(value: unknown): SyncProjection | SyncProjectionV2 {
   ) {
     throw new Error('Bootstrap projection identity is invalid')
   }
-  return value as unknown as SyncProjection
+  return value as unknown as SyncProjectionV3
 }
 
 function validateOrderKey(value: string): bigint {

@@ -1,10 +1,11 @@
 import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validateSync } from 'class-validator';
-import type { SyncEvent, SyncMutationOperation, SyncProjectionV2 } from '@textile/sync-protocol';
+import type { SyncEvent, SyncMutationOperation, SyncProjectionV2, SyncProjectionV3 } from '@textile/sync-protocol';
 import type { EntityManager } from 'typeorm';
 import { isIanaTimezone } from '../../common/time/iana-timezone.js';
 import { CreatePattaSheetDto, UpdatePattaSheetDto } from '../patta-sheets/dto/patta-sheet-input.dto.js';
+import { CreatePattaSheetV3Dto, UpdatePattaSheetV3Dto } from '../patta-sheets/dto/patta-sheet-v3-input.dto.js';
 import { PattaSheetsService } from '../patta-sheets/patta-sheets.service.js';
 import type { SyncApplyContext, SyncEntityHandler, SyncHandlerResult } from './sync-entity-handler.js';
 
@@ -85,7 +86,7 @@ export class PattaSheetSyncHandler implements SyncEntityHandler {
   }
 
   async apply(manager: EntityManager, context: SyncApplyContext, event: SyncEvent): Promise<SyncHandlerResult> {
-    if (context.protocolVersion !== 2) {
+    if (context.protocolVersion !== 2 && context.protocolVersion !== 3) {
       throw new ConflictException({
         code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED',
         message: 'Patta varag‘ini sinxronlash uchun dastur versiyasini yangilang',
@@ -103,6 +104,15 @@ export class PattaSheetSyncHandler implements SyncEntityHandler {
       throw new ConflictException({ code: 'PAYLOAD_INVALID', message: 'Varaq identifikatori yaroqsiz', details: {} });
     }
     const rawPayload = payloadRecord(event.payload);
+    if (context.protocolVersion === 2 && rawPayload['entry_kind'] === 'STANDALONE') {
+      throw new ConflictException({
+        code: 'SYNC_PROTOCOL_UPGRADE_REQUIRED',
+        message: 'Standalone Patta Entry uchun dasturni yangilang',
+        details: {},
+      });
+    }
+    const isV3Protocol = context.protocolVersion === 3;
+    const hasV3Payload = isV3Protocol && 'entry_kind' in rawPayload;
     await assertDependenciesSynced(manager, rawPayload);
     const contextForService = {
       actorUserId: context.actorUserId,
@@ -114,12 +124,23 @@ export class PattaSheetSyncHandler implements SyncEntityHandler {
       if (event.base_version !== '0') {
         throw new ConflictException({ code: 'PAYLOAD_INVALID', message: 'Varaq CREATE hodisasi versiyasi noto‘g‘ri', details: {} });
       }
+      if (hasV3Payload) {
+        const input = validateDto(CreatePattaSheetV3Dto, {
+          ...rawPayload,
+          id: event.entity_id,
+          device_id: context.validatedDeviceId,
+        });
+        const result = await this.sheets.createV3InTransaction(manager, contextForService, input);
+        return {
+          entityVersion: result.version,
+          projection: this.sheetProjectionV3(result),
+          changeSequence: await this.sheets.latestChangeSequence(manager, result.id),
+        };
+      }
       const input = validateDto(CreatePattaSheetDto, {
-        ...rawPayload,
-        id: event.entity_id,
-        device_id: context.validatedDeviceId,
+        ...rawPayload, id: event.entity_id, device_id: context.validatedDeviceId,
       });
-      const result = await this.sheets.createInTransaction(manager, contextForService, input);
+      const result = await this.sheets.createInTransaction(manager, contextForService, input, isV3Protocol ? 3 : 2);
       return {
         entityVersion: result.version,
         projection: this.sheetProjection(result),
@@ -129,28 +150,47 @@ export class PattaSheetSyncHandler implements SyncEntityHandler {
     if (event.base_version === null || !/^[1-9][0-9]*$/.test(event.base_version)) {
       throw new ConflictException({ code: 'PAYLOAD_INVALID', message: 'Varaq versiyasi noto‘g‘ri', details: {} });
     }
-    const current = await this.sheets.getProjection(manager, event.entity_id);
+    const current = hasV3Payload
+      ? await this.sheets.getProjectionV3(manager, event.entity_id)
+      : await this.sheets.getProjection(manager, event.entity_id);
     if (event.operation === 'DELETE') {
       await assertPermission(manager, context.actorUserId, 'patta_varaq.purge');
-      const purged = await this.sheets.purgeInTransaction(manager, contextForService, event.entity_id, event.base_version);
+      const purged = await this.sheets.purgeInTransaction(
+        manager, contextForService, event.entity_id, event.base_version, hasV3Payload ? 3 : 2,
+      );
       return { entityVersion: null, projection: null, changeSequence: purged.change_sequence };
     }
 
-    const input = validateDto(UpdatePattaSheetDto, {
-      ...rawPayload,
-      id: event.entity_id,
-      expected_version: event.base_version,
-      device_id: context.validatedDeviceId,
-    });
+    const input = hasV3Payload
+      ? validateDto(UpdatePattaSheetV3Dto, {
+        ...rawPayload, id: event.entity_id, expected_version: event.base_version,
+        device_id: context.validatedDeviceId,
+      })
+      : validateDto(UpdatePattaSheetDto, {
+        ...rawPayload, id: event.entity_id, expected_version: event.base_version,
+        device_id: context.validatedDeviceId,
+      });
     const requestedDeletedAt = input.deleted_at ?? null;
     if (current.deleted_at === null && requestedDeletedAt !== null) {
       await assertPermission(manager, context.actorUserId, 'patta_varaq.delete');
       if (input.deleted_by !== context.actorUserId) {
         throw new ConflictException({ code: 'PAYLOAD_INVALID', message: 'O‘chirgan foydalanuvchi hodisa muallifiga mos emas', details: {} });
       }
-      const trashed = await this.sheets.setTrashedInTransaction(
-        manager, contextForService, event.entity_id, event.base_version, true, requestedDeletedAt,
-      );
+      const trashed = hasV3Payload
+        ? await this.sheets.setTrashedV3InTransaction(
+          manager, contextForService, event.entity_id, event.base_version, true, requestedDeletedAt,
+        )
+        : await this.sheets.setTrashedInTransaction(
+          manager, contextForService, event.entity_id, event.base_version, true, requestedDeletedAt,
+          isV3Protocol ? 3 : 2,
+        );
+      if ('entry_kind' in trashed) {
+        return {
+          entityVersion: trashed.version,
+          projection: this.sheetProjectionV3(trashed),
+          changeSequence: await this.sheets.latestChangeSequence(manager, trashed.id),
+        };
+      }
       return {
         entityVersion: trashed.version,
         projection: this.sheetProjection(trashed),
@@ -159,9 +199,21 @@ export class PattaSheetSyncHandler implements SyncEntityHandler {
     }
     if (current.deleted_at !== null && requestedDeletedAt === null) {
       await assertPermission(manager, context.actorUserId, 'patta_varaq.restore');
-      const restored = await this.sheets.setTrashedInTransaction(
-        manager, contextForService, event.entity_id, event.base_version, false,
-      );
+      const restored = hasV3Payload
+        ? await this.sheets.setTrashedV3InTransaction(
+          manager, contextForService, event.entity_id, event.base_version, false,
+        )
+        : await this.sheets.setTrashedInTransaction(
+          manager, contextForService, event.entity_id, event.base_version, false,
+          undefined, isV3Protocol ? 3 : 2,
+        );
+      if ('entry_kind' in restored) {
+        return {
+          entityVersion: restored.version,
+          projection: this.sheetProjectionV3(restored),
+          changeSequence: await this.sheets.latestChangeSequence(manager, restored.id),
+        };
+      }
       return {
         entityVersion: restored.version,
         projection: this.sheetProjection(restored),
@@ -169,12 +221,19 @@ export class PattaSheetSyncHandler implements SyncEntityHandler {
       };
     }
     await assertPermission(manager, context.actorUserId, 'patta_varaq.edit');
-    const updated = await this.sheets.updateInTransaction(
-      manager, contextForService, event.entity_id, input, event.occurred_at,
-    );
+    const updated = 'entry_kind' in input
+      ? await this.sheets.updateV3InTransaction(
+        manager, contextForService, event.entity_id, input, event.occurred_at,
+      )
+      : await this.sheets.updateInTransaction(
+        manager, contextForService, event.entity_id, input, event.occurred_at,
+        isV3Protocol ? 3 : 2,
+      );
     return {
       entityVersion: updated.version,
-      projection: this.sheetProjection(updated),
+      projection: 'entry_kind' in updated
+        ? this.sheetProjectionV3(updated)
+        : this.sheetProjection(updated),
       changeSequence: await this.sheets.latestChangeSequence(manager, updated.id),
     };
   }
@@ -182,6 +241,16 @@ export class PattaSheetSyncHandler implements SyncEntityHandler {
   private sheetProjection(data: Awaited<ReturnType<PattaSheetsService['getById']>>): SyncProjectionV2 {
     return {
       projection_version: 2,
+      entity_type: 'patta_sheets',
+      entity_id: data.id,
+      entity_version: data.version,
+      data,
+    };
+  }
+
+  private sheetProjectionV3(data: Awaited<ReturnType<PattaSheetsService['getProjectionV3']>>): SyncProjectionV3 {
+    return {
+      projection_version: 3,
       entity_type: 'patta_sheets',
       entity_id: data.id,
       entity_version: data.version,

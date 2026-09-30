@@ -2,6 +2,7 @@ import type {
   PattaNumberBlockProjection,
   PattaPartiyaNumberBlockProjection,
   PattaV2LookupMirror,
+  OperationPriceChangeProjection,
   SyncBootstrapPage,
   SyncBootstrapSession,
   SyncPullRequest,
@@ -42,4 +43,9 @@ export interface AuthenticatedSyncTransport {
     reportedUsedCount: string
   ): Promise<PattaPartiyaNumberBlockProjection>
   lookupPattaV2?(partiyaNumber: string, pattaNumber: string): Promise<PattaV2LookupMirror>
+  changeOperationPrice?(
+    operationId: string,
+    expectedVersion: string,
+    price: string
+  ): Promise<OperationPriceChangeProjection>
 }
